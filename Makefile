@@ -1,4 +1,4 @@
-.PHONY: clean configure build install package run help
+.PHONY: clean configure build install package run test all help
 .PHONY: run
 
 .DEFAULT_GOAL := help
@@ -22,6 +22,7 @@ NC := \033[0m # No Color
 # ============================================
 # C++ Build Targets
 # ============================================
+all: clean configure build install package ## Full pipeline: clean, configure, build, install and package.
 
 configure: ## Configure the project for building.
 	mkdir -p $(BUILD_DIR)/
@@ -54,6 +55,12 @@ package: ## Package the project using conan.
 		--build=missing \
 		--settings=compiler.cppstd=17 \
 		--settings=build_type=Release
+
+test: ## Run all tests.
+	meson test -C $(BUILD_DIR) \
+ 		--print-errorlogs \
+		--verbose \
+		--test-args '--gtest_output=json:test_results.json --gtest_print_time=1 --gtest_color=yes'
 
 clean: ## Clean all generated build files in the project.
 	rm -rf $(BUILD_DIR)/

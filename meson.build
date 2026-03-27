@@ -24,7 +24,7 @@ gtest_dep = dependency('gtest',
 inc = include_directories('include')
 
 subdir('src')
-# subdir('tests')
+subdir('tests')
 
 # ============================================
 # pkg-config
@@ -32,7 +32,7 @@ subdir('src')
 pkg = import('pkgconfig')
 
 pkg.generate(
-    lib_academy,
+    lib_hello_world,
     name:        'academy',
     description: 'Academy library.',
     requires_private: ['gtest'],
