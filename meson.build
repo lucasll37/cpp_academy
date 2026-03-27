@@ -1,0 +1,39 @@
+project('academy', 'cpp',
+    version: '1.0.0',
+    default_options: [
+        'cpp_std=c++17',
+        'warning_level=3',
+    ],
+)
+
+# ============================================
+# Opções do Projeto
+# ============================================
+# test_option = get_option('test_option')
+
+# ============================================
+# Dependências
+# ============================================
+gtest_dep = dependency('gtest',
+    fallback: ['gtest', 'gtest_dep'],
+)
+
+# ============================================
+# Subdiretórios
+# ============================================
+inc = include_directories('include')
+
+subdir('src')
+# subdir('tests')
+
+# ============================================
+# pkg-config
+# ============================================
+pkg = import('pkgconfig')
+
+pkg.generate(
+    lib_academy,
+    name:        'academy',
+    description: 'Academy library.',
+    requires_private: ['gtest'],
+)

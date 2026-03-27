@@ -1,0 +1,5 @@
+option('test_option',
+    type: 'boolean',
+    value: false,
+    description: 'Teste option for demonstration purposes.',
+)
