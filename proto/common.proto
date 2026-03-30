@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package mlinference.common;
+
+// ============================================
+// Enumerations
+// ============================================
+
+enum Test {
+    FLOAT32 = 0;
+    FLOAT64 = 1;
+    INT32   = 2;
+    INT64   = 3;
+    UINT8   = 4;
+    BOOL    = 5;
+    STRING  = 6;
+    FLOAT16 = 7;
+}

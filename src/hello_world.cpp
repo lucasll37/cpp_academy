@@ -1,8 +1,8 @@
 #include "hello_world.hpp"
-#include <iostream>
+#include <fmt/core.h>
 
 namespace academy {
     void to_greet(const std::string& name) {
-        std::cout << "Hello, " << name << std::endl;
+        fmt::println("Hello, {}", name);
     }
 }

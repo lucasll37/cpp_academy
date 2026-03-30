@@ -14,16 +14,19 @@ project('academy', 'cpp',
 # ============================================
 # Dependências
 # ============================================
-gtest_dep = dependency('gtest',
-    fallback: ['gtest', 'gtest_dep'],
-)
+gtest_dep    = dependency('gtest', fallback: ['gtest', 'gtest_dep'])
+fmt_dep      = dependency('fmt')
+protobuf_dep = dependency('protobuf')
 
+protoc = '@0@/bin/protoc'.format(protobuf_dep.get_variable('prefix'))
 # ============================================
 # Subdiretórios
 # ============================================
 inc = include_directories('include')
 
+subdir('proto')
 subdir('src')
+subdir('python')
 subdir('tests')
 
 # ============================================
@@ -35,5 +38,5 @@ pkg.generate(
     lib_hello_world,
     name:        'academy',
     description: 'Academy library.',
-    requires_private: ['gtest'],
+    requires_private: ['gtest', 'protobuf'],
 )

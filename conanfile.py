@@ -7,10 +7,12 @@ class MLInferenceRecipe(ConanFile):
     name = "academy"
     version = "1.0.0"
     settings = "arch", "build_type", "compiler", "os"
-    exports_sources = "meson*", "src/*", "include/*", "tests/*", "conanfile.py"
+    exports_sources = "meson*", "src/*", "include/*", "proto/*", "python/*", "tests/*", "conanfile.py"
 
     def requirements(self):
         self.requires("gtest/1.14.0")
+        self.requires("protobuf/3.21.12")
+        self.requires("fmt/10.2.1")
 
     def generate(self):
         pc = PkgConfigDeps(self)
