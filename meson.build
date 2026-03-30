@@ -16,6 +16,7 @@ project('academy', 'cpp',
 # ============================================
 gtest_dep    = dependency('gtest', fallback: ['gtest', 'gtest_dep'])
 fmt_dep      = dependency('fmt')
+omp_dep      = dependency('openmp')
 protobuf_dep = dependency('protobuf')
 
 protoc = '@0@/bin/protoc'.format(protobuf_dep.get_variable('prefix'))
@@ -23,6 +24,7 @@ protoc = '@0@/bin/protoc'.format(protobuf_dep.get_variable('prefix'))
 # Subdiretórios
 # ============================================
 inc = include_directories('include')
+# public_headers = include_directories('include')
 
 subdir('proto')
 subdir('src')
