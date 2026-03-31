@@ -23,7 +23,7 @@ NC := \033[0m # No Color
 # ============================================
 # C++ Build Targets
 # ============================================
-all: clean configure build install package ## Full pipeline: clean, configure, build, install and package.
+all: clean configure build ## install package ## Full pipeline: clean, configure, build, install and package.
 
 configure: ## Configure the project for building.
 	mkdir -p $(BUILD_DIR)/

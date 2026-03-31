@@ -27,15 +27,8 @@ src_main = files('main.cpp')
 
 executable('main',
     [src_main, common_proto_cc, common_proto_h],
-    dependencies: [protobuf_dep, fmt_dep],
+    dependencies: [protobuf_dep, fmt_dep, spdlog_dep, json_dep],
     link_with: [lib_hello_world, lib_greeter],
     include_directories: inc,
     install: true
 )
-
-# executable('main',
-#     src_main,
-#     link_with: [lib_hello_world, lib_greeter],
-#     include_directories: inc,
-#     install: true
-# )

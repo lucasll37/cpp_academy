@@ -18,6 +18,8 @@ gtest_dep    = dependency('gtest', fallback: ['gtest', 'gtest_dep'])
 fmt_dep      = dependency('fmt')
 omp_dep      = dependency('openmp')
 protobuf_dep = dependency('protobuf')
+spdlog_dep   = dependency('spdlog')
+json_dep     = dependency('nlohmann_json')
 
 protoc = '@0@/bin/protoc'.format(protobuf_dep.get_variable('prefix'))
 # ============================================

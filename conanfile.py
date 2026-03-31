@@ -13,6 +13,8 @@ class MLInferenceRecipe(ConanFile):
         self.requires("gtest/1.14.0")
         self.requires("protobuf/3.21.12")
         self.requires("fmt/10.2.1")
+        self.requires("spdlog/1.14.1")
+        self.requires("nlohmann_json/3.11.3")
 
     def generate(self):
         pc = PkgConfigDeps(self)
