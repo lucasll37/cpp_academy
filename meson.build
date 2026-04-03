@@ -20,6 +20,8 @@ omp_dep      = dependency('openmp')
 protobuf_dep = dependency('protobuf')
 spdlog_dep   = dependency('spdlog')
 json_dep     = dependency('nlohmann_json')
+eigen_dep    = dependency('eigen3')
+glfw_dep    = dependency('glfw3')
 
 protoc = '@0@/bin/protoc'.format(protobuf_dep.get_variable('prefix'))
 # ============================================
@@ -33,13 +35,6 @@ subdir('src')
 subdir('python')
 subdir('tests')
 
-# Design Patterns
-subdir('design-of-pattern/factory')
-subdir('design-of-pattern/observer')
-subdir('design-of-pattern/strategy')
-subdir('design-of-pattern/decorator')
-subdir('design-of-pattern/command')
-subdir('design-of-pattern/chain')
 # ============================================
 # pkg-config
 # ============================================

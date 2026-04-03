@@ -1,0 +1,8 @@
+subdir('factory')
+subdir('observer')
+subdir('strategy')
+subdir('decorator')
+subdir('command')
+subdir('chain')
+subdir('iterator')
+subdir('state')
