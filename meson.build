@@ -39,6 +39,7 @@ subdir('design-of-pattern/observer')
 subdir('design-of-pattern/strategy')
 subdir('design-of-pattern/decorator')
 subdir('design-of-pattern/command')
+subdir('design-of-pattern/chain')
 # ============================================
 # pkg-config
 # ============================================
