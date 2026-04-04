@@ -1,4 +1,5 @@
 subdir('calculus')
+subdir('collision')
 subdir('design-of-pattern')
-subdir('gui')
+# subdir('gui')
 subdir('sandbox')

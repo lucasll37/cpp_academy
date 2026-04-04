@@ -21,7 +21,9 @@ protobuf_dep = dependency('protobuf')
 spdlog_dep   = dependency('spdlog')
 json_dep     = dependency('nlohmann_json')
 eigen_dep    = dependency('eigen3')
-glfw_dep    = dependency('glfw3')
+bullet_dep   = dependency('bullet')
+
+# glfw_dep    = dependency('glfw3')
 
 protoc = '@0@/bin/protoc'.format(protobuf_dep.get_variable('prefix'))
 # ============================================
