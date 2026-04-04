@@ -1,0 +1,180 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>900</width>
+    <height>600</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Academy — Qt + SFML</string>
+  </property>
+  <!-- centralwidget sem layout — o SFMLWidget é inserido
+       programaticamente no mainwindow.cpp via QHBoxLayout -->
+  <widget class="QWidget" name="centralwidget"/>
+  <widget class="QMenuBar" name="menubar">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>0</y>
+     <width>900</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <widget class="QMenu" name="menuSimulation">
+    <property name="title">
+     <string>Simulation</string>
+    </property>
+    <addaction name="actionReset"/>
+    <addaction name="separator"/>
+    <addaction name="actionQuit"/>
+   </widget>
+   <addaction name="menuSimulation"/>
+  </widget>
+  <widget class="QStatusBar" name="statusbar"/>
+  <widget class="QDockWidget" name="dockControls">
+   <property name="windowTitle">
+    <string>Controles</string>
+   </property>
+   <attribute name="dockWidgetArea">
+    <number>2</number>
+   </attribute>
+   <widget class="QWidget" name="dockContents">
+    <layout class="QVBoxLayout" name="verticalLayout">
+
+     <!-- Grupo: Velocidade -->
+     <item>
+      <widget class="QGroupBox" name="groupSpeed">
+       <property name="title">
+        <string>Velocidade</string>
+       </property>
+       <layout class="QVBoxLayout">
+        <item>
+         <widget class="QLabel" name="labelSpeed">
+          <property name="text">
+           <string>200 px/s</string>
+          </property>
+          <property name="alignment">
+           <set>Qt::AlignCenter</set>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QSlider" name="sliderSpeed">
+          <property name="minimum">
+           <number>50</number>
+          </property>
+          <property name="maximum">
+           <number>600</number>
+          </property>
+          <property name="value">
+           <number>200</number>
+          </property>
+          <property name="orientation">
+           <enum>Qt::Horizontal</enum>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+
+     <!-- Grupo: Raio -->
+     <item>
+      <widget class="QGroupBox" name="groupRadius">
+       <property name="title">
+        <string>Raio</string>
+       </property>
+       <layout class="QVBoxLayout">
+        <item>
+         <widget class="QLabel" name="labelRadius">
+          <property name="text">
+           <string>30 px</string>
+          </property>
+          <property name="alignment">
+           <set>Qt::AlignCenter</set>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QSlider" name="sliderRadius">
+          <property name="minimum">
+           <number>10</number>
+          </property>
+          <property name="maximum">
+           <number>100</number>
+          </property>
+          <property name="value">
+           <number>30</number>
+          </property>
+          <property name="orientation">
+           <enum>Qt::Horizontal</enum>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+
+     <!-- Grupo: Cor -->
+     <item>
+      <widget class="QGroupBox" name="groupColor">
+       <property name="title">
+        <string>Cor</string>
+       </property>
+       <layout class="QHBoxLayout">
+        <item>
+         <widget class="QPushButton" name="btnColor">
+          <property name="text">
+           <string>Escolher cor</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+
+     <!-- Botão Reset -->
+     <item>
+      <widget class="QPushButton" name="btnReset">
+       <property name="text">
+        <string>Resetar posição</string>
+       </property>
+      </widget>
+     </item>
+
+     <!-- Spacer empurra widgets para cima -->
+     <item>
+      <spacer>
+       <property name="orientation">
+        <enum>Qt::Vertical</enum>
+       </property>
+      </spacer>
+     </item>
+
+    </layout>
+   </widget>
+  </widget>
+
+  <action name="actionReset">
+   <property name="text">
+    <string>Resetar</string>
+   </property>
+  </action>
+  <action name="actionQuit">
+   <property name="text">
+    <string>Sair</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+Q</string>
+   </property>
+  </action>
+
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

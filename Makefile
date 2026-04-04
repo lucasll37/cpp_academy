@@ -37,8 +37,10 @@ configure: ## Configure the project for building.
 		--buildtype debug \
 		--prefix=$(DIST_DIR) \
 		--libdir=$(DIST_DIR)/lib \
-		-Dpkg_config_path=$(DIST_DIR)/lib/pkgconfig:$(BUILD_DIR) \
+		-Dpkg_config_path=$(PWD)/$(BUILD_DIR) \
 		$(BUILD_DIR)/ .
+
+# -Dpkg_config_path=$(DIST_DIR)/lib/pkgconfig:$(BUILD_DIR) \
 
 build: ## Build all targets in the project.
 	meson compile -C $(BUILD_DIR)
