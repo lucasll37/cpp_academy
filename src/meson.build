@@ -1,6 +1,5 @@
 subdir('calculus')
 subdir('collision')
 subdir('design-of-pattern')
-subdir('qt')
 subdir('qt_sfml') 
 subdir('sandbox')
