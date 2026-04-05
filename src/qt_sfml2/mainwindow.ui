@@ -1,0 +1,216 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>1100</width><height>700</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>Qt + SFML + Bullet3 — Simulação 3D</string>
+  </property>
+
+  <!-- centralwidget: o SFMLWidget é inserido aqui programaticamente -->
+  <widget class="QWidget" name="centralwidget"/>
+
+  <!-- ── Menu bar ──────────────────────────────────────────────────── -->
+  <widget class="QMenuBar" name="menubar">
+   <property name="geometry">
+    <rect><x>0</x><y>0</y><width>1100</width><height>22</height></rect>
+   </property>
+   <widget class="QMenu" name="menuSimulacao">
+    <property name="title"><string>Simulação</string></property>
+    <addaction name="actionPausar"/>
+    <addaction name="actionReiniciar"/>
+    <addaction name="separator"/>
+    <addaction name="actionSair"/>
+   </widget>
+   <widget class="QMenu" name="menuAdicionar">
+    <property name="title"><string>Adicionar</string></property>
+    <addaction name="actionAddSphere"/>
+    <addaction name="actionAddBox"/>
+    <addaction name="actionAddCylinder"/>
+   </widget>
+   <addaction name="menuSimulacao"/>
+   <addaction name="menuAdicionar"/>
+  </widget>
+
+  <widget class="QStatusBar" name="statusbar"/>
+
+  <!-- ── Dock lateral direito: Controles ───────────────────────────── -->
+  <widget class="QDockWidget" name="dockControls">
+   <property name="windowTitle"><string>Controles</string></property>
+   <attribute name="dockWidgetArea"><number>2</number></attribute>
+   <widget class="QWidget" name="dockContents">
+    <layout class="QVBoxLayout" name="mainVLayout" stretch="0,0,0,0,0,1">
+
+     <!-- ── Grupo: Adicionar objetos ─────────────────────────────── -->
+     <item>
+      <widget class="QGroupBox" name="groupAdd">
+       <property name="title"><string>Adicionar Objeto</string></property>
+       <layout class="QHBoxLayout">
+        <item>
+         <widget class="QPushButton" name="btnAddSphere">
+          <property name="text"><string>Esfera</string></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="btnAddBox">
+          <property name="text"><string>Caixa</string></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="btnAddCylinder">
+          <property name="text"><string>Cilindro</string></property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+
+     <!-- ── Grupo: Física ─────────────────────────────────────────── -->
+     <item>
+      <widget class="QGroupBox" name="groupPhysics">
+       <property name="title"><string>Física</string></property>
+       <layout class="QFormLayout">
+
+        <item row="0" column="0">
+         <widget class="QLabel" name="labelGravity">
+          <property name="text"><string>Gravidade</string></property>
+         </widget>
+        </item>
+        <item row="0" column="1">
+         <widget class="QComboBox" name="comboGravity">
+          <item><property name="text"><string>Normal (−9.8)</string></property></item>
+          <item><property name="text"><string>Zero-G (0)</string></property></item>
+          <item><property name="text"><string>Fraca (−2)</string></property></item>
+          <item><property name="text"><string>Lunar (−1.6)</string></property></item>
+          <item><property name="text"><string>Pesada (−20)</string></property></item>
+         </widget>
+        </item>
+
+        <item row="1" column="0">
+         <widget class="QLabel" name="labelRestitution">
+          <property name="text"><string>Elasticidade</string></property>
+         </widget>
+        </item>
+        <item row="1" column="1">
+         <widget class="QSlider" name="sliderRestitution">
+          <property name="minimum"><number>0</number></property>
+          <property name="maximum"><number>100</number></property>
+          <property name="value"><number>85</number></property>
+          <property name="orientation"><enum>Qt::Horizontal</enum></property>
+         </widget>
+        </item>
+
+        <item row="2" column="1">
+         <widget class="QLabel" name="labelRestitutionVal">
+          <property name="text"><string>0.85</string></property>
+         </widget>
+        </item>
+
+       </layout>
+      </widget>
+     </item>
+
+     <!-- ── Grupo: Câmera ─────────────────────────────────────────── -->
+     <item>
+      <widget class="QGroupBox" name="groupCamera">
+       <property name="title"><string>Câmera</string></property>
+       <layout class="QVBoxLayout">
+        <item>
+         <widget class="QLabel">
+          <property name="text"><string>🖱 Arrastar: orbitar   Scroll: zoom</string></property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+
+     <!-- ── Grupo: Ações ──────────────────────────────────────────── -->
+     <item>
+      <widget class="QGroupBox" name="groupActions">
+       <property name="title"><string>Ações</string></property>
+       <layout class="QVBoxLayout">
+        <item>
+         <widget class="QPushButton" name="btnExplode">
+          <property name="text"><string>💥 Explosão</string></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="btnPause">
+          <property name="text"><string>⏸ Pausar</string></property>
+          <property name="checkable"><bool>true</bool></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="btnClear">
+          <property name="text"><string>🗑 Limpar</string></property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+
+     <!-- ── Status ────────────────────────────────────────────────── -->
+     <item>
+      <widget class="QGroupBox" name="groupStatus">
+       <property name="title"><string>Status</string></property>
+       <layout class="QVBoxLayout">
+        <item>
+         <widget class="QLabel" name="labelObjCount">
+          <property name="text"><string>Objetos: 12</string></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="labelFPS">
+          <property name="text"><string>FPS: —</string></property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+
+     <!-- spacer para empurrar tudo para cima -->
+     <item>
+      <spacer>
+       <property name="orientation"><enum>Qt::Vertical</enum></property>
+       <property name="sizeHint" stdset="0">
+        <size><width>20</width><height>40</height></size>
+       </property>
+      </spacer>
+     </item>
+
+    </layout>
+   </widget>
+  </widget>
+
+  <!-- ── Ações do menu ─────────────────────────────────────────────── -->
+  <action name="actionPausar">
+   <property name="text"><string>Pausar</string></property>
+   <property name="checkable"><bool>true</bool></property>
+   <property name="shortcut"><string>Space</string></property>
+  </action>
+  <action name="actionReiniciar">
+   <property name="text"><string>Reiniciar</string></property>
+  </action>
+  <action name="actionSair">
+   <property name="text"><string>Sair</string></property>
+   <property name="shortcut"><string>Ctrl+Q</string></property>
+  </action>
+  <action name="actionAddSphere">
+   <property name="text"><string>Esfera</string></property>
+   <property name="shortcut"><string>1</string></property>
+  </action>
+  <action name="actionAddBox">
+   <property name="text"><string>Caixa</string></property>
+   <property name="shortcut"><string>2</string></property>
+  </action>
+  <action name="actionAddCylinder">
+   <property name="text"><string>Cilindro</string></property>
+   <property name="shortcut"><string>3</string></property>
+  </action>
+
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

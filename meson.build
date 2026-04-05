@@ -33,7 +33,7 @@ curl_dep        = dependency('libcurl')
 # soci_sqlite_dep = dependency('SOCI', method: 'cmake', modules: ['SOCI::soci_sqlite3'])
 
 qt6          = import('qt6')
-qt_dep       = dependency('qt6', modules: ['Core', 'Widgets'])
+qt_dep       = dependency('qt6', modules: ['Core', 'Gui', 'Widgets'])
 
 # ============================================
 # Programas Utilitários
