@@ -3,6 +3,6 @@ requires = ["meson-python"]
 build-backend = "mesonpy"
 
 [project]
-name = "academy"
+name = "academy_cp"
 version = "1.0.0"
 requires-python = ">=3.10"
