@@ -14,16 +14,23 @@ project('academy', 'cpp', 'c',
 # ============================================
 # Dependências
 # ============================================
-gtest_dep    = dependency('gtest', fallback: ['gtest', 'gtest_dep'])
-fmt_dep      = dependency('fmt')
-omp_dep      = dependency('openmp')
-protobuf_dep = dependency('protobuf')
-spdlog_dep   = dependency('spdlog')
-json_dep     = dependency('nlohmann_json')
-eigen_dep    = dependency('eigen3')
-pybind_dep   = dependency('pybind11')
-bullet_dep   = dependency('bullet')
-sfml_dep     = dependency('sfml-all')
+gtest_dep       = dependency('gtest', fallback: ['gtest', 'gtest_dep'])
+fmt_dep         = dependency('fmt')
+omp_dep         = dependency('openmp')
+protobuf_dep    = dependency('protobuf')
+spdlog_dep      = dependency('spdlog')
+json_dep        = dependency('nlohmann_json')
+eigen_dep       = dependency('eigen3')
+pybind_dep      = dependency('pybind11')
+bullet_dep      = dependency('bullet')
+sfml_dep        = dependency('sfml-all')
+curl_dep        = dependency('libcurl')
+# soci_core_dep   = dependency('soci_core')
+# soci_sqlite_dep = dependency('soci_sqlite3')
+# soci_pg_dep     = dependency('soci_postgresql')   # descomente para PostgreSQL
+
+# soci_core_dep   = dependency('SOCI', method: 'cmake', modules: ['SOCI::soci_core'])
+# soci_sqlite_dep = dependency('SOCI', method: 'cmake', modules: ['SOCI::soci_sqlite3'])
 
 qt6          = import('qt6')
 qt_dep       = dependency('qt6', modules: ['Core', 'Widgets'])

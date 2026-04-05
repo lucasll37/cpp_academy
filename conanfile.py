@@ -1,7 +1,7 @@
 from conan import ConanFile
 from conan.tools.gnu import PkgConfigDeps
 from conan.tools.meson import MesonToolchain, Meson
-
+from conan.tools.cmake import CMakeDeps
 
 class MLInferenceRecipe(ConanFile):
     name = "academy"
@@ -19,6 +19,9 @@ class MLInferenceRecipe(ConanFile):
         self.requires("eigen/3.4.0")
         self.requires("bullet3/3.25")
         self.requires("sfml/2.6.1")
+        self.requires("libcurl/8.6.0")
+        self.requires("soci/4.0.3")
+        self.requires("sqlite3/3.45.0")
         # self.requires("qt/6.7.3")
         
     def build_requirements(self):
@@ -33,7 +36,10 @@ class MLInferenceRecipe(ConanFile):
         self.tool_requires("cmake/3.27.0")
         self.tool_requires("meson/1.2.0")
         self.tool_requires("ninja/1.13.2")
-
+        
+    def configure(self):
+        self.options["soci"].with_sqlite3    = True
+        self.options["soci"].with_postgresql = True 
 
     def generate(self):
         pc = PkgConfigDeps(self)
@@ -41,6 +47,9 @@ class MLInferenceRecipe(ConanFile):
         
         tc = MesonToolchain(self)
         tc.generate()
+        
+        cmake = CMakeDeps(self)
+        cmake.generate()
 
     def layout(self):
         self.folders.build = "build"

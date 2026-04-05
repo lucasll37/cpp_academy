@@ -1,6 +1,8 @@
-SHELL := /bin/bash
+.ONESHELL:
+SHELL = /bin/bash
+.SHELLFLAGS = -ec
 
-.PHONY: clean setup configure build install package run test help
+.PHONY: clean configure build install package all run test help
 .PHONY: run
 .PHONY: python
 
@@ -27,15 +29,6 @@ NC := \033[0m # No Color
 # ============================================
 all: clean configure build install ## install package ## Full pipeline: clean, configure, build, install and package.
 
-# setup: ## Configure the project for building.
-# 	mkdir -p $(BUILD_DIR)/
-# 	conan install ./ \
-# 		--profile:build=default \
-# 		--profile:host=default \
-# 		--build=missing \
-# 		--settings=build_type=$(CONAN_BUILD_TYPE) \
-# 		--remote=conancenter
-
 configure: ## Configure the project for building.
 	mkdir -p $(BUILD_DIR)/
 
@@ -45,6 +38,8 @@ configure: ## Configure the project for building.
 		--build=missing \
 		--settings=build_type=$(CONAN_BUILD_TYPE) \
 		--remote=conancenter
+
+	source $(BUILD_DIR)/conanbuild.sh
 
 	meson setup --reconfigure \
 		--backend ninja \
@@ -56,6 +51,7 @@ configure: ## Configure the project for building.
 
 
 build: ## Build all targets in the project.
+	source $(BUILD_DIR)/conanbuild.sh
 	meson compile -C $(BUILD_DIR)
 
 install: ## Install all targets in the project.
@@ -82,14 +78,10 @@ clean: ## Clean all generated build files in the project.
 	rm -rf $(BUILD_DIR)/
 	rm -rf $(DIST_DIR)/
 	rm -rf ./subprojects/packagecache
+	rm -rf ./tmp
 
 run: ## Run the code.
 	$(DIST_DIR)/bin/qt_academy
-
-release: ## Create and push a release tag (usage: make release VERSION=1.2.3).
-	@test -n "$(VERSION)" || (echo "Usage: make release VERSION=x.y.z"; exit 1)
-	git tag v$(VERSION)
-	git push origin v$(VERSION)
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'
