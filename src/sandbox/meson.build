@@ -8,6 +8,13 @@ lib_hello_world = library('hello_world',
     install: true
 )
 
+# pkg.generate(
+#     lib_hello_world,
+#     name:        'academy',
+#     description: 'Academy library.',
+#     requires_private: ['gtest', 'protobuf'],
+# )
+
 install_headers(meson.project_source_root() / 'include' / 'hello_world.hpp')
 
 # Gretter library

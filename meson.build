@@ -1,4 +1,4 @@
-project('academy', 'cpp',
+project('academy', 'cpp', 'c',
     version: '1.0.0',
     default_options: [
         'cpp_std=c++17',
@@ -28,26 +28,29 @@ sfml_dep     = dependency('sfml-all')
 qt6          = import('qt6')
 qt_dep       = dependency('qt6', modules: ['Core', 'Widgets'])
 
-protoc = '@0@/bin/protoc'.format(protobuf_dep.get_variable('prefix'))
 # ============================================
-# Subdiretórios
+# Programas Utilitários
+# ============================================
+protoc = '@0@/bin/protoc'.format(protobuf_dep.get_variable('prefix'))
+
+
+# ============================================
+# Headers Públicos
 # ============================================
 inc = include_directories('include')
 # public_headers = include_directories('include')
 
+
+
+
+# ============================================
+# Subdiretórios
+# ============================================
 subdir('proto')
 subdir('src')
-subdir('python')
 subdir('tests')
 
 # ============================================
 # pkg-config
 # ============================================
 pkg = import('pkgconfig')
-
-pkg.generate(
-    lib_hello_world,
-    name:        'academy',
-    description: 'Academy library.',
-    requires_private: ['gtest', 'protobuf'],
-)

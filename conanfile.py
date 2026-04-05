@@ -20,6 +20,20 @@ class MLInferenceRecipe(ConanFile):
         self.requires("bullet3/3.25")
         self.requires("sfml/2.6.1")
         # self.requires("qt/6.7.3")
+        
+    def build_requirements(self):
+        self.tool_requires("protobuf/3.21.12") # Cross-Compilation
+        self.tool_requires("flex/2.6.4")
+        self.tool_requires("bison/3.8.2")
+
+        # Documentação — gera HTML/PDF a partir de comentários no código
+        # self.tool_requires("doxygen/1.9.4")
+
+        # Build systems alternativos — úteis ao integrar dependências que não usam Meson
+        self.tool_requires("cmake/3.27.0")
+        self.tool_requires("meson/1.2.0")
+        self.tool_requires("ninja/1.13.2")
+
 
     def generate(self):
         pc = PkgConfigDeps(self)

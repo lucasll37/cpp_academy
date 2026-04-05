@@ -1,4 +1,6 @@
-.PHONY: clean configure build install package run test all help
+SHELL := /bin/bash
+
+.PHONY: clean setup configure build install package run test help
 .PHONY: run
 .PHONY: python
 
@@ -23,15 +25,22 @@ NC := \033[0m # No Color
 # ============================================
 # C++ Build Targets
 # ============================================
-all: clean configure build install ## install package ## Full pipeline: clean, configure, build, install and package.
+# all: clean configure build install ## install package ## Full pipeline: clean, configure, build, install and package.
 
-configure: ## Configure the project for building.
+setup: ## Configure the project for building.
 	mkdir -p $(BUILD_DIR)/
 	conan install ./ \
 		--build=missing \
 		--settings=build_type=$(CONAN_BUILD_TYPE) \
 		--remote=conancenter
-		
+
+configure: ## Configure the project for building.
+# 	mkdir -p $(BUILD_DIR)/
+# 	conan install ./ \
+# 		--build=missing \
+# 		--settings=build_type=$(CONAN_BUILD_TYPE) \
+# 		--remote=conancenter
+
 	meson setup --reconfigure \
 		--backend ninja \
 		--buildtype=$(BUILD_TYPE) \
@@ -40,7 +49,7 @@ configure: ## Configure the project for building.
 		-Dpkg_config_path=$(PWD)/$(BUILD_DIR) \
 		$(BUILD_DIR)/ .
 
-# -Dpkg_config_path=$(DIST_DIR)/lib/pkgconfig:$(BUILD_DIR) \
+
 
 build: ## Build all targets in the project.
 	meson compile -C $(BUILD_DIR)
