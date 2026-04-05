@@ -41,8 +41,6 @@ inc = include_directories('include')
 # public_headers = include_directories('include')
 
 
-
-
 # ============================================
 # Subdiretórios
 # ============================================

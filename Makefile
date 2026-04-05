@@ -8,7 +8,7 @@ SHELL := /bin/bash
 
 # Custom variables
 PWD := $(shell pwd)
-BUILD_DIR := ./build
+BUILD_DIR := $(PWD)/build
 DIST_DIR := $(PWD)/dist
 
 # Build configuration
@@ -25,30 +25,34 @@ NC := \033[0m # No Color
 # ============================================
 # C++ Build Targets
 # ============================================
-# all: clean configure build install ## install package ## Full pipeline: clean, configure, build, install and package.
+all: clean configure build install ## install package ## Full pipeline: clean, configure, build, install and package.
 
-setup: ## Configure the project for building.
-	mkdir -p $(BUILD_DIR)/
-	conan install ./ \
-		--build=missing \
-		--settings=build_type=$(CONAN_BUILD_TYPE) \
-		--remote=conancenter
-
-configure: ## Configure the project for building.
+# setup: ## Configure the project for building.
 # 	mkdir -p $(BUILD_DIR)/
 # 	conan install ./ \
+# 		--profile:build=default \
+# 		--profile:host=default \
 # 		--build=missing \
 # 		--settings=build_type=$(CONAN_BUILD_TYPE) \
 # 		--remote=conancenter
+
+configure: ## Configure the project for building.
+	mkdir -p $(BUILD_DIR)/
+
+	conan install ./ \
+		--profile:build=default \
+		--profile:host=default \
+		--build=missing \
+		--settings=build_type=$(CONAN_BUILD_TYPE) \
+		--remote=conancenter
 
 	meson setup --reconfigure \
 		--backend ninja \
 		--buildtype=$(BUILD_TYPE) \
 		--prefix=$(DIST_DIR) \
 		--libdir=$(DIST_DIR)/lib \
-		-Dpkg_config_path=$(PWD)/$(BUILD_DIR) \
+		-Dpkg_config_path=$(BUILD_DIR) \
 		$(BUILD_DIR)/ .
-
 
 
 build: ## Build all targets in the project.
