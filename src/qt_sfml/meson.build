@@ -38,4 +38,5 @@ executable('qt_academy',
     ],
     dependencies: [qt_dep, sfml_dep],
     include_directories: include_directories('.'),
+    install: true
 )
