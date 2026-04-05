@@ -131,6 +131,74 @@ meson setup build -Dtest_option=true
 
 ---
 
+## Deploy cross-platform (Gitflow)
+
+O binário alvo é `dist/bin/qt_academy`. O CI gera automaticamente os pacotes para cada plataforma quando uma tag `v*` é publicada.
+
+### Fluxo de release
+
+```bash
+# Na branch main, após o merge da release branch:
+make release VERSION=1.2.3
+# Cria a tag v1.2.3 e faz push — o GitHub Actions dispara automaticamente.
+```
+
+O workflow `.github/workflows/release.yml` produz:
+
+| Plataforma | Artefato |
+|------------|----------|
+| Linux | `academy-linux.AppImage` |
+| macOS | `academy-macos.dmg` |
+| Windows | `academy-windows-setup.exe` |
+
+Os artefatos são publicados na GitHub Release correspondente à tag.
+
+---
+
+## Testando o deploy
+
+### 1. Local — build e run
+
+```bash
+make configure
+make build
+make run        # abre a janela Qt+SFML
+```
+
+### 2. Local — simular o CI com `act`
+
+[`act`](https://github.com/nektos/act) roda o workflow via Docker sem precisar de push.
+
+```bash
+# Instalar act
+curl -s https://raw.githubusercontent.com/nektos/act/master/install.sh | sudo bash
+
+# Simular o job Linux
+act push --job build \
+  --matrix os:ubuntu-22.04 \
+  --eventpath <(echo '{"ref":"refs/tags/v0.0.1"}')
+```
+
+### 3. CI real — tag de pré-release
+
+```bash
+make release VERSION=0.0.1-rc1
+```
+
+Acompanhe em `github.com/<seu-repo>/actions`. Se os três jobs passarem, a Release aparece em `github.com/<seu-repo>/releases` com os artefatos.
+
+### O que observar em cada job
+
+| Job | Ponto de atenção |
+|-----|-----------------|
+| Linux | AppImage criado? `linuxdeploy` bundlou Qt corretamente? |
+| macOS | `macdeployqt` encontrou todos os frameworks? `.dmg` monta? |
+| Windows | `windeployqt` copiou as DLLs? Installer NSIS executa? |
+
+**Ordem recomendada:** local → `act` (Linux) → tag `v0.0.1-rc1` → se tudo OK, `make release VERSION=1.0.0` na `main`.
+
+---
+
 ## Licença
 
 MIT — veja [LICENSE](LICENSE) para detalhes.

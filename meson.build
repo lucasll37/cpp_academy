@@ -21,6 +21,7 @@ protobuf_dep = dependency('protobuf')
 spdlog_dep   = dependency('spdlog')
 json_dep     = dependency('nlohmann_json')
 eigen_dep    = dependency('eigen3')
+pybind_dep   = dependency('pybind11')
 bullet_dep   = dependency('bullet')
 sfml_dep     = dependency('sfml-all')
 

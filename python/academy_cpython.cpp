@@ -309,7 +309,7 @@ static PyMethodDef AcademyMethods[] = {
 // ============================================================
 static struct PyModuleDef academymodule = {
     PyModuleDef_HEAD_INIT,
-    "academy",
+    "academy_cp",
     nullptr,
     -1,
     AcademyMethods,
@@ -332,6 +332,6 @@ static struct PyModuleDef academymodule = {
 // PyMODINIT_FUNC: macro que define o tipo de retorno correto
 // e garante que a função seja visível (exported) na .so
 // ============================================================
-PyMODINIT_FUNC PyInit_academy(void) {
+PyMODINIT_FUNC PyInit_academy_cp(void) {
     return PyModule_Create(&academymodule);
 }

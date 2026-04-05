@@ -34,7 +34,8 @@ clean: ## Remove o ambiente virtual e o sentinel
 reset: clean setup ## Limpa e recria o ambiente do zero
 
 run:  ## tester le code python
-	PYTHONPATH=/home/lima/Projects/cpp_academy/build/python $(VENV_PYTHON) ./main.py
+	PYTHONPATH=/home/lucas/Projects/cpp_academy/build/python $(VENV_PYTHON) ./main_cpython.py
+# 	PYTHONPATH=/home/lucas/Projects/cpp_academy/build/python $(VENV_PYTHON) ./main_pybind.py
 
 help: ## Exibe esta mensagem de ajuda
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'

@@ -10,6 +10,6 @@ InstallDir "$PROGRAMFILES64\Academy"
 
 Section "Academy"
   SetOutPath "$INSTDIR"
-  File /r "dist\*.*"
-  CreateShortcut "$DESKTOP\Academy.lnk" "$INSTDIR\qt_academy.exe"
+  File /r "dist\bin\*.*"
+  CreateShortcut "$DESKTOP\Academy.lnk" "$INSTDIR\bin\qt_academy.exe"
 SectionEnd

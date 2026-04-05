@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'          # dispara em: git tag v1.0.0 && git push --tags
+      - 'v*'          # dispara em: make release VERSION=1.2.3
 
 jobs:
   build:
@@ -46,6 +46,7 @@ jobs:
           sudo apt-get install -y \
             qt6-base-dev \
             qt6-tools-dev \
+            qt6-tools-dev-tools \
             libgl1-mesa-dev \
             ninja-build
 
@@ -67,14 +68,19 @@ jobs:
       - name: Install Meson
         run: pip install meson
 
-      # ── 5. SFML via Conan ──────────────────────────────────
+      # ── 5. MSVC environment (Windows only) ─────────────────
+      - name: Setup MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      # ── 6. SFML via Conan ──────────────────────────────────
       - name: Install dependencies via Conan
         run: |
           conan install . \
             --build=missing \
             --settings=build_type=Release
 
-      # ── 6. Configure & Build ───────────────────────────────
+      # ── 7. Configure & Build ───────────────────────────────
       - name: Configure (Linux/macOS)
         if: runner.os != 'Windows'
         run: |
@@ -85,13 +91,12 @@ jobs:
 
       - name: Configure (Windows)
         if: runner.os == 'Windows'
-        shell: cmd
         run: |
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
-          meson setup build ^
-            --buildtype=release ^
-            --prefix=%CD%\dist ^
-            -Dpkg_config_path=%CD%\build
+          meson setup build `
+            --buildtype=release `
+            --prefix=$env:CD\dist `
+            -Dpkg_config_path=$env:CD\build
+        shell: pwsh
 
       - name: Build
         run: meson compile -C build
@@ -99,22 +104,28 @@ jobs:
       - name: Install
         run: meson install -C build
 
-      # ── 7. Empacotar (Linux) ───────────────────────────────
+      # ── 8. Empacotar (Linux) ───────────────────────────────
+      - name: Generate placeholder icon (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          test -f scripts/academy.png || \
+            convert -size 256x256 xc:'#4682B4' -font DejaVu-Sans -pointsize 40 \
+              -fill white -gravity center -annotate 0 'Academy' \
+              scripts/academy.png
+
       - name: Package AppImage (Linux)
         if: runner.os == 'Linux'
         run: |
-          # baixa linuxdeploy e plugin Qt
           wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
           wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
           chmod +x linuxdeploy*.AppImage
 
-          # monta o AppDir
           mkdir -p AppDir/usr
           cp -r dist/* AppDir/usr/
 
-          # gera o AppImage
           QMAKE=$(which qmake6 || which qmake) \
           ./linuxdeploy-x86_64.AppImage \
+            --appimage-extract-and-run \
             --appdir AppDir \
             --plugin qt \
             --output appimage \
@@ -124,26 +135,42 @@ jobs:
 
           mv Academy*.AppImage academy-linux.AppImage
 
-      # ── 8. Empacotar (macOS) ───────────────────────────────
+      # ── 9. Empacotar (macOS) ───────────────────────────────
       - name: Package DMG (macOS)
         if: runner.os == 'macOS'
         run: |
-          # macdeployqt já vem com o Qt instalado via brew
-          macdeployqt dist/qt_academy.app -dmg
+          # meson instala binário plano; macdeployqt precisa de .app bundle
+          mkdir -p qt_academy.app/Contents/MacOS
+          cp dist/bin/qt_academy qt_academy.app/Contents/MacOS/
+          cat > qt_academy.app/Contents/Info.plist << 'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key><string>qt_academy</string>
+            <key>CFBundleIdentifier</key><string>com.academy.qt_academy</string>
+            <key>CFBundleName</key><string>Academy</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>1.0.0</string>
+          </dict>
+          </plist>
+          PLIST
+          macdeployqt qt_academy.app -dmg
           mv qt_academy.dmg academy-macos.dmg
 
-      # ── 9. Empacotar (Windows) ─────────────────────────────
+      # ── 10. Empacotar (Windows) ────────────────────────────
+      - name: Install NSIS (Windows)
+        if: runner.os == 'Windows'
+        run: choco install nsis -y
+
       - name: Package installer (Windows)
         if: runner.os == 'Windows'
         shell: cmd
         run: |
-          # windeployqt copia as DLLs necessárias
-          windeployqt dist\qt_academy.exe
-
-          # NSIS gera o installer
+          windeployqt dist\bin\qt_academy.exe
           makensis scripts\installer.nsi
 
-      # ── 10. Upload do artefato para a Release ──────────────
+      # ── 11. Upload do artefato para a Release ──────────────
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:

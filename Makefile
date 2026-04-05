@@ -10,8 +10,8 @@ BUILD_DIR := ./build
 DIST_DIR := $(PWD)/dist
 
 # Build configuration
-BUILD_TYPE := Debug
-CONAN_BUILD_TYPE := Debug
+BUILD_TYPE       := debug   # meson: debug | release | minsize
+CONAN_BUILD_TYPE := Debug   # conan: Debug | Release
 
 # Colors for output
 RED := \033[0;31m
@@ -34,7 +34,7 @@ configure: ## Configure the project for building.
 		
 	meson setup --reconfigure \
 		--backend ninja \
-		--buildtype debug \
+		--buildtype=$(BUILD_TYPE) \
 		--prefix=$(DIST_DIR) \
 		--libdir=$(DIST_DIR)/lib \
 		-Dpkg_config_path=$(PWD)/$(BUILD_DIR) \
@@ -71,7 +71,12 @@ clean: ## Clean all generated build files in the project.
 	rm -rf ./subprojects/packagecache
 
 run: ## Run the code.
-	$(BUILD_DIR)/src/main
+	$(DIST_DIR)/bin/qt_academy
+
+release: ## Create and push a release tag (usage: make release VERSION=1.2.3).
+	@test -n "$(VERSION)" || (echo "Usage: make release VERSION=x.y.z"; exit 1)
+	git tag v$(VERSION)
+	git push origin v$(VERSION)
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'
