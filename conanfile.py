@@ -33,9 +33,9 @@ class MLInferenceRecipe(ConanFile):
         # self.tool_requires("doxygen/1.9.4")
 
         # Build systems alternativos — úteis ao integrar dependências que não usam Meson
-        self.tool_requires("cmake/3.27.0")
-        self.tool_requires("meson/1.2.0")
-        self.tool_requires("ninja/1.13.2")
+        # self.tool_requires("cmake/3.27.0")
+        # self.tool_requires("meson/1.2.0")
+        # self.tool_requires("ninja/1.13.2")
         
     def configure(self):
         self.options["soci"].with_sqlite3    = True
