@@ -49,7 +49,15 @@ class MLInferenceRecipe(ConanFile):
     def configure(self):
         self.options["soci"].with_sqlite3    = True
         self.options["soci"].with_postgresql = True 
-        self.options["aws-sdk-cpp"].s3        = True
+        
+        self.options["aws-sdk-cpp"].s3       = True
+        
+        self.options["opencv"].with_ffmpeg    = False
+        self.options["opencv"].with_gtk       = False  # sem GUI GTK (usa Qt se precisar)
+        self.options["opencv"].dnn            = False  # não precisa — usamos ONNX Runtime
+        self.options["opencv"].with_jpeg2000  = False
+        self.options["opencv"].with_tiff      = False
+        self.options["opencv"].with_webp      = False  # raiz do conflito
 
     def generate(self):
         pc = PkgConfigDeps(self)

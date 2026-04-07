@@ -71,7 +71,8 @@ void demo_webcam(yolo::YOLOv10& detector, int camera_id) {
     fmt::print("\n── Webcam em tempo real (câmera {}) ──\n", camera_id);
     fmt::print("  Pressione 'q' para sair\n");
 
-    cv::VideoCapture cap(camera_id);
+    // cv::VideoCapture cap(camera_id);
+    cv::VideoCapture cap(camera_id, cv::CAP_V4L2); // ffmpeg OFF conanfile
     if (!cap.isOpened())
         throw std::runtime_error("Não foi possível abrir a câmera " +
                                  std::to_string(camera_id));
