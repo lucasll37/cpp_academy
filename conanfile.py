@@ -22,6 +22,15 @@ class MLInferenceRecipe(ConanFile):
         self.requires("libcurl/8.6.0")
         self.requires("soci/4.0.3")
         self.requires("sqlite3/3.45.0")
+        self.requires("asio/1.28.0")
+        self.requires("flac/1.4.3", override=True)
+        self.requires("aws-sdk-cpp/1.11.692")
+        
+        self.requires("onnxruntime/1.17.3")
+        # self.requires("onnxruntime-gpu/1.17.3)
+        # inclui suporte CUDA
+        self.requires("opus/1.5.2", override=True)
+        self.requires("opencv/4.9.0") 
         # self.requires("qt/6.7.3")
         
     def build_requirements(self):
@@ -40,6 +49,7 @@ class MLInferenceRecipe(ConanFile):
     def configure(self):
         self.options["soci"].with_sqlite3    = True
         self.options["soci"].with_postgresql = True 
+        self.options["aws-sdk-cpp"].s3        = True
 
     def generate(self):
         pc = PkgConfigDeps(self)

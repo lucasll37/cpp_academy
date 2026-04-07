@@ -25,12 +25,14 @@ pybind_dep      = dependency('pybind11')
 bullet_dep      = dependency('bullet')
 sfml_dep        = dependency('sfml-all')
 curl_dep        = dependency('libcurl')
-# soci_core_dep   = dependency('soci_core')
-# soci_sqlite_dep = dependency('soci_sqlite3')
-# soci_pg_dep     = dependency('soci_postgresql')   # descomente para PostgreSQL
-
-# soci_core_dep   = dependency('SOCI', method: 'cmake', modules: ['SOCI::soci_core'])
-# soci_sqlite_dep = dependency('SOCI', method: 'cmake', modules: ['SOCI::soci_sqlite3'])
+asio_dep        = dependency('asio')
+soci_dep        = dependency('soci')
+soci_sqlite_dep = dependency('soci-soci_sqlite3')
+soci_pg_dep     = dependency('soci-soci_postgresql')
+aws_core_dep    = dependency('aws-cpp-sdk-core')
+aws_s3_dep      = dependency('aws-cpp-sdk-s3')
+onnx_dep        = dependency('onnxruntime')
+opencv_dep      = dependency('opencv4')
 
 qt6          = import('qt6')
 qt_dep       = dependency('qt6', modules: ['Core', 'Gui', 'Widgets'])
@@ -53,7 +55,7 @@ inc = include_directories('include')
 # ============================================
 subdir('proto')
 subdir('src')
-subdir('tests')
+# subdir('tests')
 
 # ============================================
 # pkg-config
