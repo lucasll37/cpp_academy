@@ -8,10 +8,10 @@ python export_yolo.py --model yolov10s
 python export_yolo.py --model yolov10m --imgsz 640 --opset 13 --outdir src/yolo/models
 
 # Imagem
-./dist/bin/yolo ./src/yolo/models/yolov10m.onnx sua_imagem.jpg
+./dist/bin/yolo ./src/yolo/models/yolov10m.onnx src/yolo/images/teste.jpg
 
 # Webcam
 ./dist/bin/yolo ./src/yolo/models/yolov10m.onnx 0
 
 # Benchmark (100 inferências, mede latência p50/p95/p99)
-./dist/bin/yolo ./src/yolo/models/yolov10m.onnx sua_imagem.jpg --bench
+./dist/bin/yolo ./src/yolo/models/yolov10m.onnx src/yolo/images/teste.jpg --bench
