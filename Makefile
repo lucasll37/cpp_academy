@@ -60,12 +60,12 @@ install: ## Install all targets in the project.
 package: ## Package the project using conan.
 	conan create ./ \
 		--build=missing \
-		--settings=compiler.cppstd=17 \
+		--settings=compiler.cppstd=20 \
 		--settings=build_type=Debug
 		
 	conan create ./ \
 		--build=missing \
-		--settings=compiler.cppstd=17 \
+		--settings=compiler.cppstd=20 \
 		--settings=build_type=Release
 
 test: ## Run all tests.

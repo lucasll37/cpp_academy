@@ -47,6 +47,7 @@ class MLInferenceRecipe(ConanFile):
         # self.tool_requires("ninja/1.13.2")
         
     def configure(self):
+        self.settings.compiler.cppstd = "20"   # ← força C++20 no projeto
         self.options["soci"].with_sqlite3    = True
         self.options["soci"].with_postgresql = True 
         

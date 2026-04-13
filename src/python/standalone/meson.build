@@ -1,6 +1,6 @@
 project('academy-python', 'cpp',
     version: '1.0.0',
-    default_options: ['cpp_std=c++17'],
+    default_options: ['cpp_std=c++20'],
 )
 
 omp_dep = dependency('openmp')

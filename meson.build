@@ -1,7 +1,7 @@
 project('academy', 'cpp', 'c',
     version: '1.0.0',
     default_options: [
-        'cpp_std=c++17',
+        'cpp_std=c++20',
         'warning_level=3',
     ],
 )
@@ -26,9 +26,9 @@ bullet_dep      = dependency('bullet')
 sfml_dep        = dependency('sfml-all')
 curl_dep        = dependency('libcurl')
 asio_dep        = dependency('asio')
-soci_dep        = dependency('soci')
-soci_sqlite_dep = dependency('soci-soci_sqlite3')
-soci_pg_dep     = dependency('soci-soci_postgresql')
+# soci_dep        = dependency('soci-soci_core') # dependency('soci')
+# soci_sqlite_dep = dependency('soci-soci_sqlite3')
+# soci_pg_dep     = dependency('soci-soci_postgresql')
 # aws_core_dep    = dependency('aws-cpp-sdk-core')
 # aws_s3_dep      = dependency('aws-cpp-sdk-s3')
 onnx_dep        = dependency('onnxruntime')
@@ -55,7 +55,7 @@ inc = include_directories('include')
 # ============================================
 subdir('proto')
 subdir('src')
-# subdir('tests')
+subdir('tests')
 
 # ============================================
 # pkg-config
