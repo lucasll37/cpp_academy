@@ -1,4 +1,3 @@
-#include "hello_world.hpp"
 #include <nlohmann/json.hpp>
 #include <iostream>
 
@@ -39,63 +38,3 @@ int main() {
 
     return 0;
 }
-
-// #include "hello_world.hpp"
-// #include <spdlog/spdlog.h>
-// #include <spdlog/sinks/stdout_color_sinks.h>
-// #include <spdlog/sinks/rotating_file_sink.h>
-
-// int main() {
-//     // Sink 1: console colorido
-//     auto console = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-
-//     // Sink 2: arquivo rotativo (5MB, 3 arquivos)
-//     auto arquivo = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
-//         "academy.log", 1024 * 1024 * 5, 3
-//     );
-
-//     // Logger com os dois sinks ao mesmo tempo
-//     auto log = std::make_shared<spdlog::logger>(
-//         "academy",
-//         spdlog::sinks_init_list{console, arquivo}
-//     );
-
-//     log->set_level(spdlog::level::debug);
-
-//     log->debug("iniciando...");
-//     log->info("chamando to_greet");
-//     log->warn("isso é um aviso: {}", 42);
-//     log->error("isso seria um erro");
-
-//     academy::to_greet("Lucas");
-
-//     log->info("fim");
-//     return 0;
-// }
-
-// // #include "greeter.hpp"
-// // // #include "common.pb.h"
-
-// // #include <fmt/core.h>
-
-// // int main() {
-// //     std::shared_ptr<academy::Greeter> a;
-// //     // mlinference::common::Test b;
-// //     // b = mlinference::common::Test::BOOL;
-
-// //     {
-// //         auto b = academy::make_greeter("Lucas");
-// //         fmt::println("use_count dentro do bloco: ", b.use_count());
-
-// //         a = b; // compartilha propriedade
-// //         fmt::println("use_count após compartilhar: ", b.use_count());
-
-// //         b->greet();
-// //     } // b sai de escopo → use_count vai para 1, objeto NÃO é destruído
-
-// //     fmt::println("use_count após bloco: ", a.use_count());
-// //     a->greet(); // ainda válido!
-
-// //     // a sai de escopo → use_count vai para 0 → objeto destruído aqui
-// //     return 0;
-// // }

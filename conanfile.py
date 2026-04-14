@@ -25,6 +25,7 @@ class MLInferenceRecipe(ConanFile):
         self.requires("asio/1.28.0")
         self.requires("flac/1.4.3", override=True)
         self.requires("aws-sdk-cpp/1.11.692")
+        self.requires("amqp-cpp/4.3.27")
         
         self.requires("onnxruntime/1.17.3")
         # self.requires("onnxruntime-gpu/1.17.3)

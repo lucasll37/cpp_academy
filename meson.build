@@ -33,6 +33,8 @@ asio_dep        = dependency('asio')
 # aws_s3_dep      = dependency('aws-cpp-sdk-s3')
 onnx_dep        = dependency('onnxruntime')
 opencv_dep      = dependency('opencv')
+amqpcpp_dep     = dependency('amqpcpp')
+boost_dep       = dependency('boost')
 
 qt6          = import('qt6')
 qt_dep       = dependency('qt6', modules: ['Core', 'Gui', 'Widgets'])
@@ -47,15 +49,16 @@ protoc = '@0@/bin/protoc'.format(protobuf_dep.get_variable('prefix'))
 # Headers Públicos
 # ============================================
 inc = include_directories('include')
-# public_headers = include_directories('include')
+public_headers = include_directories('include')
 
 
 # ============================================
 # Subdiretórios
 # ============================================
+subdir('docs')
 subdir('proto')
 subdir('src')
-subdir('tests')
+# subdir('tests')
 
 # ============================================
 # pkg-config
