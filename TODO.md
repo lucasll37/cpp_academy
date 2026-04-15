@@ -10,8 +10,7 @@ signal
 
 memoria
 
-src/docker/ -> database, rabbitmq, redis, 
-src/ golang + cpp
+src/docker/ -> database, rabbitmq, redis
 
-cpp rodar python
-
+embarcado?
+esp-32

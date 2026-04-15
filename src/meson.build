@@ -7,6 +7,7 @@
 # subdir('database') #
 # subdir('design-of-pattern')
 # subdir('ecs')
+subdir('embed-python')
 # subdir('http-client')
 # subdir('inline_asm')
 # subdir('mandelbrot')
@@ -18,7 +19,7 @@
 # subdir('network')
 # subdir('qt_sfml')
 # subdir('qt_sfml2')
-subdir('rabbitmq')
+# subdir('rabbitmq')
 # subdir('sandbox')
 # subdir('sfml_bullet')
 # subdir('sfml_bullet2')
