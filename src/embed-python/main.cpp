@@ -298,7 +298,7 @@ int main(int argc, char* argv[]) {
         // tenta executar script externo se passado como argumento
         fs::path script = (argc > 1)
             ? fs::path(argv[1])
-            : fs::path("scripts/hello.py");
+            : fs::path("./src/embed-python/scripts/hello.py");
         demo_run_file(script);
 
         demo_handle_exception();
