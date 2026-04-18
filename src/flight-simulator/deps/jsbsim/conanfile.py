@@ -1,6 +1,7 @@
 from conan import ConanFile
 from conan.tools.scm import Git
 from conan.tools.cmake import CMakeToolchain, CMake, cmake_layout
+from conan.tools.gnu import PkgConfigDeps
 
 class Recipe(ConanFile):
     # Mandatory metadata
@@ -17,7 +18,7 @@ class Recipe(ConanFile):
     options = {"shared": [True, False], "fPIC": [True, False]}
     default_options = {"shared": False, "fPIC": True}
 
-    generators = "CMakeDeps"
+    generators = "CMakeDeps", "PkgConfigDeps"
 
     def source(self):
         git = Git(self)
@@ -45,5 +46,6 @@ class Recipe(ConanFile):
         cmake.install()
 
     def package_info(self):
+        self.cpp_info.set_property("pkg_config_name", "JSBSim")
         self.cpp_info.libs = ["JSBSim", "Aeromatic++"]
         self.cpp_info.includedirs = ["include", "include/JSBSim"]

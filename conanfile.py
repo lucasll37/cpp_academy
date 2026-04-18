@@ -26,7 +26,7 @@ class MLInferenceRecipe(ConanFile):
         self.requires("flac/1.4.3", override=True)
         self.requires("aws-sdk-cpp/1.11.692")
         self.requires("amqp-cpp/4.3.27")
-        
+        self.requires("jsbsim/1.1.11")
         self.requires("onnxruntime/1.17.3")
         # self.requires("onnxruntime-gpu/1.17.3)
         # inclui suporte CUDA
@@ -40,7 +40,7 @@ class MLInferenceRecipe(ConanFile):
         self.tool_requires("bison/3.8.2")
 
         # Documentação — gera HTML/PDF a partir de comentários no código
-        # self.tool_requires("doxygen/1.9.4")
+        self.tool_requires("doxygen/1.9.4")
 
         # Build systems alternativos — úteis ao integrar dependências que não usam Meson
         # self.tool_requires("cmake/3.27.0")

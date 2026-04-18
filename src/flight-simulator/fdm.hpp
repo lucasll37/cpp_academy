@@ -71,7 +71,7 @@ public:
     void set_controls(const ControlInputs& ctrl);
 
     // Lê o estado atual da aeronave
-    FlightState state() const;
+    FlightState state();
 
     // Acesso direto ao FDM (para propriedades avançadas)
     JSBSim::FGFDMExec& fdm() { return fdm_; }

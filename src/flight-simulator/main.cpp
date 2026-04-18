@@ -42,7 +42,7 @@ int main() {
     // ── Inicialização ─────────────────────────────────────────────────────
     fmt::println("=== JSBSim Flight Dynamics Demo ===\n");
 
-    flight::FlightModel   fdm("c172p");
+    flight::FlightModel   fdm("c172p", "src/flight-simulator/deps/jsbsim/data");
     flight::Autopilot     ap;
     flight::FlightLogger  logger("flight_data.csv", /*every_n=*/12);
 

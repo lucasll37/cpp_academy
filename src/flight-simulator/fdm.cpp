@@ -1,4 +1,5 @@
 #include "fdm.hpp"
+#include "JSBSim/initialization/FGInitialCondition.h"
 
 #include <spdlog/spdlog.h>
 #include <stdexcept>
@@ -44,31 +45,27 @@ FlightModel::FlightModel(const std::string& aircraft_name,
                          const std::string& root_dir)
     : aircraft_(aircraft_name)
 {
-    const std::string root = resolve_root(root_dir);
+    const std::string root = fs::absolute(resolve_root(root_dir)).string();
 
     fdm_.SetRootDir(SGPath(root));
-    fdm_.SetAircraftPath(SGPath(root + "/aircraft"));
-    fdm_.SetEnginePath(SGPath(root + "/engine"));
-    fdm_.SetSystemsPath(SGPath(root + "/systems"));
-
-    // Silencia o output padrão do JSBSim para não poluir o terminal
     fdm_.SetDebugLevel(0);
 
     spdlog::info("Carregando aeronave '{}'...", aircraft_name);
 
-    if (!fdm_.LoadModel(aircraft_name)) {
+    if (!fdm_.LoadModel(SGPath(root + "/aircraft"),
+                        SGPath(root + "/engine"),
+                        SGPath(root + "/systems"),
+                        aircraft_name)) {
         throw std::runtime_error("Falha ao carregar aeronave: " + aircraft_name);
     }
 
-    // Condições iniciais: voo nivelado a 3000 ft, 90 kts
     auto* ic = fdm_.GetIC();
     ic->SetAltitudeAGLFtIC(3000.0);
     ic->SetVcalibratedKtsIC(90.0);
-    ic->SetPsiDegIC(90.0);   // heading leste
+    ic->SetPsiDegIC(90.0);
 
     fdm_.RunIC();
 
-    // Motor ligado (throttle inicial em 80%)
     fdm_.SetPropertyValue("fcs/throttle-cmd-norm[0]", 0.8);
     fdm_.SetPropertyValue("propulsion/engine[0]/set-running", 1.0);
 
@@ -86,7 +83,7 @@ void FlightModel::set_controls(const ControlInputs& ctrl) {
     fdm_.SetPropertyValue("fcs/throttle-cmd-norm[0]", ctrl.throttle);
 }
 
-FlightState FlightModel::state() const {
+FlightState FlightModel::state() {
     FlightState s;
 
     s.altitude_ft   = fdm_.GetPropertyValue("position/h-sl-ft");

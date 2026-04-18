@@ -35,7 +35,7 @@ onnx_dep        = dependency('onnxruntime')
 opencv_dep      = dependency('opencv')
 amqpcpp_dep     = dependency('amqpcpp')
 boost_dep       = dependency('boost')
-jsbsim_dep      = dependency('jsbsim')
+jsbsim_dep      = dependency('JSBSim')
 
 qt6          = import('qt6')
 qt_dep       = dependency('qt6', modules: ['Core', 'Gui', 'Widgets'])
