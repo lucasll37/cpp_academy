@@ -73,8 +73,8 @@ int main(int argc, char* argv[]) {
     fmt::println("=== Plugin Registry Demo ===\n");
 
     // Diretório de plugins: primeiro argumento ou padrão.
-    // std::string plugin_dir = (argc > 1) ? argv[1] : "plugins";
-    std::string plugin_dir = (argc > 1) ? argv[1] : binary_dir() + "/../plugins";
+    std::string plugin_dir = (argc > 1) ? argv[1] : "plugins";
+    // std::string plugin_dir = (argc > 1) ? argv[1] : binary_dir() + "/../plugins";
 
     auto& reg = plugin::ControllerRegistry::instance();
 
