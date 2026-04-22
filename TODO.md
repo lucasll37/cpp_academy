@@ -1,5 +1,4 @@
 protobuf
-RabbitMQ
 
 design patterns
 microservices
