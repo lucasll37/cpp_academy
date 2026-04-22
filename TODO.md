@@ -1,7 +1,5 @@
 protobuf
 RabbitMQ
-docker
-json
 
 design patterns
 microservices
@@ -14,6 +12,3 @@ src/docker/ -> database, rabbitmq, redis
 
 embarcado?
 esp-32
-
-
-atatch debugger num processo rodando | como isso ocorre na pratica

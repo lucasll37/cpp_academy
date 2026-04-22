@@ -2,23 +2,15 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "C/C++ Runner: Debug Session",
+      "name": "Launch app",
       "type": "cppdbg",
       "request": "launch",
+      "program": "${workspaceFolder}/dist/bin/qt_academy",
       "args": [],
-      "stopAtEntry": false,
-      "externalConsole": false,
-      "cwd": "/home/lucas/Projects/cpp_academy/python",
-      "program": "/home/lucas/Projects/cpp_academy/python/build/Debug/outDebug",
+      "cwd": "${workspaceFolder}",
       "MIMode": "gdb",
-      "miDebuggerPath": "gdb",
-      "setupCommands": [
-        {
-          "description": "Enable pretty-printing for gdb",
-          "text": "-enable-pretty-printing",
-          "ignoreFailures": true
-        }
-      ]
+      "miDebuggerPath": "/usr/bin/gdb",
+      "stopAtEntry": false
     }
   ]
 }
