@@ -221,7 +221,7 @@ cd dist && ninja yolo
 python src/yolo/export_yolo.py
 
 # Rodar em imagem
-./bin/yolo src/yolo/models/yolov10n.onnx src/yolo/images/teste.jpg
+./bin/yolo src/yolo/models/yolov10m.onnx src/yolo/images/teste.jpg
 
 # Benchmark
 ./bin/yolo src/yolo/models/yolov10m.onnx src/yolo/images/teste.jpg --bench

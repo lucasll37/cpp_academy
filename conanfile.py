@@ -55,11 +55,13 @@ class MLInferenceRecipe(ConanFile):
         self.options["aws-sdk-cpp"].s3       = True
         
         self.options["opencv"].with_ffmpeg    = False
-        self.options["opencv"].with_gtk       = False  # sem GUI GTK (usa Qt se precisar)
+        self.options["opencv"].with_wayland   = False
+        self.options["opencv"].with_v4l       = True
+        self.options["opencv"].with_gtk       = True
         self.options["opencv"].dnn            = False  # não precisa — usamos ONNX Runtime
         self.options["opencv"].with_jpeg2000  = False
         self.options["opencv"].with_tiff      = False
-        self.options["opencv"].with_webp      = False  # raiz do conflito
+        self.options["opencv"].with_webp      = False
 
     def generate(self):
         pc = PkgConfigDeps(self)
