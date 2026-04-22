@@ -62,3 +62,4 @@ asm_x87_log2:
     addq    $8, %rsp
     ret
     .size asm_x87_log2, .-asm_x87_log2
+    .section .note.GNU-stack,"",@progbits

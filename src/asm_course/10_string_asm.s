@@ -57,3 +57,4 @@ asm_repe_cmpsb:
 .cmps_done:
     ret
     .size asm_repe_cmpsb, .-asm_repe_cmpsb
+    .section .note.GNU-stack,"",@progbits

@@ -144,3 +144,4 @@ asm_print_variadic:
     xorb    %al, %al            # al = 0 → sem argumentos SSE
     jmp     printf@plt          # tail call para printf
     .size asm_print_variadic, .-asm_print_variadic
+    .section .note.GNU-stack,"",@progbits

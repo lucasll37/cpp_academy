@@ -101,3 +101,4 @@ asm_prefetch_copy:
 .pfcopy_done:
     ret
     .size asm_prefetch_copy, .-asm_prefetch_copy
+    .section .note.GNU-stack,"",@progbits

@@ -240,3 +240,4 @@ asm_isort:
     popq    %rbp
     ret
     .size asm_isort, .-asm_isort
+    .section .note.GNU-stack,"",@progbits

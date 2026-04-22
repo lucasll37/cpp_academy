@@ -44,3 +44,4 @@ asm_syscall3:
     syscall
     ret
     .size asm_syscall3, .-asm_syscall3
+    .section .note.GNU-stack,"",@progbits

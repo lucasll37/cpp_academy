@@ -145,13 +145,13 @@ void demo_cmov() {
     auto abs_cmov = [](int n) -> int {
         int r, neg;
         asm volatile (
-            "movl %1, %0\n\t"        // r = n
-            "movl %1, %2\n\t"
-            "negl %2\n\t"            // neg = -n
-            "testl %1, %1\n\t"       // SF = (n < 0)?
-            "cmovsl %2, %0"          // se negativo: r = -n
-            : "=r"(r), "=r"(neg)
-            : "1"(n), "2"(0)
+            "movl  %2, %0\n\t"   // r   = n
+            "movl  %2, %1\n\t"   // neg = n
+            "negl  %1\n\t"       // neg = -n
+            "testl %2, %2\n\t"   // flags(n)
+            "cmovsl %1, %0"      // se n<0: r = neg
+            : "=&r"(r), "=&r"(neg)   // %0, %1: outputs, earlyclobber
+            : "r"(n)                  // %2: input puro
         );
         return r;
     };
@@ -193,12 +193,19 @@ void demo_setcc() {
     int x = 3, y = 5;
     uint8_t r;
     fmt::print("\n  Comparando {} vs {}:\n", x, y);
-    asm volatile ("cmpl %1,%0; sete  %%al; movzbl %%al,%0" : "=r"(r) : "r"(x),"r"(y) : "%al"); fmt::print("    sete  (==): {}\n", r);
-    asm volatile ("cmpl %1,%0; setne %%al; movzbl %%al,%0" : "=r"(r) : "r"(x),"r"(y) : "%al"); fmt::print("    setne (!=): {}\n", r);
-    asm volatile ("cmpl %1,%0; setl  %%al; movzbl %%al,%0" : "=r"(r) : "r"(x),"r"(y) : "%al"); fmt::print("    setl  (<) : {}\n", r);
-    asm volatile ("cmpl %1,%0; setle %%al; movzbl %%al,%0" : "=r"(r) : "r"(x),"r"(y) : "%al"); fmt::print("    setle (<=): {}\n", r);
-    asm volatile ("cmpl %1,%0; setg  %%al; movzbl %%al,%0" : "=r"(r) : "r"(x),"r"(y) : "%al"); fmt::print("    setg  (>) : {}\n", r);
-    asm volatile ("cmpl %1,%0; setge %%al; movzbl %%al,%0" : "=r"(r) : "r"(x),"r"(y) : "%al"); fmt::print("    setge (>=): {}\n", r);
+
+    auto setcc = [&](const char* label, int val) {
+        fmt::print("    {}: {}\n", label, val);
+    };
+
+    int tmp;
+    asm volatile ("cmpl %2,%1; sete  %%al; movzbl %%al,%0" : "=r"(tmp) : "r"(x),"r"(y) : "%al"); setcc("sete  (==)", tmp);
+    asm volatile ("cmpl %2,%1; setne %%al; movzbl %%al,%0" : "=r"(tmp) : "r"(x),"r"(y) : "%al"); setcc("setne (!=)", tmp);
+    asm volatile ("cmpl %2,%1; setl  %%al; movzbl %%al,%0" : "=r"(tmp) : "r"(x),"r"(y) : "%al"); setcc("setl  (<) ", tmp);
+    asm volatile ("cmpl %2,%1; setle %%al; movzbl %%al,%0" : "=r"(tmp) : "r"(x),"r"(y) : "%al"); setcc("setle (<=)", tmp);
+    asm volatile ("cmpl %2,%1; setg  %%al; movzbl %%al,%0" : "=r"(tmp) : "r"(x),"r"(y) : "%al"); setcc("setg  (>) ", tmp);
+    asm volatile ("cmpl %2,%1; setge %%al; movzbl %%al,%0" : "=r"(tmp) : "r"(x),"r"(y) : "%al"); setcc("setge (>=)", tmp);
+
 }
 
 // ── Demo 5: Loop com LOOP instruction ────────────────────────

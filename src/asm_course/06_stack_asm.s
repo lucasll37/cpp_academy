@@ -192,3 +192,4 @@ asm_fibonacci:
     popq    %rbp
     ret
     .size asm_fibonacci, .-asm_fibonacci
+    .section .note.GNU-stack,"",@progbits

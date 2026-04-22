@@ -62,3 +62,4 @@ asm_scale_array:
 .scale_done:
     ret
     .size asm_scale_array, .-asm_scale_array
+    .section .note.GNU-stack,"",@progbits

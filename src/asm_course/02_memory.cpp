@@ -69,11 +69,11 @@ void demo_displacement() {
 
     int rx, ry, rz;
     asm volatile (
-        "movl   (%1), %0\n\t"    // offset 0: x
-        "movl  4(%1), %2\n\t"    // offset 4: y  (int=4 bytes)
-        "movl  8(%1), %3"        // offset 8: z
-        : "=r"(rx), "=r"(ry), "=r"(rz)   // ← erro intencional de ordem
-        : "1"(&p)
+        "movl   (%3), %0\n\t"    // offset 0: x
+        "movl  4(%3), %1\n\t"    // offset 4: y
+        "movl  8(%3), %2"        // offset 8: z
+        : "=r"(rx), "=r"(ry), "=r"(rz)   // outputs: %0, %1, %2
+        : "r"(&p)                          // input:   %3
     );
     // Nota: a sintaxe "1"(&p) significa "use o mesmo reg do operando 1"
     // Vamos fazer corretamente:
@@ -193,11 +193,11 @@ void demo_rip_relative() {
 
     static int global_var = 0xBEEF;
     int lido;
-
     asm volatile (
-        "movl %1(%%rip), %0"   // lê global_var via RIP-relative
+        "movl %1, %0"          // o compilador já emite RIP-relative para o acesso
         : "=r"(lido)
-        : "p"(&global_var)     // "p" → ponteiro para memória
+        : "m"(global_var)      // constraint "m" = acesso a memória — o compilador
+                            // gera global_var(%rip) automaticamente em PIE
     );
     // Nota: na prática o compilador gera isso automaticamente para globais.
     // Mostramos aqui apenas para didática.

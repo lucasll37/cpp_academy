@@ -54,18 +54,14 @@ void demo_push_pop() {
     uint64_t rsp_before, rsp_after;
 
     asm volatile (
-        // Captura RSP antes
-        "movq %%rsp, %4\n\t"
-        // Push de dois valores
-        "pushq %2\n\t"           // RSP -= 8; [RSP] = val1
-        "pushq %3\n\t"           // RSP -= 8; [RSP] = val2
-        // Pop em ordem inversa (LIFO)
-        "popq %0\n\t"            // pop2 = val2 (último que entrou)
-        "popq %1\n\t"            // pop1 = val1
-        // Captura RSP depois (deve ser igual ao original)
-        "movq %%rsp, %5"
-        : "=r"(pop2), "=r"(pop1), "=r"(rsp_before), "=r"(rsp_after)
-        : "2"(val1), "3"(val2), "4"(0UL), "5"(0UL)
+        "movq %%rsp, %2\n\t"     // %2 = rsp_before
+        "pushq %4\n\t"
+        "pushq %5\n\t"
+        "popq  %1\n\t"           // %1 = pop1 (val2, LIFO)
+        "popq  %0\n\t"           // %0 = pop2 (val1)
+        "movq %%rsp, %3"         // %3 = rsp_after
+        : "=r"(pop2), "=r"(pop1), "=r"(rsp_before), "=r"(rsp_after)  // %0–%3
+        : "r"(val1), "r"(val2)                                          // %4, %5
     );
 
     // Versão sem a confusão acima — mais clara:
@@ -73,15 +69,15 @@ void demo_push_pop() {
     uint64_t sp_before, sp_after_push, sp_after_pop;
     asm volatile (
         "movq %%rsp, %0\n\t"     // sp_before
-        "pushq %3\n\t"
-        "pushq %4\n\t"
+        "pushq %5\n\t"
+        "pushq %6\n\t"
         "movq %%rsp, %1\n\t"     // sp_after_push
-        "popq %5\n\t"            // primeiro a sair = val2
-        "popq %6\n\t"            // segundo a sair  = val1
+        "popq  %3\n\t"           // popped_first  = val2
+        "popq  %4\n\t"           // popped_second = val1
         "movq %%rsp, %2"         // sp_after_pop
         : "=r"(sp_before), "=r"(sp_after_push), "=r"(sp_after_pop),
-          "=r"(popped_first), "=r"(popped_second)
-        : "3"(val1), "4"(val2), "5"(0UL), "6"(0UL)
+        "=r"(popped_first), "=r"(popped_second)                      // %0–%4
+        : "r"(val1), "r"(val2)                                          // %5, %6
     );
 
     fmt::print("  RSP antes:       0x{:016X}\n", sp_before);

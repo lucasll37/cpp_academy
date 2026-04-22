@@ -85,3 +85,4 @@ asm_avx_fma:
     vzeroupper
     ret
     .size asm_avx_fma, .-asm_avx_fma
+    .section .note.GNU-stack,"",@progbits
