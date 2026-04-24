@@ -1,5 +1,3 @@
-jsbsim_dep = dependency('JSBSim')
-
 flight_inc = include_directories('.', is_system: true)
 
 flight_sources = files(

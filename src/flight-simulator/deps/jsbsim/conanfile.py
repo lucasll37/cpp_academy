@@ -48,4 +48,4 @@ class Recipe(ConanFile):
     def package_info(self):
         self.cpp_info.set_property("pkg_config_name", "jsbsim")
         self.cpp_info.libs = ["JSBSim", "Aeromatic++"]
-        self.cpp_info.includedirs = ["include", "include/jsbsim"] # JSBSim
+        self.cpp_info.includedirs = ["include", "include/JSBSim"]
