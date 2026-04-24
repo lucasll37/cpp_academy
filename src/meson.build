@@ -5,9 +5,9 @@
 # subdir('collision')
 # # subdir('concepts') #
 # subdir('concurrency')
-subdir('coroutines')
+# subdir('coroutines')
 # # subdir('database') #
-# subdir('design-of-pattern')
+subdir('design-of-pattern')
 # subdir('ecs')
 # subdir('embed-python')
 # subdir('flight-simulator')
