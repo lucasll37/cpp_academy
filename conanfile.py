@@ -2,12 +2,17 @@ from conan import ConanFile
 from conan.tools.gnu import PkgConfigDeps
 from conan.tools.meson import MesonToolchain, Meson
 from conan.tools.cmake import CMakeDeps
+from conan.tools.system.package_manager import Apt
 
 class MLInferenceRecipe(ConanFile):
     name = "academy"
     version = "1.0.0"
     settings = "arch", "build_type", "compiler", "os"
     exports_sources = "meson*", "src/*", "include/*", "proto/*", "python/*", "tests/*", "conanfile.py"
+    
+    def system_requirements(self):
+        apt = Apt(self)
+        apt.install(["graphviz"])
 
     def requirements(self):
         self.requires("gtest/1.14.0")

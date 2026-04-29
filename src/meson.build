@@ -8,9 +8,10 @@
 # subdir('coroutines')
 # # subdir('database') #
 # subdir('design-of-pattern')
+subdir('doxygen')
 # subdir('ecs')
 # subdir('embed-python')
-subdir('file_io')
+# # subdir('file_io') #
 # subdir('flight-simulator')
 # subdir('http-client')
 # subdir('inline_asm')
@@ -29,5 +30,6 @@ subdir('file_io')
 # subdir('sfml_bullet')
 # subdir('sfml_bullet2')
 # subdir('smart-pointers')
+# # subdir('solid') #
 # subdir('templates')
 # subdir('yolo')

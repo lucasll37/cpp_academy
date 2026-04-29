@@ -37,7 +37,9 @@ configure: ## Configure the project for building.
 		--profile:host=default \
 		--build=missing \
 		--settings=build_type=$(CONAN_BUILD_TYPE) \
-		--remote=conancenter
+		--remote=conancenter \
+		-c tools.system.package_manager:mode=install \
+		-c tools.system.package_manager:sudo=True
 
 	source $(BUILD_DIR)/conanbuild.sh
 

@@ -57,7 +57,6 @@ public_headers = include_directories('include')
 # ============================================
 # Subdiretórios
 # ============================================
-subdir('docs')
 subdir('proto')
 subdir('src')
 # subdir('tests')

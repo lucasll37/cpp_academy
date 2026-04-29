@@ -1,0 +1,207 @@
+# =============================================================================
+#  Doxyfile — Configuração do Doxygen para cpp_academy/doxygen
+# =============================================================================
+#
+#  Como usar:
+#    doxygen Doxyfile              → gera a documentação manualmente
+#    cd build && ninja docs        → via Meson (target configurado em meson.build)
+#
+#  Saída:
+#    docs/html/index.html          → abra no browser
+#    docs/latex/                   → compile com `make` para PDF
+#
+#  Documentação completa: https://www.doxygen.nl/manual/config.html
+# =============================================================================
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Identidade do projeto
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Nome do projeto — aparece no topo de todas as páginas HTML.
+PROJECT_NAME           = "cpp_academy — Doxygen Demo"
+
+# Versão exibida na documentação.
+PROJECT_NUMBER         = 1.0.0
+
+# Descrição breve exibida abaixo do nome.
+PROJECT_BRIEF          = "Demonstração de documentação C++ com Doxygen"
+
+# Logotipo do projeto (PNG/JPG, até ~55px de altura). Deixe vazio para omitir.
+PROJECT_LOGO           =
+
+# Diretório de saída principal.
+OUTPUT_DIRECTORY       = @BUILD_ROOT@/docs
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Fontes de entrada
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Diretório raiz dos fontes. Doxygen varre recursivamente se RECURSIVE = YES.
+INPUT                  = @SOURCE_ROOT@/src/doxygen @SOURCE_ROOT@/include
+
+
+# Extensões de arquivo processadas.
+FILE_PATTERNS          = *.cpp *.hpp *.h *.cc *.cxx *.md
+
+# Varrer subdiretórios recursivamente.
+RECURSIVE              = YES
+
+# Padrões a excluir (build, cache, etc.).
+EXCLUDE_PATTERNS       = */build/* */.git/* */node_modules/*
+
+# Arquivos Markdown são tratados como páginas Doxygen.
+EXTENSION_MAPPING      = md=Markdown
+
+# Permite usar @mainpage em arquivos .cpp/.md.
+USE_MDFILE_AS_MAINPAGE =
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Idioma e encoding
+# ─────────────────────────────────────────────────────────────────────────────
+
+OUTPUT_LANGUAGE        = Portuguese
+INPUT_ENCODING         = UTF-8
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  O que documentar
+# ─────────────────────────────────────────────────────────────────────────────
+
+# YES → documenta membros sem comentário Doxygen (útil para explorar código).
+# NO  → documenta apenas o que tem /// ou /**.
+EXTRACT_ALL            = NO
+
+# Documenta membros privados (útil internamente; desabilite para docs públicas).
+EXTRACT_PRIVATE        = NO
+
+# Documenta membros estáticos de arquivo (static em .cpp).
+EXTRACT_STATIC         = YES
+
+# Documenta entidades anônimas (namespaces, structs sem nome).
+EXTRACT_ANON_NSPACES   = NO
+
+# Inclui definições de macro documentadas.
+MACRO_EXPANSION        = YES
+
+# Processa diretivas #if / #ifdef para código condicional.
+ENABLE_PREPROCESSING   = YES
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Saída HTML (principal)
+# ─────────────────────────────────────────────────────────────────────────────
+
+GENERATE_HTML          = YES
+HTML_OUTPUT            = html
+
+# Tema moderno (requer doxygen-awesome-css instalado; deixe vazio para padrão).
+# HTML_EXTRA_STYLESHEET  = docs/doxygen-awesome.css
+
+# Gera barra de pesquisa em JavaScript no lado do cliente.
+SEARCHENGINE           = YES
+
+# Gera um índice em árvore no painel lateral.
+GENERATE_TREEVIEW      = YES
+
+# Largura do painel lateral (pixels).
+TREEVIEW_WIDTH         = 250
+
+# Gera timestamps nas páginas HTML (YES mostra data de geração).
+HTML_TIMESTAMP         = NO
+
+# Numera seções nos documentos.
+SECTION_NUMBER         = NO
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Saída LaTeX / PDF (opcional)
+# ─────────────────────────────────────────────────────────────────────────────
+
+GENERATE_LATEX         = NO    # Mude para YES e execute `make` em docs/latex/
+LATEX_OUTPUT           = latex
+COMPACT_LATEX          = NO
+PAPER_TYPE             = a4
+PDF_HYPERLINKS         = YES
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Diagramas e grafos (requer graphviz instalado)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Usa o programa `dot` do Graphviz para gerar diagramas.
+HAVE_DOT               = YES
+
+# Gera diagrama de herança de classes.
+CLASS_DIAGRAMS         = YES
+
+# Gera grafo completo de dependências de includes.
+INCLUDE_GRAPH          = YES
+
+# Gera grafo de quem inclui o arquivo.
+INCLUDED_BY_GRAPH      = YES
+
+# Gera grafo de chamadas de funções (pode ser lento em projetos grandes).
+CALL_GRAPH             = NO
+CALLER_GRAPH           = NO
+
+# Gera grafo de colaboração (composição/agregação entre classes).
+COLLABORATION_GRAPH    = YES
+
+# Formato dos grafos: png, svg, pdf.
+DOT_IMAGE_FORMAT       = svg
+
+# Número máximo de nós no grafo de dependências (evita grafos ilegíveis).
+MAX_DOT_GRAPH_DEPTH    = 3
+
+# Diretório onde o executável `dot` está.
+# DOT_PATH             =   # deixe vazio se `dot` está no PATH
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Outras saídas (todas desabilitadas por padrão)
+# ─────────────────────────────────────────────────────────────────────────────
+
+GENERATE_XML           = NO    # útil para integração com Sphinx ou Breathe
+GENERATE_MAN           = NO    # páginas man — útil para bibliotecas de sistema
+GENERATE_RTF           = NO
+GENERATE_DOCBOOK       = NO
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Warnings e qualidade
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Exibe aviso para cada parâmetro não documentado.
+WARN_IF_UNDOCUMENTED   = YES
+
+# Exibe aviso quando @param não corresponde a parâmetros reais.
+WARN_IF_DOC_ERROR      = YES
+
+# Nível de detalhamento: 1 (silencioso) a 9 (muito verboso).
+VERBOSITY              = 2
+
+# Formato de warnings: útil para integrar com CI.
+WARN_FORMAT            = "$file:$line: $text"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Referências cruzadas e hiperlinks
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Transforma identificadores em hiperlinks automaticamente.
+AUTOLINK_SUPPORT       = YES
+
+# Gera referências a arquivos de fonte na documentação.
+SOURCE_BROWSER         = YES
+
+# Faz referências cruzadas entre a doc e o código fonte.
+REFERENCES_LINK_SOURCE = YES
+
+# Inline os fontes na documentação HTML.
+INLINE_SOURCES         = NO
+
+# Numera linhas no code browser.
+STRIP_CODE_COMMENTS    = NO
