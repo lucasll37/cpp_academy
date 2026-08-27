@@ -1,0 +1,110 @@
+% =============================================================================
+%  C++ Academy - Relatorio de Topicos de C++
+%  Arquivo mestre. Nao coloque texto aqui: cada capitulo vive em chapters/.
+%
+%  Compilar:  make          (PDF completo em build/report.pdf)
+%             make watch    (recompila a cada gravacao)
+%             make view     (abre o PDF)
+%             make CHAPTER=02-fundamentos-da-linguagem draft   (so um capitulo)
+% =============================================================================
+
+% -----------------------------------------------------------------------------
+%  Classe do documento.
+%  Fica aqui, e nao no preambulo, para que este seja o unico arquivo do
+%  projeto com \documentclass -- e assim o Overleaf escolha sozinho o arquivo
+%  mestre correto ao importar o .zip do `make overleaf`.
+% -----------------------------------------------------------------------------
+\documentclass[english,letterpaper,11pt]{article}
+
+% -----------------------------------------------------------------------------
+%  Metadados do documento (usados pela capa e pela folha de rosto)
+% -----------------------------------------------------------------------------
+\newcommand{\mytitle}{C++ Academy --- Um Curso Completo de C++ Moderno}
+\newcommand{\myauthors}{C++ Academy}
+\newcommand{\mydate}{27 de agosto de 2026}
+
+% -----------------------------------------------------------------------------
+%  Pacotes, estilos e configuracoes globais
+% -----------------------------------------------------------------------------
+\input{assets/preamble.tex}
+
+% -----------------------------------------------------------------------------
+%  Compilacao parcial de um unico capitulo:
+%      make CHAPTER=02-fundamentos-da-linguagem draft
+%  O alvo `draft` define \onlychapter e o \includeonly abaixo limita o corpo
+%  aquele arquivo, preservando a numeracao de secoes e as referencias cruzadas
+%  (o .aux completo continua sendo reaproveitado).
+% -----------------------------------------------------------------------------
+\ifdefined\onlychapter
+  \includeonly{chapters/\onlychapter}
+\fi
+
+\begin{document}
+
+% -----------------------------------------------------------------------------
+%  Capa, folha de rosto, sumario, lista de figuras e de tabelas
+% -----------------------------------------------------------------------------
+\input{chapters/00-frontmatter.tex}
+
+% -----------------------------------------------------------------------------
+%  Corpo do relatorio - um \include por capitulo.
+%  A ordem segue a trilha didatica do README.md da raiz do repositorio:
+%  etapas 1 a 5 formam o nucleo da linguagem; da 6 em diante e ecossistema.
+%  Para adicionar um capitulo novo:
+%    1. crie chapters/13-nome-do-capitulo.tex
+%    2. acrescente a linha \include correspondente aqui
+% -----------------------------------------------------------------------------
+\include{chapters/01-introducao}
+\include{chapters/02-fundamentos-da-linguagem}
+\include{chapters/03-biblioteca-padrao}
+\include{chapters/04-programacao-generica}
+\include{chapters/05-design-e-arquitetura}
+\include{chapters/06-concorrencia}
+\include{chapters/07-rede-e-dados}
+\include{chapters/08-graficos-e-simulacao}
+\include{chapters/09-baixo-nivel}
+\include{chapters/10-interop-e-visao}
+\include{chapters/11-ferramentas}
+
+% -----------------------------------------------------------------------------
+%  Capitulos 13 a 16: os assuntos que o repositorio ganhou depois da primeira
+%  edicao deste relatorio. A ordem segue a mesma logica dos anteriores --- do
+%  que a linguagem OFERECE para o que ela CUSTA:
+%    13  vocabulario e compile-time  (o que a biblioteca padrao da de graca)
+%    14  texto, tempo e bits         (os dominios em que o C++ e traicoeiro)
+%    15  o modelo de objeto          (o que ha por baixo de virtual e de sizeof)
+%    16  corretude e desempenho      (como saber se esta certo, e se esta rapido)
+% -----------------------------------------------------------------------------
+\include{chapters/13-vocabulario-e-compile-time}
+\include{chapters/14-texto-tempo-e-bits}
+\include{chapters/15-modelo-de-objeto-por-dentro}
+\include{chapters/16-corretude-e-desempenho}
+
+\include{chapters/12-apendice-trilhas}
+
+% -----------------------------------------------------------------------------
+%  Bibliografia (references.bib), no estilo new-aiaa carregado pelo preambulo.
+%  O documento nao carrega babel, entao o titulo vem em ingles por padrao e
+%  precisa ser traduzido na mao -- mesmo caso do \indexname mais abaixo.
+% -----------------------------------------------------------------------------
+\renewcommand{\refname}{Referências}
+\renewcommand{\bibname}{Referências}
+\bibliography{references}
+
+% -----------------------------------------------------------------------------
+%  Material de consulta: glossario e indice remissivo.
+%  O glossario usa \printnoidxglossary (resolvido pelo proprio LaTeX); o indice
+%  usa makeindex, que o latexmk dispara sozinho ao ver o arquivo .idx.
+% -----------------------------------------------------------------------------
+\cleardoublepage
+% Um glossario e material de consulta: o leitor procura "RAII" queira ou nao
+% o texto ter escrito \gls naquele ponto. \glsaddall forca a impressao de todos
+% os verbetes, e nao so dos citados.
+\glsaddall
+\printnoidxglossary[title={Glossário}, style=altlist]
+
+\cleardoublepage
+\renewcommand{\indexname}{Índice remissivo}
+\printindex
+
+\end{document}

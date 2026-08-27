@@ -1,0 +1,12 @@
+# src/meson/tabela.txt
+#
+# Entrada do gerador de código. Cada linha "chave = valor" vira uma entrada de
+# um array constexpr no header gerado. Editar este arquivo e recompilar é o
+# teste do dia: o Ninja tem de reexecutar o gerador SOZINHO, porque o
+# custom_target declarou este arquivo como `input`.
+setup    = configura o build dir a partir do fonte
+compile  = compila o que mudou (chama o Ninja)
+test     = roda os alvos registrados com test()
+install  = copia os artefatos para o prefix
+introspect = despeja a configuração do build em JSON
+configure = altera opções de um build dir já existente

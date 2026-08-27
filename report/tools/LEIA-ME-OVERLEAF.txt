@@ -1,0 +1,55 @@
+LEIA-ME -- importacao no Overleaf
+=================================
+
+Este .zip foi gerado por `make overleaf` a partir do repositorio do
+relatorio de topicos de C++ do cpp_academy. Contem apenas o que o
+Overleaf precisa para compilar:
+
+    report.tex        arquivo mestre
+    assets/           preambulo, template MASA, tocstyle.sty
+    chapters/         um .tex por secao de primeiro nivel
+    figures/          diretorio de imagens (vazio: as figuras sao TikZ,
+                      escritas dentro dos proprios capitulos)
+    references.bib    bibliografia
+    new-aiaa.bst      estilo bibliografico
+
+Como importar
+-------------
+
+1. No Overleaf:  New Project > Upload Project  e selecione este .zip.
+
+2. Confira o arquivo mestre:
+
+       Menu > Settings > Main document  ->  report.tex
+
+   O Overleaf costuma acertar sozinho, porque report.tex e o unico arquivo
+   do projeto com \documentclass -- e por isso que ele fica la, e nao junto
+   do resto do preambulo em assets/MASAfrontmatter.tex. Se ainda assim o
+   arquivo mestre vier errado, a compilacao falha com
+
+       ! Emergency stop.  (job aborted, no legal \end found)
+
+   e o topo do log mostra qual arquivo o Overleaf tentou compilar.
+
+3. Compilador: pdfLaTeX (o padrao). Nao e preciso shell-escape.
+
+A primeira compilacao e lenta: o documento tem sumario, lista de figuras,
+lista de tabelas, glossario e indice remissivo, e o latexmk precisa de
+varias passagens ate a paginacao estabilizar.
+
+O que ficou de fora, e por que
+------------------------------
+
+Tudo que serve apenas ao fluxo local:
+
+    .latexmkrc        fixa out_dir='build'; no Overleaf o PDF nao seria
+                      encontrado no lugar esperado
+    Makefile          automacao local (build, watch, conferencia, export)
+    tools/            conversao para .doc no modelo PTC do IEAv
+    scripts/          check-fontes.py, que confere cada transcricao de
+                      codigo contra o arquivo correspondente em ../src/
+
+O repositorio completo continua sendo a fonte de verdade -- inclusive
+porque so nele os capitulos ficam ao lado de ../src/, que e o codigo que
+eles descrevem. O Overleaf serve para revisao e edicao colaborativa, nao
+como copia principal.

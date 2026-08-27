@@ -1,0 +1,1879 @@
+% =============================================================================
+%  Biblioteca padrão
+%  Cobre a Etapa 2 da trilha: stl, ranges, file_io, vocabulary_types, memory
+%  e coroutines. Todos os seis alvos são construídos e instalados em dist/bin;
+%  não há subdir() comentado em src/meson.build.
+% =============================================================================
+
+% =============================================================================
+\section{A biblioteca padrão}
+\label{sec:biblioteca}
+% =============================================================================
+
+A biblioteca padrão do C++ não é um repertório de utilidades avulsas: é um
+\emph{sistema}, com um princípio de projeto explícito. Containers de um lado,
+algoritmos do outro, e \gls{iterador} como a cola que evita $N \times M$
+implementações --- $N$ containers vezes $M$ algoritmos.
+
+Este capítulo percorre esse sistema em seis camadas: os containers e os
+algoritmos que os manipulam (\cref{sec:stl}); a releitura que o C++20 fez de
+tudo isso com \emph{ranges} (\cref{sec:ranges}); a entrada e a saída
+(\cref{sec:file-io}); os tipos de vocabulário que atravessam fronteiras de
+biblioteca (\cref{sec:vocabulary}); por baixo de tudo, de onde vem a memória
+que os containers usam (\cref{sec:memory}); e, por último, o menor cabeçalho da
+biblioteca inteira --- o \cabecalho{coroutine}, com que o compilador constrói
+funções capazes de parar no meio (\cref{sec:coroutines-lib}).
+
+O fio condutor é o mesmo do \cref{sec:fundamentos}: a escolha errada aqui não
+produz erro de compilação nem resposta errada. Produz \textbf{lentidão
+silenciosa} --- ou, pior, \gls{ub} num programa que passa nos testes.
+
+% =============================================================================
+\subsection{Containers, iteradores e algoritmos}
+\label{sec:stl}
+% =============================================================================
+
+O subprojeto \projeto{stl} abre com uma medição que resume o capítulo inteiro:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/stl/}: 20\,000 inserções mantendo a ordem.}]
+vector (memmove contíguo) :     7 ms
+list   (salto de ponteiro):   976 ms      ← 140×
+\end{lstlisting}
+
+A \classe{std::list} tem a \textbf{melhor} complexidade assintótica para
+inserção no meio --- $O(1)$ dado o iterador, contra $O(n)$ do \texttt{vector} ---
+e o \textbf{pior} desempenho real, por duas ordens de grandeza.
+
+\begin{porque}[por que a complexidade assintótica mente aqui]
+A notação $O(\cdot)$ conta operações e supõe que todas custam igual. Numa
+máquina com cache, isso é falso por um fator de aproximadamente cem: percorrer
+elementos contíguos aproveita a linha de cache inteira e o \emph{prefetcher} do
+processador, enquanto seguir ponteiros para nós espalhados na \emph{heap} paga
+uma falta de cache por elemento. O \texttt{memmove} do \texttt{vector} move
+muitos bytes, mas os move na velocidade da memória; a \texttt{list} move poucos
+bytes, na velocidade das faltas de cache.
+\end{porque}
+
+\subsubsection{Os containers e o que custa cada um}
+
+\begin{table}[htbp]
+\centering
+\caption{Complexidade e disposição em memória dos containers principais.}
+\label{tab:containers}
+\footnotesize
+\begin{tabular}{@{}lllll@{}}
+\toprule
+\textbf{Container} & \textbf{Acesso} & \textbf{Inserção} & \textbf{Busca} & \textbf{Memória} \\
+\midrule
+\texttt{vector}                        & $O(1)$ & $O(1)$ no fim$^*$ & $O(n)$ & contígua \\
+\texttt{deque}                         & $O(1)$ & $O(1)$ nas duas pontas & $O(n)$ & blocos \\
+\texttt{list}                          & $O(n)$ & $O(1)$ com iterador & $O(n)$ & nós \\
+\texttt{map} / \texttt{set}            & ---    & $O(\log n)$ & $O(\log n)$ & nós \\
+\texttt{unordered\_map} / \texttt{set} & ---    & $O(1)$ médio & $O(1)$ médio & baldes \\
+\bottomrule
+\end{tabular}\\[2pt]
+\footnotesize $^*$ amortizado: o \emph{buffer} dobra a cada estouro.
+\end{table}
+
+O crescimento amortizado do \texttt{vector} é o motivo de \texttt{reserve()}
+existir --- e o subprojeto mostra o efeito:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/stl/}: o mesmo laço, com e sem \texttt{reserve}.}]
+inserindo 20 elementos: 0→1 1→2 2→4 4→8 8→16 16→32
+com reserve(20):        0 realocações
+\end{lstlisting}
+
+\begin{armadilha}[\texttt{clear()} não devolve memória, e \texttt{shrink\_to\_fit()} é um pedido]
+\texttt{clear()} zera o \texttt{size} e mantém a \texttt{capacity} intacta ---
+comportamento correto, porque o container supõe que você vai reencher.
+\texttt{shrink\_to\_fit()} é uma \emph{requisição não vinculante}: a
+implementação tem o direito de ignorá-la. A forma que funciona sempre é o
+idioma do vetor vazio: \texttt{std::vector<int>\{\}.swap(v);}.
+\end{armadilha}
+
+\subsubsection{Invalidação de iteradores}
+
+A \gls{invalidacao} é a origem mais comum de \gls{ub} em código que
+``funcionava''. As regras variam por container (\cref{tab:invalidacao}) e não
+são intuitivas --- em particular, a distinção entre invalidar \emph{iteradores}
+e invalidar \emph{referências} pega quase todo mundo.
+
+\begin{table}[htbp]
+\centering
+\caption{O que cada operação invalida.}
+\label{tab:invalidacao}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Operação} & \textbf{Invalida} \\
+\midrule
+\texttt{vector}: realocação                  & \textbf{tudo} \\
+\texttt{vector}: \texttt{erase(it)}          & de \texttt{it} até o fim \\
+\texttt{deque}: \emph{insert}/\emph{erase} no meio & tudo \\
+\texttt{deque}: \texttt{push\_front/back}    & iteradores sim, referências não \\
+\texttt{list}: qualquer                      & só o elemento removido \\
+\texttt{map} / \texttt{set}: \texttt{insert} & nada \\
+\texttt{unordered\_*}: \emph{rehash}         & iteradores sim, referências não \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O caso prático mais frequente é apagar durante a iteração:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A forma errada, a correta e a moderna.}]
+// errado: `it` é invalidado por erase, e o ++it opera sobre lixo
+for (auto it = v.begin(); it != v.end(); ++it)
+    if (pred(*it)) v.erase(it);
+
+// certo: erase DEVOLVE o iterador do próximo
+for (auto it = v.begin(); it != v.end(); )
+    it = pred(*it) ? v.erase(it) : std::next(it);
+
+// melhor (C++20)
+std::erase_if(v, pred);
+\end{lstlisting}
+
+\begin{regra}[guarde índice, não iterador nem referência]
+Se uma posição em um \texttt{vector} precisa sobreviver a uma inserção, guarde
+o \emph{índice}. O índice continua correto depois da realocação; o iterador e a
+referência, não. Vale também para \classe{std::span} e para pares de iteradores
+guardados como membro (\cref{sec:vocabulary}).
+\end{regra}
+
+\subsubsection{\texttt{emplace} contra \texttt{push}, medido}
+
+A crença comum é que \texttt{emplace\_back} é sempre melhor. A medição diz o
+que ele realmente muda:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/stl/}: contadores instrumentados.}]
+push_back(Caro(...))       ctor=1 cópias=0 moves=1
+emplace_back("a","b")      ctor=1 cópias=0 moves=0    ← constrói no lugar
+push_back(lvalue)          ctor=0 cópias=1 moves=0
+push_back(std::move(c))    ctor=0 cópias=0 moves=1    ← idêntico a emplace
+\end{lstlisting}
+
+\texttt{emplace} ganha quando você tem os \textbf{argumentos} do construtor. Com
+um objeto já pronto, \texttt{push\_back(std::move(x))} faz exatamente o mesmo.
+
+\begin{armadilha}[\texttt{emplace\_back} aceita conversões \texttt{explicit} em silêncio]
+Como \texttt{emplace} chama o construtor diretamente, ele passa por cima do
+\texttt{explicit} que você pôs justamente para impedir a conversão acidental
+(\cref{sec:operators}). O que \texttt{push\_back} recusaria,
+\texttt{emplace\_back} constrói sem comentar.
+\end{armadilha}
+
+Para \classe{std::map}, a diferença entre as quatro formas de inserir é
+semântica, não de desempenho (\cref{tab:map-insert}) --- e escolher errado
+sobrescreve ou deixa de sobrescrever dados.
+
+\begin{table}[htbp]
+\centering
+\caption{As quatro formas de pôr um par no \texttt{map}.}
+\label{tab:map-insert}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Forma} & \textbf{Comportamento} \\
+\midrule
+\texttt{m[k] = v}                & insere ou sobrescreve; exige construtor padrão \\
+\texttt{insert(\{k,v\})}         & \textbf{não} sobrescreve \\
+\texttt{insert\_or\_assign(k,v)} & sobrescreve \\
+\texttt{try\_emplace(k, args...)}& só constrói o valor se a chave faltar \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Iteradores: categorias e sentinelas}
+
+A categoria de um iterador não é rótulo documental --- ela decide \textbf{o que
+compila}. \texttt{*(v.begin() + 3)} funciona sobre um \texttt{vector} e não
+compila sobre uma \texttt{list}, porque \texttt{list} não tem
+\texttt{operator+}. A saída genérica é \texttt{std::advance}, que é $O(1)$ ou
+$O(n)$ conforme a categoria --- e essa especialização, que antes do C++17 exigia
+\emph{tag dispatch} com \emph{overloads}, hoje é um \texttt{if constexpr}.
+
+Escrever um iterador do zero exige cinco \emph{typedefs} ---
+\texttt{iterator\_category}, \texttt{value\_type}, \texttt{difference\_type},
+\texttt{pointer}, \texttt{reference} --- e os operadores da categoria escolhida.
+O \texttt{Intervalo} do subprojeto gera os números sob demanda, sem armazenar
+nada, e ainda assim \texttt{accumulate}, \texttt{count\_if} e \texttt{copy}
+funcionam sobre ele.
+
+A novidade do C++20 é o \textbf{sentinela}: até então, \texttt{begin()} e
+\texttt{end()} tinham de ser do mesmo tipo, o que obrigava o ``iterador de fim''
+a carregar estado inútil. Agora o fim pode ser um tipo diferente, que só sabe
+responder ``acabou?'':
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Um sentinela em \texttt{src/stl/demo\_iterators.hpp} (condensado).}]
+struct SentinelaDeNulo {};              // não guarda nada
+
+class IteradorDeCString {
+public:
+    using iterator_category = std::forward_iterator_tag;
+    using value_type        = char;
+    using difference_type   = std::ptrdiff_t;
+    // ...
+    bool operator==(const IteradorDeCString& o) const { return p_ == o.p_; }
+    // A comparação com o SENTINELA é o que fecha o laço:
+    bool operator==(SentinelaDeNulo) const { return *p_ == '\0'; }
+
+private:
+    const char* p_;
+};
+\end{lstlisting}
+
+Isso percorre uma \emph{C-string} \textbf{sem chamar \texttt{strlen} antes} ---
+antes do C++20, o \texttt{end()} teria de ser um ponteiro para o \texttt{'\\0'},
+o que exigiria percorrer a string para poder percorrê-la. É o mesmo mecanismo
+que permite a \texttt{views::take\_while} ser preguiçosa de verdade
+(\cref{sec:ranges}).
+
+\subsubsection{\cabecalho{algorithm}: peça a menor garantia que resolve}
+
+\begin{table}[htbp]
+\centering
+\caption{Os algoritmos de ordenação e o que cada um promete.}
+\label{tab:ordenar}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Algoritmo} & \textbf{Custo} & \textbf{Garante} \\
+\midrule
+\texttt{sort}         & $O(n \log n)$ & tudo ordenado \\
+\texttt{stable\_sort} & $O(n \log n)$ + memória & \ldots{} e a ordem relativa dos iguais \\
+\texttt{partial\_sort}& $O(n \log k)$ & os $k$ primeiros \\
+\texttt{nth\_element} & $O(n)$ médio  & só a posição $n$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Peça a \textbf{menor} garantia que resolve o problema: é a mais barata. E não
+confie em observação casual para decidir se precisa de estabilidade --- o
+subprojeto registra a razão:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/stl/}: com 6 elementos a instabilidade não
+             aparece; com 200 e 4 chaves distintas, salta.}]
+sort == stable_sort ? NÃO — sort embaralhou os empates
+primeiros 6 do sort       : #116 #032 #152 #148 #036 #144
+primeiros 6 do stable_sort: #000 #004 #008 #012 #016 #020
+\end{lstlisting}
+
+O motivo é que o \emph{introsort} do libstdc++ cai no \emph{insertion sort} em
+intervalos pequenos, e esse é estável \emph{por acidente}. Testar com poucos
+elementos leva à conclusão errada.
+
+\begin{armadilha}[o comparador precisa ser \emph{strict weak ordering}]
+O comparador responde ``\texttt{a} vem \emph{antes} de \texttt{b}?'' e tem de ser
+irreflexivo, assimétrico e transitivo. Escrever \texttt{<=} em vez de \texttt{<}
+torna \texttt{comp(a,a)} verdadeiro, e \texttt{std::sort} pode então
+\textbf{ler fora do intervalo} --- é \gls{ub} de verdade, não pedantismo.
+Detectável com \texttt{-D\_GLIBCXX\_DEBUG}. Para múltiplos critérios,
+\texttt{std::tie} dá o desempate lexicográfico correto de graça:
+\texttt{return std::tie(a.idade, a.nome) < std::tie(b.idade, b.nome);}
+\end{armadilha}
+
+O mesmo vale para a busca binária: \texttt{binary\_search},
+\texttt{lower\_bound} e \texttt{upper\_bound} \textbf{exigem} sequência
+ordenada, e aplicá-los a uma sequência qualquer é \gls{ub} --- sem erro, sem
+\emph{warning}, só resposta errada. O uso mais útil de \texttt{lower\_bound},
+aliás, não é buscar: é descobrir \emph{onde inserir} mantendo a ordem.
+
+\begin{armadilha}[o tipo do valor inicial decide como \texttt{accumulate} acumula]
+\begin{lstlisting}[style=bt, language=C++, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+std::accumulate(reais.begin(), reais.end(), 0);     // truncou para int!
+std::accumulate(reais.begin(), reais.end(), 0.0);   // correto
+\end{lstlisting}
+O acumulador tem o tipo do terceiro argumento, não o dos elementos. Um
+\texttt{0} onde cabia \texttt{0.0} soma \emph{doubles} em uma variável
+\texttt{int}, truncando a cada passo.
+\end{armadilha}
+
+Vale conhecer também a distinção entre \texttt{accumulate} e \texttt{reduce}
+(C++17): o primeiro é uma dobra à esquerda, sequencial e determinística; o
+segundo não garante ordem --- e é exatamente por isso que pode ser paralelizado.
+
+\subsubsection{Um container que satisfaz o contrato}
+
+O subprojeto termina construindo um \texttt{RingBuffer<T, N>} --- fila circular
+de capacidade fixa, sem alocação, com os dados num \classe{std::array}. O
+contrato pago são os \emph{typedefs} e os quatro métodos de iteração; o iterador
+é um \emph{template} sobre a constância (\texttt{iterador\_base<bool EhConst>}),
+que é o truque padrão para não escrever \texttt{iterator} e
+\texttt{const\_iterator} duas vezes.
+
+O que se ganha sem escrever mais nada é desproporcional: \emph{range-for},
+\texttt{accumulate}, \texttt{max\_element}, \texttt{count\_if}, \texttt{find},
+\texttt{sort}, \texttt{make\_reverse\_iterator}, \texttt{ranges::sort},
+\texttt{ranges::max}. E o contrato \emph{antigo} --- \emph{typedefs} mais
+operadores --- já satisfaz os \emph{concepts} \emph{novos}:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O contrato clássico satisfazendo os \emph{concepts} do C++20.}]
+static_assert(std::random_access_iterator<RB::iterator>);
+static_assert(std::ranges::random_access_range<RB>);
+\end{lstlisting}
+
+\begin{regra}[só escreva um container quando nenhuma combinação da STL resolver]
+O que ainda falta ao \texttt{RingBuffer} para ser um container de biblioteca dá
+a medida do custo real: \texttt{allocator\_type}, \texttt{insert}/\texttt{erase}
+com iterador, \texttt{swap} achável por ADL, \texttt{operator<=>},
+\emph{deduction guides} e garantias de exceção documentadas. Na dúvida,
+componha.
+\end{regra}
+
+\subsubsection{Quatro armadilhas que compilam}
+
+\paragraph{\texttt{std::remove} não remove.} Um algoritmo só enxerga
+iteradores: ele não tem acesso ao container e não pode mudar o tamanho. O que
+ele faz é \emph{particionar}, empurrando os elementos a manter para a frente e
+devolvendo o novo fim lógico.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/stl/}: o \texttt{size} não muda.}]
+original:            1 2 3 2 4 2 5  (size=7)
+após std::remove(2): 1 3 4 5 4 2 5  (size=7)   ← size NÃO mudou
+elementos válidos:   1 3 4 5
+\end{lstlisting}
+
+O idioma completo é \texttt{v.erase(std::remove(v.begin(), v.end(), 2),
+v.end())}; em C++20, \texttt{std::erase(v, 2)}. Vale para \texttt{unique},
+\texttt{remove\_if} e todo algoritmo que ``remove''.
+
+\paragraph{\texttt{vector<bool>} não é um container de \texttt{bool}.} É uma
+especialização que empacota oito valores por byte, e cujo \texttt{operator[]}
+devolve um \emph{proxy}:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O \emph{proxy} que se disfarça de valor.}]
+auto x = vb[0];      // o tipo é std::_Bit_reference, não bool
+bool& r = vb[0];     // não compila
+x = false;           // ← muda o vector! o "valor" era uma referência
+\end{lstlisting}
+
+As alternativas são \texttt{vector<char>}, \texttt{deque<bool>} e
+\texttt{bitset<N>}. Se for mesmo necessário usá-lo, escreva \texttt{bool x =
+vb[i];} --- nunca \texttt{auto}.
+
+\paragraph{\texttt{map::operator[]} insere.} A linha \texttt{if
+(estoque["banana"] > 0)} \emph{cria} a entrada \texttt{\{"banana", 0\}} como
+efeito colateral de uma consulta. É por isso que \texttt{operator[]} não existe
+em \texttt{map} constante. Para consultar: \texttt{find}, \texttt{at},
+\texttt{count}, \texttt{contains} (C++20).
+
+\paragraph{\texttt{string\_view} de um temporário.} Um \emph{view} é um par
+(ponteiro, tamanho) sem posse: guardar um como membro ou devolvê-lo apontando
+para um temporário produz \emph{dangling}. A regra prática é que
+\texttt{string\_view} é \emph{parâmetro}, não membro nem retorno --- e que
+\texttt{.data()} dele \textbf{não é terminado em nulo}, portanto não pode ser
+passado a uma API C.
+
+% =============================================================================
+\subsection{Ranges: a mesma biblioteca, repensada}
+\label{sec:ranges}
+% =============================================================================
+
+O \cabecalho{ranges} do C++20 é a maior adição do padrão à biblioteca, e o
+subprojeto \projeto{ranges} justifica a existência dele com uma comparação
+direta. Encadear algoritmos clássicos custa $N$ passadas e $N-1$ containers
+temporários:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O mesmo problema, com algoritmos clássicos e com \emph{views}.}]
+std::vector<int> passo1;  std::copy_if(v.begin(), v.end(), back_inserter(passo1), pred);
+std::vector<int> passo2;  std::transform(passo1.begin(), passo1.end(), back_inserter(passo2), f);
+std::vector<int> passo3(passo2.begin(), passo2.begin() + 4);
+// → 2 temporários, 3 passadas, e processou os 20 elementos antes de descartar 16
+
+auto r = v | vw::filter(pred) | vw::transform(f) | vw::take(4);
+// → 0 temporários, 1 passada, e PARA assim que junta 4
+\end{lstlisting}
+
+\subsubsection{As duas propriedades que definem uma \emph{view}}
+
+Uma \gls{view} é \textbf{preguiçosa} --- o trabalho acontece na iteração, não na
+construção --- e \textbf{não possui} os dados, de modo que copiá-la é $O(1)$. A
+preguiça não é alegação: os \emph{lambdas} do subprojeto imprimem quando são
+chamados, e a saída mostra que \emph{nada} acontece até alguém iterar, e que
+cada elemento atravessa o \emph{pipeline} inteiro antes do próximo:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/ranges/}: não há vetor intermediário em lugar
+             nenhum.}]
+construindo a view (nada deve ser impresso):
+...view construída. Nenhum elemento foi tocado.
+agora iterando:
+  filter(1)
+  filter(2)
+  transform(2)
+  → 20
+  filter(3)
+  ...
+\end{lstlisting}
+
+A distinção entre \texttt{take\_while} e \texttt{filter} decorre disso:
+o primeiro \textbf{para} no primeiro elemento que falha, o segundo testa todos.
+Sobre \texttt{1 2 9 3 4}, \texttt{take\_while(< 5)} devolve \texttt{1 2} e
+\texttt{filter(< 5)} devolve \texttt{1 2 3 4}.
+
+E é a preguiça que torna possível operar sobre sequências \textbf{infinitas}:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Uma \emph{view} infinita, tornada finita pelo \texttt{take}.}]
+vw::iota(1)                                   // 1, 2, 3, ... sem fim
+    | vw::transform([](int n) { return n*n; })
+    | vw::filter([](int n) { return n % 2; })
+    | vw::take(8);                            // → 1 9 25 49 81 121 169 225
+\end{lstlisting}
+
+\subsubsection{O \texttt{operator|} não é mágica}
+
+As três formas abaixo são a mesma coisa, e a primeira existe só para inverter a
+ordem de leitura:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{a | b | c} é literalmente \texttt{c(b(a))}.}]
+v | vw::filter(p)              // pipe
+vw::filter(p)(v)               // chamada
+rg::filter_view(v, p)          // construtor
+\end{lstlisting}
+
+O ganho estrutural é que adaptadores são \emph{objetos}: podem ser nomeados,
+guardados e \textbf{compostos antes de ver um range}. Não existe equivalente
+clássico --- não há como guardar ``um \texttt{copy\_if} seguido de um
+\texttt{transform}'' numa variável.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Um adaptador composto, reutilizável.}]
+auto so_pares       = vw::filter([](int x) { return x % 2 == 0; });
+auto dobrar         = vw::transform([](int x) { return x * 2; });
+auto pares_dobrados = so_pares | dobrar;      // ainda sem nenhum range
+
+a | pares_dobrados;   b | pares_dobrados;     // reutilizável
+\end{lstlisting}
+
+\subsubsection{Tempo de vida: \texttt{ref\_view}, \texttt{owning\_view} e o \emph{dangling}}
+
+O que acontece com a origem do \emph{pipeline} depende da categoria de valor
+dela (\cref{sec:value-semantics}), e a consequência é contraintuitiva.
+
+\begin{table}[htbp]
+\centering
+\caption{O que o \emph{pipeline} faz com a origem.}
+\label{tab:origem-view}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Origem} & \textbf{O que acontece} \\
+\midrule
+\emph{lvalue} (\texttt{v})          & \texttt{ref\_view} --- 8 bytes, referencia \\
+\emph{prvalue} (\texttt{produz()})  & \texttt{owning\_view} --- \textbf{assume a posse}, move para dentro \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{armadilha}[o temporário é seguro; a variável local não é]
+\begin{lstlisting}[style=bt, language=C++, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+auto r = produz_vetor() | vw::filter(par);    // SEGURO: owning_view assumiu a posse
+
+auto f() {
+    std::vector<int> local{1,2,3};
+    return local | vw::filter(par);           // ref_view para `local`
+}                                              // `local` morre aqui → dangling
+\end{lstlisting}
+A intuição de que ``temporário é perigoso, variável local é segura'' se inverte
+por completo. O conceito que responde à pergunta certa --- ``os iteradores
+sobrevivem ao objeto?'' --- é \texttt{borrowed\_range}: falso para
+\texttt{std::vector<int>}, verdadeiro para \texttt{std::vector<int>\&},
+\classe{std::string\_view} e \texttt{std::span<int>}. É por isso que devolver
+um \texttt{span} é seguro e devolver uma \emph{view} de um \texttt{vector} local
+não é.
+\end{armadilha}
+
+O exemplo completo do subprojeto processa um CSV sem construir uma única
+\texttt{std::string}:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O \emph{pipeline} de \texttt{src/ranges/demo\_pipelines.hpp}.}]
+    auto para_sv = [](auto&& r) {
+        return std::string_view(std::to_address(r.begin()),
+                                static_cast<std::size_t>(rg::distance(r)));
+    };
+
+    auto registros = csv
+        | vw::split('\n')
+        | vw::transform(para_sv)
+        | vw::filter([](std::string_view l) { return !l.empty() && l.front() != '#'; });
+\end{lstlisting}
+
+\begin{armadilha}[\texttt{\&*r.begin()} sobre um \emph{subrange} vazio é \gls{ub}]
+A última linha de um CSV terminado em \texttt{\textbackslash n} produz um
+\emph{subrange} vazio, cujo \texttt{begin()} é igual ao \texttt{end()} da string
+--- e desreferenciar o \texttt{end()} é \gls{ub}. \classe{std::to\_address}
+obtém o ponteiro \textbf{sem desreferenciar}, e é por isso que ele aparece no
+código acima.
+\end{armadilha}
+
+\subsubsection{Algoritmos com projeção}
+
+A assinatura dos algoritmos de \texttt{std::ranges} é sempre
+\texttt{algoritmo(range, comparador = \{\}, projeção = \{\})}. A projeção diz
+\emph{o que} comparar; o comparador diz \emph{como}:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A mesma ordenação, escrita duas vezes.}]
+std::sort(v.begin(), v.end(),
+          [](const P& a, const P& b) { return a.idade < b.idade; });
+
+rg::sort(v, {}, &P::idade);      // a mesma coisa
+\end{lstlisting}
+
+Os retornos também melhoraram: os algoritmos clássicos jogam informação fora, e
+os de \emph{ranges} devolvem \emph{structs} nomeadas --- \texttt{copy\_n}
+devolve os \emph{dois} iteradores, \texttt{for\_each} devolve o \emph{functor}
+com o estado que ele acumulou.
+
+E há uma proteção que transforma um bug de execução em erro de compilação:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O \emph{dangling} detectado pelo sistema de tipos.}]
+auto it = rg::find(produz(), 3);    // o tipo do retorno é std::ranges::dangling
+*it;                                 // NÃO COMPILA
+\end{lstlisting}
+
+O equivalente clássico --- \texttt{std::find(produz().begin(), produz().end(),
+3)} --- compila, roda, e é \gls{ub} \emph{duplo}, porque as duas chamadas a
+\texttt{produz()} devolvem vetores diferentes.
+
+\begin{armadilha}[a ordem no \emph{pipeline} é o sistema de tipos]
+Cada adaptador preserva ou \textbf{degrada} a categoria do \emph{range}:
+\texttt{transform} e \texttt{take} preservam; \texttt{filter} degrada para
+bidirecional, porque não há como saltar $N$ elementos sem testar o predicado em
+cada um. A consequência é que um adaptador que exija
+\texttt{random\_access\_range} \textbf{não compila} depois de um
+\texttt{filter}, e a mensagem do GCC é literalmente
+\texttt{'std::random\_access\_iterator\_tag' is not a base of
+'std::bidirectional\_iterator\_tag'}. Ponha o que exige acesso aleatório
+\emph{antes} de qualquer \texttt{filter}.
+\end{armadilha}
+
+\subsubsection{Escrevendo os seus}
+
+São três níveis de esforço crescente. \textbf{Nível 1}: um \emph{range} é
+\texttt{begin()} e \texttt{end()} --- dois métodos, e você ganha
+\emph{range-for}, \texttt{rg::sort} com projeção e o direito de iniciar um
+\emph{pipeline}. \textbf{Nível 2}: herdar de
+\texttt{std::ranges::view\_interface<Derivada>} --- \gls{crtp}, o mesmo do
+\cref{sec:templates} --- deriva de graça \texttt{empty()}, \texttt{front()},
+\texttt{back()}, \texttt{operator[]}, \texttt{operator bool} e \texttt{size()}.
+\textbf{Nível 3}: um adaptador com \texttt{operator|} exige um objeto que,
+chamado com \texttt{(range, args)}, devolva a \emph{view}, e chamado só com
+\texttt{(args)}, devolva um adaptador parcial. São cerca de quinze linhas em
+C++20; em C++23, \texttt{std::ranges::range\_adaptor\_closure} dispensa o
+\texttt{operator|} escrito à mão.
+
+\begin{armadilha}[não meça \emph{views} em \texttt{-O0}]
+Em \texttt{-O2}, um \emph{pipeline} compila para o mesmo código de um laço
+escrito à mão. Em \texttt{-O0} --- o padrão do repositório --- são várias
+camadas de chamada que ninguém faz \emph{inline}, e a medição diz o contrário
+da verdade. Onde as \emph{views} ganham mesmo sem otimização é em eliminar
+containers temporários e em curto-circuitar com \texttt{take}. Onde podem
+perder: \texttt{filter\_view::begin()} é $O(n)$, porque precisa achar o primeiro
+elemento válido.
+\end{armadilha}
+
+O que ainda falta no GCC 13 é considerável, e é bom saber antes de planejar
+código: não há versão em \emph{ranges} dos algoritmos numéricos
+(\texttt{accumulate}, \texttt{reduce}, \texttt{inner\_product}); não há versões
+paralelas; e \texttt{ranges::to<C>()}, \texttt{views::zip},
+\texttt{views::enumerate}, \texttt{views::chunk} e \texttt{ranges::fold\_left}
+só chegaram no GCC 14. Para acumular sobre uma \emph{view} hoje, materializa-se
+a parte numérica e usa-se o \texttt{accumulate} clássico.
+
+% =============================================================================
+\subsection{Entrada, saída e sistema de arquivos}
+\label{sec:file-io}
+% =============================================================================
+
+O subprojeto \projeto{file\_io} cobre a família de \emph{streams}, os
+\emph{string streams}, o redirecionamento e o \classe{std::filesystem} do
+C++17. É independente do resto do capítulo, mas usa os idiomas da STL o tempo
+todo.
+
+\subsubsection{A hierarquia, e a diferença que importa}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=5mm and 10mm]
+  \node[caixaforte] (ios) {\texttt{basic\_ios<CharT>}};
+  \node[caixa, below left=8mm and 8mm of ios]  (is) {\texttt{basic\_istream}};
+  \node[caixa, below right=8mm and 8mm of ios] (os) {\texttt{basic\_ostream}};
+  \node[folha, below=of is, xshift=-8mm] (cin) {\texttt{cin}\\\scriptsize \texttt{ifstream}};
+  \node[folha, below=of os, xshift=-6mm] (cout) {\texttt{cout}\\\scriptsize \emph{buffered}};
+  \node[folha, right=4mm of cout] (cerr) {\texttt{cerr}\\\scriptsize \textbf{unbuffered}};
+  \node[folha, right=4mm of cerr] (clog) {\texttt{clog}\\\scriptsize \emph{buffered}};
+  \node[caixa, below=14mm of ios] (ios2) {\texttt{basic\_iostream}\\\scriptsize \texttt{fstream}, \texttt{stringstream}};
+  \draw[aresta] (ios) -- (is); \draw[aresta] (ios) -- (os);
+  \draw[aresta] (is) -- (cin);
+  \draw[aresta] (os) -- (cout); \draw[aresta] (os) -- (cerr); \draw[aresta] (os) -- (clog);
+  \draw[aresta] (is) -- (ios2); \draw[aresta] (os) -- (ios2);
+\end{tikzpicture}
+\caption{A hierarquia de \emph{streams}. A distinção prática entre
+         \texttt{cerr} e \texttt{clog} é o \emph{buffer}: os dois escrevem em
+         \emph{stderr}, mas só o primeiro garante que a mensagem saia antes de
+         um \emph{crash}.}
+\label{fig:streams}
+\end{figure}
+
+\begin{regra}[\texttt{cerr} para o que precisa sobreviver ao \emph{crash}, \texttt{clog} para volume]
+\texttt{std::cerr} não é \emph{buffered}: cada escrita chega ao destino
+imediatamente, o que custa caro e é exatamente o que se quer para a última
+mensagem antes de um aborto. \texttt{std::clog} escreve no mesmo lugar com
+\emph{buffer}, e é a escolha correta para \emph{log} volumoso --- desde que se
+aceite perder as últimas linhas num encerramento anormal.
+\end{regra}
+
+\subsubsection{\emph{String streams} e \texttt{rdbuf}}
+
+Os \emph{string streams} dão um destino em memória com a mesma interface de um
+arquivo: \texttt{ostringstream} para montar texto formatado,
+\texttt{istringstream} para \emph{parsear} \texttt{chave=valor} ou CSV,
+\texttt{stringstream} como \emph{buffer} bidirecional.
+
+O que torna a família toda componível é o \texttt{rdbuf()}: o \emph{buffer} de
+qualquer \emph{stream} pode ser trocado por outro, e é assim que se redireciona
+\texttt{std::cout} para um arquivo sem tocar em nenhuma das chamadas que
+escrevem nele.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Redirecionamento por troca de \emph{buffer}.}]
+std::ofstream arquivo("log.txt");
+std::streambuf* original = std::cout.rdbuf(arquivo.rdbuf());  // redireciona
+std::cout << "vai para o arquivo";
+std::cout.rdbuf(original);                                     // restaura
+\end{lstlisting}
+
+E é claro que restaurar à mão é exatamente o que \gls{raii} existe para evitar:
+o \texttt{RedirectGuard} do subprojeto guarda o \emph{buffer} original no
+construtor e o repõe no destrutor, de modo que o redirecionamento sobrevive
+inclusive a uma exceção (\cref{sec:errors}). Na mesma linha, o
+\texttt{TeeStream} implementa em C++ o que o \texttt{tee} do Unix faz na
+\emph{shell}: um \texttt{streambuf} que sobrescreve \texttt{overflow} e
+\texttt{xsputn} para escrever em dois destinos ao mesmo tempo.
+
+\subsubsection{\texttt{std::filesystem}}
+
+O \cabecalho{filesystem} do C++17 substitui o par
+\texttt{stat}/\texttt{opendir} por uma API portável: \texttt{fs::path} compõe
+caminhos com \texttt{operator/} e decompõe com \texttt{stem()},
+\texttt{extension()}, \texttt{parent\_path()}; \texttt{directory\_iterator} e
+\texttt{recursive\_directory\_iterator} percorrem diretórios como \emph{ranges}.
+
+A característica que mais importa para o \cref{sec:errors} é que
+\textbf{cada função tem duas assinaturas} --- uma que lança
+\texttt{fs::filesystem\_error} e outra que recebe um
+\texttt{std::error\_code\&} e não lança:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A API dupla, e o critério de escolha.}]
+auto t = fs::file_size(p, ec);   // não lança; teste `ec`
+auto t = fs::file_size(p);       // lança fs::filesystem_error
+\end{lstlisting}
+
+Escolha pela \emph{frequência esperada} do erro: um arquivo que deveria existir
+e não existe é excepcional; percorrer um diretório em que alguns arquivos podem
+ter sumido no meio do caminho, não.
+
+\subsubsection{Um alvo que não é construído é um alvo que apodrece}
+
+Este subprojeto rendeu, sem querer, a lição de engenharia mais barata do
+repositório. O \texttt{demo\_sstream.hpp} usa \texttt{std::round} para formatar
+números antes de despejá-los num \texttt{ostringstream}, e durante muito tempo
+\textbf{não incluía} o \cabecalho{cmath}: compilava assim mesmo, porque algum
+outro cabeçalho da cadeia arrastava a declaração por acidente. O erro só
+apareceu no dia em que o alvo passou a ser efetivamente compilado.
+
+\begin{armadilha}[o \texttt{\#include} que ``não faz falta'' faz, e o compilador não avisa até mudar de versão]
+Um cabeçalho da biblioteca padrão pode incluir outros, e o conjunto exato é uma
+decisão da implementação --- não do padrão. Um arquivo que usa
+\texttt{std::round} sem incluir \cabecalho{cmath} compila enquanto algum vizinho
+o arrastar, e para de compilar quando o vizinho mudar, quando o GCC for
+atualizado, ou quando o arquivo for compilado numa ordem diferente. A regra é
+\emph{include what you use}: cada arquivo declara os cabeçalhos dos nomes que
+ele mesmo usa, mesmo que ``já esteja funcionando''.
+
+Este repositório pagou o preço quatro vezes, e o \texttt{src/meson.build}
+registra as quatro no topo do arquivo: \texttt{demo\_sstream.hpp} sem
+\cabecalho{cmath}, \texttt{solid/srp/demo\_pipeline.hpp} sem
+\cabecalho{algorithm}, \texttt{concepts/demo\_constraints.hpp} sem
+\cabecalho{array} e \texttt{aws/s3/main.cpp} sem \texttt{<fmt/core.h>}. Os
+quatro estavam \textbf{latentes exatamente nos alvos que não eram construídos},
+e os quatro apareceram no minuto seguinte a habilitá-los.
+\end{armadilha}
+
+\begin{regra}[não esconda um alvo quebrado atrás de um \texttt{\#}]
+Comentar o \texttt{subdir()} de um subprojeto que não compila não conserta
+nada: congela o defeito e some com o sinal. Hoje o \texttt{src/meson.build}
+não tem nenhum \texttt{subdir()} comentado --- os 57 subprojetos são
+construídos, produzem 98 binários instalados em \texttt{dist/bin} e compilam
+sem um único aviso sob \texttt{-Wall -Wextra -Wpedantic}. A regra que isso
+encarna vale para qualquer repositório: se um alvo não pode ser construído, o
+problema é dele --- conserte-o ou apague-o.
+\end{regra}
+
+% =============================================================================
+\subsection{Tipos de vocabulário}
+\label{sec:vocabulary}
+% =============================================================================
+
+O subprojeto \projeto{vocabulary\_types} trata dos tipos que existem para
+\emph{serem falados entre bibliotecas} --- não para resolver um domínio, mas
+para que duas bibliotecas que não se conhecem possam trocar ``pode não haver
+valor'' sem inventar cada uma a sua convenção.
+
+\begin{table}[htbp]
+\centering
+\caption{Cada tipo de vocabulário responde a uma pergunta diferente.}
+\label{tab:vocabulario}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Tipo} & \textbf{Responde} & \textbf{Tipos conhecidos em} \\
+\midrule
+\texttt{optional<T>}      & \emph{pode não haver valor}   & compilação, 1 tipo \\
+\texttt{variant<Ts...>}   & \emph{é um destes}            & compilação, $N$ tipos \\
+\texttt{any}              & \emph{é qualquer coisa}       & \textbf{execução} \\
+\texttt{tuple<Ts...>}     & \emph{são todos estes}        & compilação, $N$ tipos \\
+\texttt{span<T>}          & \emph{é uma janela sobre aqueles} & compilação, 1 tipo \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O subprojeto compila com C++23 (\cref{sec:ambiente}), porque as operações
+monádicas de \texttt{optional} --- \texttt{and\_then}, \texttt{transform},
+\texttt{or\_else} --- só chegaram nesse padrão.
+
+O argumento a favor desses tipos é que tudo o que eles substituem são
+\textbf{convenções não verificáveis}: o ponteiro nulo para ``sem valor'' não obriga ninguém a testar; a
+\texttt{union} com \emph{tag} não impede ler o membro errado; o par (ponteiro,
+tamanho) são dois parâmetros que precisam concordar e nada garante que
+concordem.
+
+\subsubsection{\classe{std::optional}}
+
+As três formas de acessar diferem no que fazem quando não há valor
+(\cref{tab:optional-acesso}) --- e a primeira é a perigosa, porque não falha:
+falha em silêncio.
+
+\begin{table}[htbp]
+\centering
+\caption{Acessando um \texttt{optional}.}
+\label{tab:optional-acesso}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Forma} & \textbf{Se vazio} & \textbf{Quando usar} \\
+\midrule
+\texttt{*opt}            & \textbf{\gls{ub}}                 & já testou com \texttt{if} \\
+\texttt{opt.value()}     & lança \texttt{bad\_optional\_access} & quer rede de segurança \\
+\texttt{opt.value\_or(x)}& devolve \texttt{x}                & tem um padrão óbvio \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Vale insistir num ponto que o nome esconde: \texttt{optional} \textbf{não é um
+ponteiro}, e não aloca. É o valor mais um \texttt{bool}, e o \texttt{T} vive
+dentro do próprio \texttt{optional}:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/vocabulary\_types/}.}]
+sizeof(int)              =  4
+sizeof(optional<int>)    =  8      ← int + flag + padding
+&optional  = 0x7ffe9c642e00
+&*optional = 0x7ffe9c642e00        ← o T vive DENTRO do optional
+\end{lstlisting}
+
+\begin{armadilha}[\texttt{optional<bool>} tem três estados]
+\texttt{if (o)} responde ``\emph{tem valor?}'', não ``\emph{o valor é
+verdadeiro?}''. Um \texttt{optional<bool>} contendo \texttt{false} responde
+\texttt{true} ao \texttt{if} --- e \texttt{value\_or(false)} responde
+\texttt{false} tanto para o vazio quanto para o \texttt{false} armazenado, o que
+apaga a distinção que motivou usar \texttt{optional}. Prefira um
+\texttt{enum class Resposta \{ Sim, Nao, NaoInformado \}}.
+\end{armadilha}
+
+\begin{porque}[por que \texttt{optional<T\&>} não existe]
+\texttt{opt = outro} seria ambíguo: \emph{religar} a referência para outro
+objeto, ou \emph{atribuir} ao objeto referido? Como não há resposta óbvia, o
+padrão proibiu. Na prática, \texttt{T*} já é o \emph{optional reference} do
+C++ --- com a desvantagem de não dizer isso no nome.
+\end{porque}
+
+\subsubsection{\classe{std::variant} e o \emph{overload idiom}}
+
+O que \texttt{variant} acrescenta à \texttt{union} é a etiqueta gerenciada e a
+recusa em mentir: ler o tipo errado dá \texttt{bad\_variant\_access} em vez de
+\gls{ub}. Das quatro formas de acessar, uma se destaca:
+
+\begin{table}[htbp]
+\centering
+\caption{Acessando um \texttt{variant}. Só \texttt{visit} verifica exaustividade.}
+\label{tab:variant-acesso}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Forma} & \textbf{Se o tipo estiver errado} & \textbf{Exaustividade} \\
+\midrule
+\texttt{get\_if<T>} & \texttt{nullptr}               & não verifica \\
+\texttt{get<T>}     & \texttt{bad\_variant\_access}  & não verifica \\
+\texttt{visit}      & não acontece                   & \textbf{garantida} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\texttt{visit} é o único em que \textbf{esquecer um caso é erro de compilação}
+--- a mesma propriedade que faz o \texttt{switch} sem \texttt{default} sobre
+\texttt{enum class} valer a pena (\cref{sec:syntax}). O que o torna legível são
+duas linhas de biblioteca:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O \emph{overload idiom}, em
+             \texttt{src/vocabulary\_types/demo\_variant.hpp}.}]
+// Herda de todos os lambdas e traz os operator() de cada um para o escopo.
+template <typename... Ts>
+struct Overload : Ts... { using Ts::operator()...; };
+
+// Deduction guide — em C++20 é opcional, mas explícito não custa.
+template <typename... Ts> Overload(Ts...) -> Overload<Ts...>;
+\end{lstlisting}
+
+Herdar de cada \emph{lambda} e expor o \texttt{operator()} de todos deixa a
+resolução de sobrecarga normal fazer o despacho. E como \texttt{visit} aceita
+\emph{vários} \emph{variants} de uma vez, o compilador gera a matriz de
+combinações: é o padrão \emph{Visitor} do GoF sem hierarquia, sem
+\texttt{accept()} e sem \gls{vtable} (\cref{sec:patterns}).
+
+\begin{armadilha}[\texttt{valueless\_by\_exception}]
+Se a construção do novo valor lançar \emph{durante} uma atribuição, o antigo já
+foi destruído e o novo não existe. O \texttt{variant} entra num estado sem
+valor, com \texttt{index()} igual a $-1$:
+\begin{lstlisting}[style=bt, language=bash, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+antes:  index=0 valueless=false
+exceção durante a atribuição: falhei na cópia
+depois: index=-1 valueless=true
+\end{lstlisting}
+Evita-se pondo um tipo trivial (ou \classe{std::monostate}) como primeira
+alternativa, preferindo \texttt{emplace} à atribuição, e marcando o \emph{move}
+como \texttt{noexcept} --- a Rule of 5 do \cref{sec:value-semantics} outra vez.
+\end{armadilha}
+
+\paragraph{O \emph{expression problem}.} A comparação entre \texttt{variant} e
+hierarquia virtual não tem vencedor absoluto: cada um facilita um eixo de
+extensão e dificulta o outro (\cref{tab:variant-heranca}). A escolha se faz
+perguntando qual eixo vai variar mais.
+
+\begin{table}[htbp]
+\centering
+\caption{\texttt{variant} favorece operações novas; herança favorece tipos novos.}
+\label{tab:variant-heranca}
+\footnotesize
+\begin{tabular}{@{}lcc@{}}
+\toprule
+\textbf{Critério} & \texttt{variant} & \textbf{herança virtual} \\
+\midrule
+tipos novos \emph{externos}      & não          & \textbf{sim} \\
+operações novas                  & \textbf{sim} & recompila tudo \\
+exaustividade verificada         & \textbf{sim} & não \\
+alocação por nó                  & opcional     & sempre \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{\classe{std::any} e a pergunta que quase sempre o elimina}
+
+O subprojeto substitui o \texttt{operator new} global por uma versão que conta,
+e o resultado dispensa argumentação:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/vocabulary\_types/}: alocações contadas.}]
+any<Pequeno> ( 4B) → 0 alocação(ões)
+any<Medio>   (16B) → 1 alocação(ões), 16 bytes
+any<Grande>  (64B) → 1 alocação(ões), 64 bytes
+variant<...Grande>  → 0 alocação(ões)      ← nunca aloca
+\end{lstlisting}
+
+A otimização de objeto pequeno da libstdc++ acaba em \texttt{sizeof(void*)};
+acima disso, \emph{cada} \texttt{any} é um \texttt{malloc} mais um
+\texttt{free}.
+
+\begin{regra}[``eu consigo listar os tipos possíveis?'']
+Se \textbf{sim}, use \texttt{variant} --- ganha exaustividade e zero alocação.
+Se \textbf{não, mas todos fazem a mesma coisa}, use uma interface virtual. Só
+se \textbf{não, e cada um faz coisa diferente} é que \texttt{any} é a resposta:
+quando o conjunto de tipos é aberto \emph{por projeto}, definido por quem
+\emph{usa} a biblioteca. O sintoma de \texttt{any} mal usado é uma cascata de
+\texttt{any\_cast} --- que \emph{é} um \texttt{variant}, escrito à mão e sem
+exaustividade.
+\end{regra}
+
+\subsubsection{\texttt{tuple}, \texttt{pair} e os \emph{structured bindings}}
+
+Os \emph{structured bindings} do C++17 salvaram a \texttt{tuple} de ser
+ilegível: \texttt{auto [nome, idade, salario] = obter\_registro();} dá nomes no
+ponto de uso, coisa que \texttt{std::get<0>(r)} nunca deu.
+
+\begin{armadilha}[os nomes do \emph{binding} são novos, não \emph{aliases}]
+\texttt{auto [a,b]} \textbf{copia}; \texttt{auto\& [a,b]} referencia;
+\texttt{const auto\& [a,b]} é o padrão seguro. Escrever \texttt{auto} por
+reflexo num \emph{binding} sobre um objeto grande copia o objeto inteiro sem
+avisar. E \texttt{std::tie} guarda \emph{referências}: nunca devolva o resultado
+de um \texttt{tie} --- para devolver, \texttt{make\_tuple}.
+\end{armadilha}
+
+Percorrer uma \texttt{tuple} não é possível com \emph{range-for}, porque cada
+elemento tem um \textbf{tipo} diferente. Exige desdobrar em compilação, o que
+uma \emph{fold expression} resolve em uma linha:
+\texttt{std::apply([\&f](const auto\&... e) \{ (f(e), ...); \}, t);}. O mesmo
+\texttt{std::apply} --- e o \texttt{std::make\_from\_tuple} para construtores
+--- é a base de \texttt{std::bind}, de \emph{thread pools} e de sistemas de
+tarefas (\cref{sec:concurrency}).
+
+Quanto a escolher entre \texttt{tuple} e \texttt{struct}: o \texttt{sizeof} é
+\textbf{idêntico}, então a decisão é inteiramente de legibilidade. Use
+\texttt{tuple} quando os campos não têm nome natural, quando o agregado é
+interno e efêmero, ou quando o código é genérico sobre $N$ tipos; use
+\texttt{struct} quando o agregado é do domínio, atravessa uma API pública, tem
+invariantes ou tem três ou mais campos. Desde o C++20, a inicialização designada
+(\cref{sec:syntax}) tirou o último argumento a favor da \texttt{tuple} em código
+de aplicação.
+
+\subsubsection{\texttt{std::span}}
+
+\texttt{span} substitui o par (ponteiro, tamanho) por um objeto em que os dois
+andam juntos --- e, sendo um \emph{range}, traz \emph{range-for} e
+\texttt{<ranges>} junto:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O parâmetro que não pode discordar de si mesmo.}]
+void soma_antiga(const int* dados, size_t n);   // soma_antiga(bruto, 500) compila
+int  soma_span(std::span<const int> dados);      // o tamanho vem do objeto
+\end{lstlisting}
+
+O \emph{extent} pode ser dinâmico ou estático, e a diferença aparece no
+\texttt{sizeof}: \texttt{span<int>} ocupa 16 bytes (ponteiro e tamanho);
+\texttt{span<int,3>} ocupa 8, porque o 3 está no \emph{tipo}. A conversão de
+estático para dinâmico é implícita; a inversa exige \texttt{.first<3>()}, e
+quem escreve assume o risco.
+
+\begin{table}[htbp]
+\centering
+\caption{\texttt{span<const T>} contra \texttt{const span<T>} --- o que cada um congela.}
+\label{tab:span-const}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Quer proteger} & \textbf{Escreva} \\
+\midrule
+os \textbf{elementos} & \texttt{span<const T>} --- 95\% dos casos \\
+a \textbf{janela}     & \texttt{const span<T>} \\
+ambos                 & \texttt{const span<const T>} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{armadilha}[um \texttt{span} é tão frágil quanto um par de iteradores]
+\begin{lstlisting}[style=bt, language=C++, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+std::span<int> s{v};
+v.push_back(4);      // realocou → s está pendurado
+s[0] = 1;            // heap-use-after-free
+\end{lstlisting}
+Porque \emph{é} isso: um ponteiro e um tamanho. As três regras de uso são
+(1)~\texttt{span} é \textbf{parâmetro} --- o uso dominante e sempre seguro;
+(2)~como retorno, só se o \emph{buffer} sobreviver à chamada; (3)~como membro,
+exige documentar quem é o dono. E \texttt{subspan} fora dos limites é
+\gls{ub}, não exceção --- as versões com \emph{template}
+(\texttt{.first<4>()}) verificam em compilação quando o \emph{extent} é
+estático.
+\end{armadilha}
+
+% =============================================================================
+\subsection{De onde vem a memória}
+\label{sec:memory}
+% =============================================================================
+
+O subprojeto \projeto{memory} leva o capítulo ao andar de baixo: o que
+\texttt{new}/\texttt{delete} realmente fazem, e o que se ganha ao substituí-los
+quando o padrão de uso é conhecido. Só rende depois de conhecer o que os
+containers alocam --- daí a posição na trilha.
+
+\subsubsection{\texttt{new} e \texttt{delete}, por dentro}
+
+\texttt{new T(args)} são duas operações: \texttt{operator new(sizeof(T))}, que
+consegue os bytes e pode lançar \texttt{std::bad\_alloc}, e o \emph{placement
+new}, que constrói o objeto neles. \texttt{delete p} é o inverso, na ordem
+inversa: destrutor, depois liberação. Separar as duas metades é o que permite
+o \emph{placement new} puro --- construir num \emph{buffer} já existente, sem
+alocar:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Construção e destruição desacopladas da alocação.}]
+alignas(MyObject) std::byte buf[sizeof(MyObject)];
+
+MyObject* obj = new(buf) MyObject(42);   // constrói, sem alocar
+obj->~MyObject();                         // destrói, sem liberar
+// buffer ainda válido — pode ser reusado
+\end{lstlisting}
+
+Sobrescrever o \texttt{operator new} global é a técnica de diagnóstico usada em
+todo o repositório para \emph{contar} alocações --- é o que produziu a tabela de
+\texttt{std::any} da \cref{sec:vocabulary}.
+
+O custo que se quer evitar tem quatro componentes: a eventual chamada ao sistema
+operacional, a busca por um bloco livre, a fragmentação acumulada e --- a mais
+incômoda em tempo real --- a \textbf{falta de determinismo}: o custo varia com o
+estado da \emph{heap}.
+
+\subsubsection{\emph{Pool}: blocos de tamanho fixo}
+
+Quando muitos objetos do \emph{mesmo tamanho} são criados e destruídos com alta
+frequência, a fragmentação chega ao ponto em que existe memória livre suficiente
+e nenhum bloco contíguo grande o bastante. O \emph{pool} elimina o problema pela
+raiz: todos os blocos têm o mesmo tamanho, então qualquer bloco livre serve para
+qualquer pedido.
+
+A estrutura é uma \emph{free list} embutida na própria memória livre --- os
+primeiros \texttt{sizeof(void*)} bytes de um bloco livre guardam o ponteiro para
+o próximo:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={As duas operações centrais, em
+             \texttt{src/memory/demo\_pool\_allocator.hpp}.}]
+    // ── alloc(): retira o primeiro bloco da free list — O(1) ─────────────────
+    T* alloc() {
+        if (!livre_) return nullptr; // pool esgotado
+
+        void* bloco = livre_;
+        livre_ = *reinterpret_cast<void**>(livre_); // avança free list
+        ++em_uso_;
+        return static_cast<T*>(bloco); // memória crua — construtor não chamado ainda
+    }
+
+    // ── free(): devolve bloco à free list — O(1) ─────────────────────────────
+    void free(T* ptr) {
+        // Devolve à frente da free list
+        *reinterpret_cast<void**>(ptr) = livre_;
+        livre_ = ptr;
+        --em_uso_;
+    }
+\end{lstlisting}
+
+\begin{table}[htbp]
+\centering
+\caption{O que o \emph{pool} troca pelo que perde em generalidade.}
+\label{tab:pool}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Característica} & \texttt{new}/\texttt{delete} & \textbf{Pool} \\
+\midrule
+tempo de alocação    & amortizado, variável   & $O(1)$ constante \\
+fragmentação         & pode ocorrer           & zero (blocos fixos) \\
+overhead por objeto  & 8--16 bytes de metadados & zero \\
+localidade de cache  & ruim (disperso)        & excelente (contíguo) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{\emph{Arena}: aloca tudo, libera tudo}
+
+A \emph{arena} vai além: alocar é incrementar um deslocamento, e liberar
+individualmente \textbf{não existe}. O que existe é \texttt{reset()}, que zera o
+contador --- $O(1)$, independentemente de quantos objetos havia.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O uso clássico da arena: memória com escopo de quadro.}]
+ArenaAllocator frame_arena(1024 * 1024);   // 1 MB por frame
+
+while (true) {
+    frame_arena.reset();   // "libera" tudo — O(1)
+    // ... alocações do frame ...
+}
+\end{lstlisting}
+
+\begin{armadilha}[a arena não chama destrutores]
+\texttt{reset()} devolve a memória sem destruir o que estava nela. Para tipos
+triviais isso é exatamente o que se quer; para um tipo que possui recurso ---
+um \texttt{std::string}, um descritor de arquivo --- é vazamento garantido. A
+arena é a estrutura certa para dados de quadro, e a errada para qualquer coisa
+que precise de \gls{raii}.
+\end{armadilha}
+
+\subsubsection{\texttt{std::pmr}: trocar o alocador sem trocar o tipo}
+
+O parâmetro \texttt{Allocator} clássico dos containers tem um defeito estrutural:
+ele entra no \emph{tipo}. \texttt{vector<int,A>} e \texttt{vector<int,B>} são
+tipos distintos, não intercambiáveis, não passáveis para a mesma função. O
+\gls{pmr} do C++17 resolve movendo o polimorfismo para tempo de execução: o
+container guarda um ponteiro para um \texttt{memory\_resource} e chama através
+dele.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Um \texttt{vector} que aloca na pilha.}]
+std::byte buf[4096];
+std::pmr::monotonic_buffer_resource local_arena(buf, sizeof(buf));
+
+std::pmr::vector<int> v(&local_arena);
+v.push_back(1);
+v.push_back(2);
+// nenhuma alocação na heap
+\end{lstlisting}
+
+Os recursos padrão cobrem os três casos deste capítulo:
+\texttt{monotonic\_buffer\_resource} é a arena;
+\texttt{unsynchronized\_pool\_resource} é o \emph{pool};
+\texttt{synchronized\_pool\_resource} é o mesmo com sincronização. E eles se
+encadeiam: um recurso pode receber outro como \emph{upstream}, que atende
+quando o primeiro esgota.
+
+\begin{table}[htbp]
+\centering
+\caption{Escolhendo a estratégia de alocação.}
+\label{tab:escolha-alocador}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Cenário} & \textbf{Estratégia} \\
+\midrule
+uso geral                                   & \texttt{new}/\texttt{delete} \\
+muitos objetos iguais, alta frequência      & \emph{pool} \\
+objetos temporários de quadro (jogos)       & arena / \texttt{monotonic\_buffer} \\
+protótipo rápido de alocador                & \texttt{std::pmr} \\
+vários containers com o mesmo alocador      & \texttt{std::pmr} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{regra}[meça antes de trocar o alocador]
+Um alocador customizado é uma aposta sobre o padrão de uso, e a aposta errada
+piora tudo: a arena vaza se os objetos tiverem destrutor; o \emph{pool} desperdiça
+memória se os tamanhos variarem; ambos abrem mão da simplicidade. O ganho
+prometido --- entre uma e duas ordens de grandeza nas alocações --- só se
+realiza quando o programa \emph{de fato} aloca em massa, e a única forma de
+saber é medir.
+\end{regra}
+
+
+% =============================================================================
+\subsection{Co-rotinas: funções que sabem parar no meio}
+\label{sec:coroutines-lib}
+% =============================================================================
+
+O último cabeçalho deste capítulo é também o menor da biblioteca padrão inteira:
+o \cabecalho{coroutine} do C++20 tem cinco tipos e uma função livre, e não
+oferece nenhum container, nenhum algoritmo e nenhuma classe pronta para usar. O
+que ele oferece é o \emph{vocabulário} com que o compilador conversa com o
+código do usuário --- e é por isso que o assunto fecha um capítulo sobre a
+biblioteca padrão em vez de abrir um sobre a linguagem.
+
+O subprojeto \projeto{coroutines} ensina o mecanismo em quatro degraus:
+\texttt{demo\_generator.hpp} (produzir uma sequência),
+\texttt{demo\_task.hpp} (esperar um resultado),
+\texttt{demo\_internals.hpp} (o que o compilador gera) e
+\texttt{demo\_asio.hpp} (I/O de verdade). A \cref{sec:coroutines} volta ao mesmo
+subprojeto pelo ângulo da concorrência --- concorrência sem \emph{thread}; aqui
+o assunto é o outro: quais tipos a biblioteca fornece, o que exatamente o
+compilador chama neles e quanto isso custa em memória.
+
+\begin{porque}[o problema: um estado que precisa sobreviver ao \texttt{return}]
+Uma função comum tem um contrato rígido: ela é chamada, roda até o fim e
+devolve o controle uma única vez. As variáveis locais dela vivem num
+\emph{frame} na pilha, e esse \emph{frame} deixa de existir no instante do
+\texttt{return}. Isso resolve quase tudo --- e falha em dois problemas muito
+comuns:
+
+\textbf{(1) produzir uma sequência longa ou infinita.} Para devolver os
+números de Fibonacci até um limite, uma função comum precisa montar o
+\texttt{vector} inteiro antes de devolver qualquer coisa: paga memória
+proporcional ao tamanho da sequência e não consegue representar sequências sem
+fim.
+
+\textbf{(2) esperar por algo lento sem parar a \emph{thread}.} Ao ler de um
+socket, uma função comum bloqueia: a \emph{thread} fica parada, ocupando pilha
+(tipicamente 8~MB de espaço de endereçamento) e uma vaga no escalonador, sem
+fazer trabalho nenhum.
+
+As saídas anteriores ao C++20 eram todas ruins de maneiras diferentes: escrever
+a máquina de estados à mão (correto e ilegível); usar uma \emph{thread} por
+espera (simples e caro); inverter o fluxo de controle em \emph{callbacks}
+(barato e impossível de ler, o \emph{callback hell}). A co-rotina resolve o
+problema na raiz: ela é uma função cujo \emph{frame} \textbf{não morre} no
+\texttt{return}.
+\end{porque}
+
+\subsubsection{A definição, e os três operadores}
+
+Uma \gls{corotina} é uma função que pode \textbf{suspender} --- devolver o
+controle a quem a chamou sem terminar --- e depois ser \textbf{retomada},
+continuando exatamente da linha seguinte, com todas as variáveis locais
+intactas. Para que isso seja possível, o \emph{frame} dela não fica na pilha:
+fica num bloco separado (normalmente na \emph{heap}, \cref{sec:memory}) que
+sobrevive à suspensão.
+
+Uma função é uma co-rotina se o corpo dela usar qualquer um dos três
+operadores da \cref{tab:operadores-coro-lib}.
+
+\begin{table}[htbp]
+\centering
+\caption{Os três operadores que tornam uma função uma co-rotina.}
+\label{tab:operadores-coro-lib}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Operador} & \textbf{O que faz} & \textbf{Quem o consome} \\
+\midrule
+\texttt{co\_yield v}    & suspende e entrega \texttt{v} ao chamador & \texttt{promise.yield\_value(v)} \\
+\texttt{co\_await e}    & suspende até \texttt{e} completar        & o \emph{awaitable} de \texttt{e} \\
+\texttt{co\_return v}   & termina a co-rotina com valor            & \texttt{promise.return\_value(v)} \\
+\texttt{co\_return;}    & termina a co-rotina sem valor            & \texttt{promise.return\_void()} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{armadilha}[a assinatura não diz que a função é uma co-rotina]
+Não existe palavra-chave no cabeçalho da função. \texttt{Generator<int>
+contar(int)} e \texttt{Generator<int> vazio(int)} têm assinaturas idênticas; se
+o corpo da primeira contiver \texttt{co\_yield} e o da segunda não, apenas a
+primeira é co-rotina --- e a segunda nem compila, porque uma função que devolve
+um tipo com \texttt{promise\_type} mas nunca suspende continua sendo uma função
+comum, obrigada a fazer \texttt{return} de um \texttt{Generator} que ela não
+tem como construir. A consequência prática é que \textbf{trocar
+\texttt{co\_return x} por \texttt{return x} muda a natureza da função}, e o erro
+de compilação aponta para o tipo de retorno, não para a linha trocada.
+\end{armadilha}
+
+\subsubsection{O que o \cabecalho{coroutine} contém --- e o que não contém}
+
+A biblioteca padrão participa disso com muito pouco. A
+\cref{tab:coroutine-header} é o conteúdo inteiro do cabeçalho.
+
+\begin{table}[htbp]
+\centering
+\caption{Tudo o que o \cabecalho{coroutine} do C++20 fornece.}
+\label{tab:coroutine-header}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Nome} & \textbf{Para que serve} \\
+\midrule
+\texttt{coroutine\_handle<P>}   & ponteiro para o \emph{frame}; retoma, destrói, consulta \\
+\texttt{coroutine\_handle<>}    & a mesma coisa, sem o tipo da \emph{promise} \\
+\texttt{coroutine\_traits<...>} & como o compilador acha o \texttt{promise\_type} \\
+\texttt{suspend\_always}        & \emph{awaitable} trivial que sempre suspende \\
+\texttt{suspend\_never}         & \emph{awaitable} trivial que nunca suspende \\
+\texttt{noop\_coroutine()}      & \emph{handle} sentinela cuja retomada não faz nada \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Não há \texttt{generator}, não há \texttt{task}, não há \emph{event loop}. Quem
+quiser qualquer um dos três escreve --- ou usa uma biblioteca que escreveu.
+Isso é medível com as macros de teste de recurso, que é como o subprojeto
+\projeto{cpp23} inventaria o padrão em vez de acreditar na documentação:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Medição no GCC 13.3 (o compilador deste livro), com
+             \texttt{-std=c++23}: o mecanismo está lá, o tipo pronto não.}]
+__cpp_impl_coroutine = 201902     <- a linguagem tem co-rotinas
+__cpp_lib_coroutine  = 201902     <- o cabecalho <coroutine> existe
+__cpp_lib_generator  = ausente    <- std::generator (C++23) NAO existe aqui
+\end{lstlisting}
+
+\begin{regra}[o C++20 entregou o mecanismo, não os tipos]
+Essa é a diferença mais importante entre as co-rotinas do C++ e as de Python,
+JavaScript ou C\#. Nessas linguagens, \texttt{yield} e \texttt{await} vêm com
+uma semântica fixa embutida. No C++, os operadores apenas \emph{chamam métodos
+de um tipo que você fornece} --- e é isso que permite que a mesma palavra
+\texttt{co\_await} funcione tanto num \texttt{Task<T>} de trinta linhas quanto
+no Asio, sem que o padrão soubesse que Asio existe. O preço é que a primeira
+co-rotina de qualquer projeto custa escrever um \texttt{promise\_type}.
+\end{regra}
+
+\subsubsection{O \texttt{promise\_type}: o contrato que você escreve}
+
+Quando o compilador vê uma co-rotina cujo tipo de retorno é \texttt{G}, ele
+procura \texttt{G::promise\_type} e passa a chamar métodos dele em pontos
+definidos do ciclo de vida (\cref{tab:promise-type}). Nenhum desses métodos é
+virtual e nenhum é herdado de nada: o acoplamento é por \emph{nome}, verificado
+em compilação.
+
+\begin{table}[htbp]
+\centering
+\caption{Os métodos do \texttt{promise\_type} e quando o compilador chama cada um.}
+\label{tab:promise-type}
+\footnotesize
+\begin{tabular}{@{}lp{0.56\linewidth}@{}}
+\toprule
+\textbf{Método} & \textbf{Quando é chamado} \\
+\midrule
+\texttt{get\_return\_object()} & na criação; o valor devolvido é o que o
+                                 \emph{chamador} recebe \\
+\texttt{initial\_suspend()}    & logo depois, antes da primeira linha do corpo \\
+\texttt{yield\_value(v)}       & em cada \texttt{co\_yield v} \\
+\texttt{return\_value(v)}      & em \texttt{co\_return v} \\
+\texttt{return\_void()}        & em \texttt{co\_return;} ou ao cair no fim do corpo \\
+\texttt{unhandled\_exception()}& se uma exceção escapar do corpo \\
+\texttt{final\_suspend()}      & depois de \texttt{return\_*}, sempre \\
+\bottomrule
+\end{tabular}\\[2pt]
+\footnotesize \texttt{return\_value} e \texttt{return\_void} são mutuamente
+exclusivos: declarar os dois é erro de compilação.
+\end{table}
+
+Ou seja, a criação de uma co-rotina é sempre esta sequência fixa:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O que \texttt{auto g = fibonacci(1000);} realmente executa.}]
+// 1. aloca o frame (operator new, salvo elisao)
+// 2. copia os parametros (1000) para dentro do frame
+// 3. constroi a promise_type dentro do frame
+// 4. auto ret = promise.get_return_object();   // o Generator do chamador
+// 5. co_await promise.initial_suspend();       // suspend_always -> para aqui
+// 6. return ret;                               // o corpo AINDA nao rodou
+\end{lstlisting}
+
+O passo 5 é a decisão de projeto mais consequente do tipo, e o subprojeto a
+documenta no próprio código:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={As duas suspensões, em \texttt{src/coroutines/demo\_generator.hpp}.}]
+// initial_suspend -> suspend_always: a coroutine nao executa nada
+// ao ser criada. So comeca quando chamamos .next() pela primeira vez.
+// (Alternativa: suspend_never = executa ate o primeiro co_yield logo)
+std::suspend_always initial_suspend() noexcept { return {}; }
+
+// final_suspend -> suspend_always: ao terminar, a coroutine suspende
+// em vez de se destruir automaticamente. Isso e necessario para que
+// o Generator (que guarda o handle) possa destrui-la de forma segura.
+std::suspend_always final_suspend() noexcept { return {}; }
+\end{lstlisting}
+
+\begin{regra}[\texttt{initial\_suspend} escolhe entre preguiçoso e ansioso; \texttt{final\_suspend} escolhe quem destrói]
+\texttt{suspend\_always} em \texttt{initial\_suspend} produz uma co-rotina
+\emph{lazy}: nada roda até alguém retomar. \texttt{suspend\_never} produz uma
+co-rotina \emph{eager}: o corpo roda até a primeira suspensão já na chamada.
+Em \texttt{final\_suspend}, \texttt{suspend\_always} mantém o \emph{frame} vivo
+depois do fim --- e obriga alguém a destruí-lo; \texttt{suspend\_never} faz o
+\emph{frame} se autodestruir --- e invalida todo \emph{handle} que aponte para
+ele. Um gerador precisa de \texttt{suspend\_always} nos dois lugares, porque
+precisa ler o último valor \emph{depois} que a co-rotina parou.
+\end{regra}
+
+\subsubsection{Um gerador completo}
+
+Com o \texttt{promise\_type} pronto, a função geradora é indistinguível de um
+laço comum --- e é esse o ponto:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{src/coroutines/demo\_generator.hpp}: sequência finita, sem
+             container nenhum.}]
+Generator<long long> fibonacci(long long limite) {
+    long long a = 0, b = 1;
+    while (a <= limite) {
+        co_yield a;              // suspende aqui, entrega 'a'
+        auto prox = a + b;       // ao retomar, continua desta linha
+        a = b;
+        b = prox;
+    }
+    // ao sair do while, a coroutine termina -> return_void() chamado
+}
+\end{lstlisting}
+
+O \texttt{Generator<T>} do subprojeto implementa \texttt{begin()}/\texttt{end()}
+com \texttt{std::default\_sentinel\_t} --- exatamente a técnica de sentinela da
+\cref{sec:ranges} --- e por isso funciona direto no \texttt{for} de intervalo:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{dist/bin/coroutines}, demos 1.2 e 1.3.}]
+-- 1.2 Fibonacci ate 1000 -- range-for sobre Generator --
+  Fibonacci <= 1000: 0 1 1 2 3 5 8 13 21 34 55 89 144 233 377 610 987
+
+-- 1.3 Pipeline: contar -> filtrar pares -> dobrar --
+  Resultados: 0 4 8 12 16 20
+  (pipeline: contar(0) | filtrar(par) | mapear(x2))
+\end{lstlisting}
+
+O terceiro demo merece atenção: \texttt{contar(0)} é uma sequência
+\textbf{infinita} (\texttt{while (true) co\_yield n++;}), e mesmo assim o
+programa termina. Ele termina porque cada valor só é calculado quando pedido, e
+o consumidor pede seis. É a mesma preguiça das \emph{views} da
+\cref{sec:ranges}, com uma diferença decisiva: aqui o estado do produtor vive no
+\emph{frame} da co-rotina, e não num \emph{lambda} \texttt{mutable} que pode ser
+percorrido duas vezes e não reinicia.
+
+Exceções atravessam a fronteira sem tratamento especial, porque
+\texttt{unhandled\_exception()} guarda o \texttt{std::exception\_ptr} e o
+invólucro o relança no chamador:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{dist/bin/coroutines}, demo 1.4: a exceção sai do
+             \emph{frame} e chega ao \texttt{catch} do chamador.}]
+  valor: 0
+  valor: 1
+  valor: 2
+  Excecao capturada no chamador: valor proibido: 3
+\end{lstlisting}
+
+\subsubsection{Quanto custa o \emph{frame}, medido}
+
+Como o \emph{frame} não cabe na pilha, ele é alocado --- e este capítulo já
+mostrou (\cref{sec:memory}) que alocação é onde o desempenho se perde. Vale
+então medir, substituindo o \texttt{operator new} global por uma versão que
+conta, como faz o subprojeto \projeto{vocabulary\_types}:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/coroutines/}: medição com \texttt{operator new}
+             instrumentado, GCC 13.3 em
+             \texttt{-O2}, sobre o \texttt{Generator<T>} daquele subprojeto.}]
+frame de contar(int)          :  64 bytes
+frame de fibonacci(long long) :  96 bytes
+frame de nomes(std::string)   : 160 bytes
+
+os 17 valores de Fibonacci ate 1000:
+  co-rotina : 1 alocacao,  96 bytes no total
+  vector    : 6 alocacoes, 504 bytes somados (crescimento 1,2,4,8,16,32)
+\end{lstlisting}
+
+Três leituras deste quadro. Primeira: o \emph{frame} é alocado \textbf{uma vez},
+na criação --- as dezessete retomadas não alocam nada. Segunda: o tamanho não
+depende do comprimento da sequência, e sim de quantas variáveis locais precisam
+\textbf{sobreviver a uma suspensão}; por isso \texttt{contar} (um \texttt{int})
+custa menos que \texttt{fibonacci} (dois \texttt{long long}), e a versão que
+mantém uma \texttt{std::string} viva através do \texttt{co\_yield} custa mais
+que as duas. Terceira: a comparação com o \texttt{vector} inverte com o
+tamanho --- para dezessete elementos os 504 bytes do \texttt{vector} perdem,
+mas para uma sequência de dezessete milhões a co-rotina continua em 96 bytes e o
+\texttt{vector} não.
+
+\begin{regra}[a co-rotina troca memória proporcional ao dado por memória constante]
+O gerador é a estrutura certa quando a sequência é grande, infinita, ou quando
+o consumidor pode parar no meio --- os três casos em que materializar é
+desperdício. Quando a sequência é curta e vai ser percorrida várias vezes, o
+\texttt{vector} ganha: uma alocação também, mas sem indireção, sem máquina de
+estados e com acesso aleatório. Como sempre neste capítulo, a decisão é sobre o
+padrão de uso, não sobre elegância.
+\end{regra}
+
+\begin{aviso}
+A alocação do \emph{frame} é a única do mecanismo, mas ela é obrigatória
+apenas \emph{no papel}: o padrão autoriza o compilador a eliminá-la
+(\emph{HALO}, \emph{heap allocation elision}) quando consegue provar que o
+\emph{frame} não sobrevive ao chamador --- tipicamente quando a co-rotina é
+criada, consumida e destruída na mesma função, e tudo é \emph{inline}. É uma
+otimização real, mas não é garantida por nada: não conte com ela num orçamento
+de latência sem medir com \texttt{operator new} instrumentado, exatamente como
+acima.
+\end{aviso}
+
+\subsubsection{O \texttt{coroutine\_handle}: um ponteiro cru com dono}
+
+O \emph{handle} é o único acesso ao \emph{frame}. Ele é do tamanho de um
+ponteiro, é copiável trivialmente e \textbf{não tem semântica de dono nenhuma}
+--- é um \texttt{void*} com métodos (\cref{tab:coroutine-handle}).
+
+\begin{table}[htbp]
+\centering
+\caption{A interface do \texttt{std::coroutine\_handle}.}
+\label{tab:coroutine-handle}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Operação} & \textbf{Efeito} \\
+\midrule
+\texttt{resume()} / \texttt{operator()} & retoma a co-rotina no ponto de suspensão \\
+\texttt{done()}                         & terminou? (só válido se estiver \emph{suspensa}) \\
+\texttt{destroy()}                      & destrói o \emph{frame}; ninguém faz isso por você \\
+\texttt{promise()}                      & referência à \emph{promise} dentro do \emph{frame} \\
+\texttt{from\_promise(p)}               & o caminho inverso: da \emph{promise} ao \emph{handle} \\
+\texttt{address()} / \texttt{from\_address(p)} & converte para \texttt{void*} e de volta \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+É por isso que todo tipo de co-rotina útil é um invólucro \gls{raii} em volta do
+\emph{handle}: o \texttt{Generator<T>} do subprojeto proíbe cópia, permite
+movimento e chama \texttt{destroy()} no destrutor --- exatamente o desenho de um
+\texttt{unique\_ptr} (\cref{sec:smart-pointers}).
+
+\begin{armadilha}[\texttt{done()} sobre um \emph{frame} já destruído é \emph{use-after-free}, e ele responde]
+O demo 3.2 do subprojeto contrasta \texttt{suspend\_never} com
+\texttt{suspend\_always} criando uma \texttt{EagerTask} que usa
+\texttt{suspend\_never} nas \emph{duas} suspensões. A expectativa natural é que,
+como a co-rotina roda inteira na criação, \texttt{handle.done()} devolva
+\texttt{true}. A medição diz outra coisa:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{dist/bin/coroutines}, demo 3.2 --- e o motivo,
+             sob \texttt{-fsanitize=address}.}]
+  Apos a criacao -- a coroutine ja terminou
+  handle.done() = false            <- nao era o esperado
+
+ASAN: heap-use-after-free on address 0x504000000010
+  READ of size 8 in coroutine_handle<promise_type>::done() const
+  0x504000000010 is located 0 bytes inside of 40-byte region
+  freed by thread T0 here:  <dentro de coroutine_eager()>
+\end{lstlisting}
+
+\texttt{final\_suspend()} devolvendo \texttt{suspend\_never} significa ``não
+suspenda no fim'', e uma co-rotina que não suspende no fim \textbf{destrói o
+próprio \emph{frame}} e devolve os 40 bytes. O \emph{handle} guardado na
+\texttt{EagerTask} ficou pendurado no instante seguinte, e \texttt{done()} leu
+memória liberada. O \texttt{false} impresso não é uma resposta: é lixo. A regra
+que sai daí é dura e simples --- \textbf{depois de \texttt{final\_suspend()} não
+suspender, o \emph{handle} é inválido}, e a única forma de descobrir isso sem
+sanitizer é um \emph{crash} intermitente em produção.
+\end{armadilha}
+
+\subsubsection{O protocolo \emph{Awaitable}}
+
+\texttt{co\_await} é o operador aberto do mecanismo: ele funciona sobre
+\emph{qualquer} tipo que implemente três métodos
+(\cref{tab:awaitable}). Nenhuma herança, nenhum \emph{concept} obrigatório ---
+o compilador simplesmente chama os nomes.
+
+\begin{table}[htbp]
+\centering
+\caption{Os três métodos do protocolo \emph{Awaitable}.}
+\label{tab:awaitable}
+\footnotesize
+\begin{tabular}{@{}lp{0.60\linewidth}@{}}
+\toprule
+\textbf{Método} & \textbf{Papel} \\
+\midrule
+\texttt{await\_ready()}       & devolve \texttt{true} se o resultado já existe;
+                                nesse caso não há suspensão nenhuma \\
+\texttt{await\_suspend(h)}    & chamado \emph{já suspenso}: registra \texttt{h}
+                                em algum lugar que vá retomá-lo depois \\
+\texttt{await\_resume()}      & chamado na retomada; o que ele devolver é o
+                                valor da expressão \texttt{co\_await} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A expressão \texttt{auto x = co\_await a;} se expande, em essência, em:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O que o compilador gera para um \texttt{co\_await}.}]
+if (!a.await_ready()) {
+    // o frame ja esta suspenso quando await_suspend roda
+    a.await_suspend(handle_desta_corotina);
+    return_ao_chamador();          // <- a thread vai fazer outra coisa
+}
+retomada:
+auto x = a.await_resume();
+\end{lstlisting}
+
+O detalhe que decide o desenho está no tipo de retorno de
+\texttt{await\_suspend}, que pode ser três coisas diferentes
+(\cref{tab:await-suspend}).
+
+\begin{table}[htbp]
+\centering
+\caption{Os três retornos possíveis de \texttt{await\_suspend}.}
+\label{tab:await-suspend}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Retorno} & \textbf{Significado} \\
+\midrule
+\texttt{void}                & suspende e devolve o controle ao chamador \\
+\texttt{bool}                & \texttt{false} cancela a suspensão e retoma já \\
+\texttt{coroutine\_handle<>} & suspende \textbf{e} retoma o \emph{handle} devolvido \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O terceiro caso é o \emph{symmetric transfer}, e existe por um motivo concreto:
+
+\begin{armadilha}[cadeias de co-rotinas estouram a pilha se \texttt{await\_suspend} chamar \texttt{resume()}]
+\texttt{handle.resume()} é uma chamada de função comum: empilha um
+\emph{frame} de chamada. Numa cadeia em que A retoma B, que retoma C, que
+retoma D, a pilha cresce com o comprimento da cadeia --- e um \emph{ping-pong}
+entre duas co-rotinas que se retomam mutuamente estoura a pilha em poucos
+milhares de iterações. Devolver o \emph{handle} em vez de retomá-lo converte a
+retomada numa \emph{tail call} garantida pelo padrão: o compilador emite um
+salto, e a pilha fica constante.
+\begin{lstlisting}[style=bt, language=C++, caption={A diferença inteira.}]
+void await_suspend(handle h) { outro.resume(); }   // pilha cresce
+auto await_suspend(handle h) { return outro;   }   // pilha constante
+\end{lstlisting}
+Quando não há ninguém a retomar, devolva \texttt{std::noop\_coroutine()} --- o
+\emph{handle} sentinela cuja retomada não faz nada e apenas devolve o controle.
+Devolver um \emph{handle} nulo é \gls{ub}.
+\end{armadilha}
+
+\subsubsection{\texttt{Task<T>}: esperar sem bloquear}
+
+Se \texttt{co\_yield} produz vários valores, \texttt{co\_await} espera por um.
+A diferença em relação ao \classe{std::future} é exatamente o que justifica todo
+o mecanismo:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Bloquear a \emph{thread} contra suspender a co-rotina.}]
+int r = future.get();     // BLOQUEIA: a thread para aqui, sem fazer nada
+int r = co_await task;    // SUSPENDE: a thread sai e faz outro trabalho
+\end{lstlisting}
+
+O \texttt{Task<T>} do subprojeto encaixa as duas metades do protocolo ao mesmo
+tempo: ele \emph{tem} um \texttt{promise\_type} (é retorno de co-rotina) e
+\emph{é} um \emph{awaitable} (pode aparecer depois de \texttt{co\_await}). A
+peça que costura as duas é a \textbf{continuação}: ao ser aguardada, a
+\texttt{Task} guarda o \emph{handle} de quem a aguarda, e no
+\texttt{final\_suspend} devolve esse \emph{handle} --- \emph{symmetric transfer}
+em uso real.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O \texttt{FinalAwaiter} de \texttt{src/coroutines/demo\_task.hpp}:
+             ``ao terminar, retome quem me esperava''.}]
+struct FinalAwaiter {
+    bool await_ready() noexcept { return false; }
+
+    std::coroutine_handle<> await_suspend(
+        std::coroutine_handle<promise_type> h) noexcept {
+        auto cont = h.promise().continuacao_;
+        if (cont) return cont;              // retoma o chamador
+        return std::noop_coroutine();       // ninguem esperando, para
+    }
+
+    void await_resume() noexcept {}
+};
+\end{lstlisting}
+
+O resultado é código assíncrono que se lê de cima para baixo:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{src/coroutines/demo\_task.hpp}: duas esperas encadeadas,
+             sem \emph{callback} e sem \emph{thread} parada.}]
+Task<int> buscar_dado(int id) {
+    co_await SuspendFor{50ms};
+    co_return id * 10;
+}
+
+Task<int> processar() {
+    int a = co_await buscar_dado(1);
+    int b = co_await buscar_dado(2);
+    co_return a + b;
+}
+\end{lstlisting}
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{dist/bin/coroutines}, demo 2.2.}]
+  [processar] iniciando
+  [Task] buscando dado 1... (aguardando 50ms)
+  [Task] dado 1 pronto!
+  [Task] buscando dado 2... (aguardando 50ms)
+  [Task] dado 2 pronto!
+  [processar] a=10, b=20, soma=30
+  Soma final recebida no main: 30
+\end{lstlisting}
+
+\begin{armadilha}[o \texttt{SuspendFor} do demo é uma muleta didática, e o código diz isso]
+O \texttt{SuspendFor\{50ms\}} implementa o protocolo \emph{awaitable} da forma
+mais simples possível: em \texttt{await\_suspend} ele cria uma
+\texttt{std::thread} destacada que dorme e depois chama
+\texttt{handle.resume()}. Isso ensina o protocolo, mas é o \emph{oposto} do
+ganho prometido --- uma \emph{thread} por espera é exatamente o custo que as
+co-rotinas existem para eliminar. O próprio \texttt{demo\_asio.hpp} abre com a
+ressalva: \emph{``até aqui usamos \texttt{SuspendFor\{\}} que dorme em thread
+separada --- isso não é verdadeiro async''}. Pelo mesmo motivo, o
+\texttt{get\_sync()} que permite chamar uma \texttt{Task} do \texttt{main()}
+(que não é co-rotina) faz espera ocupada com \texttt{sleep\_for(1ms)}. Em
+código de produção, o lugar do \texttt{await\_suspend} é registrar o
+\emph{handle} num \emph{event loop}, e é o que a próxima seção faz.
+\end{armadilha}
+
+\subsubsection{Duas armadilhas de tempo de vida que ninguém avisa}
+
+\begin{armadilha}[parâmetros por referência morrem no primeiro \texttt{co\_await}]
+Os parâmetros de uma co-rotina são \textbf{copiados para dentro do
+\emph{frame}} --- mas uma referência é copiada \emph{como referência}, e o
+objeto ao qual ela se refere continua na pilha do chamador. Se a co-rotina for
+lazy, o chamador já pode ter devolvido antes do corpo rodar:
+
+\begin{lstlisting}[style=bt, language=C++, caption={O erro clássico.}]
+Task<void> log(const std::string& msg);   // referencia vive no chamador
+co_spawn(io, log(std::string("ola")), detached);  // temporario morre aqui
+// ... o corpo de log() so roda depois -> le uma string destruida
+\end{lstlisting}
+
+A regra é receber \textbf{por valor} tudo o que a co-rotina precisar usar depois
+de uma suspensão. O mesmo vale para \classe{std::string\_view} e
+\classe{std::span} (\cref{sec:vocabulary}): eles são referências disfarçadas, e
+o \emph{frame} não estende a vida de nada. E o \emph{lambda} genérico é o pior
+caso, porque parece cópia e não é: capturar por \texttt{[\&]} numa co-rotina é
+quase sempre bug.
+\end{armadilha}
+
+\begin{armadilha}[o \emph{frame} vira um tipo sem \emph{linkage}, e o GCC avisa]
+O subprojeto compila limpo sob \texttt{-Wall -Wextra -Wpedantic}, com uma única
+exceção declarada no \texttt{meson.build}: \texttt{-Wno-subobject-linkage}.
+O motivo é que \texttt{filtrar()} e \texttt{mapear()} são \emph{templates} que
+recebem \emph{lambdas}; o \emph{lambda} é um tipo local, sem \emph{linkage}, e o
+compilador o guarda como campo do \emph{frame} --- que é uma \texttt{struct}
+gerada. Removendo a supressão, o GCC 13.3 emite exatamente dois avisos:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/coroutines/} ao recompilar sem
+             \texttt{-Wno-subobject-linkage}.}]
+demo_generator.hpp:189: warning: ...filtrar<...>::Frame has a field 'pred'
+        whose type has no linkage [-Wsubobject-linkage]
+demo_generator.hpp:197: warning: ...mapear<...>::Frame has a field 'func'
+        whose type has no linkage [-Wsubobject-linkage]
+\end{lstlisting}
+
+Não há problema real de \emph{linkage}: o \emph{frame} nunca cruza fronteira de
+unidade de tradução. O que o caso ensina é o critério --- \textbf{suprimir um
+aviso é aceitável quando o motivo está escrito ao lado da supressão}, e o
+\texttt{meson.build} do subprojeto o escreve.
+\end{armadilha}
+
+\subsubsection{Asio: onde a co-rotina paga o próprio custo}
+
+O ganho só aparece com um \emph{event loop} de verdade por baixo, e é isso que o
+Asio fornece: \texttt{asio::awaitable<T>} é o \texttt{Task<T>} pronto,
+\texttt{asio::use\_awaitable} é o \emph{token} que converte qualquer operação
+assíncrona de \emph{callback} em algo aguardável, e \texttt{asio::co\_spawn}
+lança a co-rotina dentro do \texttt{io\_context}.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{src/coroutines/demo\_asio.hpp}: três co-rotinas, uma
+             \emph{thread}.}]
+asio::awaitable<void> esperar_e_imprimir(std::string nome, ms delay) {
+    auto executor = co_await asio::this_coro::executor;
+    asio::steady_timer timer(executor, delay);
+    co_await timer.async_wait(asio::use_awaitable);   // suspende, nao bloqueia
+    fmt::print("  [{}] timer disparado apos {}ms!\n", nome, delay.count());
+}
+
+asio::co_spawn(io, esperar_e_imprimir("A", 300ms), asio::detached);
+asio::co_spawn(io, esperar_e_imprimir("B", 100ms), asio::detached);
+asio::co_spawn(io, esperar_e_imprimir("C", 200ms), asio::detached);
+io.run();
+\end{lstlisting}
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{dist/bin/coroutines}, demo 4.1: a ordem de
+             término é a das esperas, não a da criação.}]
+  [A] iniciando, esperara 300ms
+  [B] iniciando, esperara 100ms
+  [C] iniciando, esperara 200ms
+  [B] timer disparado apos 100ms!
+  [C] timer disparado apos 200ms!
+  [A] timer disparado apos 300ms!
+  1 thread, 0 bloqueios -- cada suspensao libera a thread
+\end{lstlisting}
+
+Note o que a saída prova: as três iniciaram na ordem A, B, C e terminaram na
+ordem B, C, A, \textbf{numa única \emph{thread}}. Com \emph{threads} isso exigiria
+três pilhas; aqui exigiu três \emph{frames} de algumas dezenas de bytes.
+
+O demo 4.2 leva a ideia ao caso que a justifica: um servidor de eco em que cada
+conexão é uma co-rotina.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Uma sessão TCP inteira, escrita como código sequencial.}]
+asio::awaitable<void> echo_session(tcp::socket socket) {
+    char buffer[1024];
+    while (true) {
+        std::size_t n = co_await socket.async_read_some(
+            asio::buffer(buffer), asio::use_awaitable);
+        co_await asio::async_write(
+            socket, asio::buffer(buffer, n), asio::use_awaitable);
+    }
+}
+\end{lstlisting}
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{dist/bin/coroutines}, demo 4.2: servidor,
+             \emph{listener} e dois clientes no mesmo \texttt{io\_context}.}]
+  [servidor] ouvindo na porta 12399
+  [servidor] cliente 1 conectado
+  [servidor] cliente 2 conectado
+  [cliente] enviou: 'ola mundo!'  -> recebeu echo: 'ola mundo!'
+  [cliente] enviou: 'coroutines!' -> recebeu echo: 'coroutines!'
+  Servidor, listener e 2 clientes -- tudo em 1 thread
+\end{lstlisting}
+
+O contraste com o modelo \emph{uma \emph{thread} por conexão} é de ordem de
+grandeza: cada \emph{thread} reserva pilha própria e um descritor de
+escalonamento, o que na prática limita servidores a alguns milhares de conexões;
+cada co-rotina custa um \emph{frame} de dezenas ou centenas de bytes. E o
+desempenho por operação é o mesmo dos \emph{callbacks} --- é o \emph{mesmo}
+\texttt{io\_context} por baixo, com a diferença de que o fluxo de controle
+voltou a ser linear.
+
+\begin{table}[htbp]
+\centering
+\caption{Qual primitiva usar, e por quê.}
+\label{tab:escolha-corotina}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Problema} & \textbf{Ferramenta} \\
+\midrule
+produzir sequência longa ou infinita        & \texttt{Generator<T>} com \texttt{co\_yield} \\
+sequência curta, percorrida várias vezes    & \texttt{std::vector} (\cref{sec:stl}) \\
+transformar sequência sem estado próprio    & \emph{views} (\cref{sec:ranges}) \\
+esperar um resultado assíncrono             & \texttt{Task<T>} com \texttt{co\_await} \\
+I/O de rede ou disco sem parar a \emph{thread} & \texttt{asio::awaitable<T>} \\
+trabalho de CPU em paralelo                 & \emph{threads} (\cref{sec:concorrencia}) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{regra}[co-rotina é concorrência, não paralelismo]
+Nada neste mecanismo cria \emph{thread} nenhuma. Uma co-rotina suspensa não usa
+CPU, mas uma co-rotina que faz cálculo pesado ocupa a \emph{thread} que a
+retomou pelo tempo inteiro do cálculo --- e trava todas as outras co-rotinas do
+mesmo \texttt{io\_context}. Co-rotinas resolvem \textbf{esperas}; \emph{threads}
+resolvem \textbf{trabalho}. Misturar os dois papéis é o erro mais comum de quem
+chega das linguagens em que \texttt{async} implica um pool escondido.
+\end{regra}
+
+% =============================================================================
+\subsection{Síntese}
+% =============================================================================
+
+O capítulo tem um padrão recorrente que vale nomear: quase toda armadilha aqui
+é uma \textbf{abstração que vaza de propósito}. \texttt{std::remove} não remove
+porque algoritmos não conhecem containers --- e essa ignorância é exatamente o
+que permite $N + M$ implementações em vez de $N \times M$.
+\texttt{vector<bool>} mente sobre ser um container porque trocou a semântica
+pela densidade. \texttt{string\_view} e \texttt{span} são frágeis porque não
+possuem nada --- e é por não possuírem que custam zero. As \emph{views} do
+\texttt{<ranges>} penduram quando a origem é local porque são preguiçosas, e a
+preguiça é o que elimina os temporários. O \emph{frame} de uma co-rotina
+sobrevive ao \texttt{return} e por isso precisa que alguém o destrua --- e é
+por sobreviver que ele permite suspender e retomar.
+
+Em todos os casos, o preço da propriedade que se quer é a armadilha que se
+recebe junto. Conhecer a troca é o que separa usar a biblioteca de brigar com
+ela.
+
+\begin{regra}[as duas ferramentas de diagnóstico deste capítulo]
+Além dos \emph{sanitizers} (\cref{sec:sanitizers}), a biblioteca padrão do GCC
+tem um modo de depuração próprio: \texttt{-D\_GLIBCXX\_DEBUG} verifica em tempo
+de execução iteradores invalidados, comparadores que não são \emph{strict weak
+ordering}, comparação de iteradores de containers diferentes e índices fora do
+intervalo. Nenhuma dessas verificações existe no modo normal, e todas cobrem
+armadilhas descritas aqui. Vale rodar os subprojetos deste capítulo sob as duas
+ferramentas ao menos uma vez.
+\end{regra}

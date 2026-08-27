@@ -1,0 +1,1664 @@
+% =============================================================================
+%  Corretude e desempenho
+%  Cobre os subprojetos testing, undefined_behavior e performance.
+% =============================================================================
+
+% =============================================================================
+\section{Corretude e desempenho}
+\label{sec:qualidade}
+% =============================================================================
+
+Um programa em C++ pode errar de três maneiras distintas, e elas exigem
+ferramentas distintas. Pode dar a \textbf{resposta errada} --- e o instrumento é
+o teste automatizado. Pode não ter resposta \emph{nenhuma} definida pelo padrão
+--- é o \gls{ub}, e o instrumento é o \emph{sanitizer}, o aviso do compilador e,
+sobretudo, o estilo de código que não dá chance ao erro. E pode dar a resposta
+certa \textbf{tarde demais} --- e o instrumento é a medição. Este capítulo
+percorre os três: \projeto{testing} (\cref{sec:testes}),
+\projeto{undefined\_behavior} (\cref{sec:ub}) e \projeto{performance}
+(\cref{sec:desempenho}).
+
+O que amarra os três é um método, não um assunto. Eles \textbf{medem} em vez de
+afirmar: a matriz de detecção dos \emph{sanitizers} não foi copiada de
+documentação, saiu de rodar código com UB de propósito neste \emph{toolchain};
+os fatores de $35\times$ e $11{,}7\times$ saíram de um cronômetro. E, em vários
+pontos, \textbf{o número contrariou a expectativa de quem escreveu o texto}.
+Esses casos estão todos registrados aqui, porque um resultado que desmente a
+hipótese ensina método; um que a confirma só ensina o assunto.
+
+\begin{porque}[por que corretude e desempenho estão no mesmo capítulo]
+Porque as três disciplinas se cobrem mutuamente e nenhuma fecha sozinha. O teste
+encontra a lógica errada e é cego para o \gls{ub} que ainda não se manifestou. O
+\emph{sanitizer} encontra o UB, mas só no caminho que \emph{de fato} executou ---
+por isso depende dos testes para ter o que executar. A cobertura diz qual caminho
+\textbf{não} rodou, que é exatamente o ponto cego do \emph{sanitizer}. E a
+medição de desempenho só faz sentido sobre um programa já correto: acelerar
+código errado é produzir a resposta errada mais depressa.
+\end{porque}
+
+% =============================================================================
+\subsection{Testes automatizados}
+\label{sec:testes}
+% =============================================================================
+
+O subprojeto \projeto{testing} é o único do repositório com \textbf{dois tipos de
+alvo}: um executável didático, que narra o assunto, e arquivos
+\texttt{test\_*.cpp} que são testes de verdade, rodados por \texttt{meson test}.
+Estado atual: 6 alvos, 41 casos, todos passando.
+
+\begin{porque}[que problema o teste automatizado resolve]
+Não é ``garantir que o programa funciona'' --- nenhuma suíte prova isso. É
+\textbf{tornar barata a mudança}. Sem testes, cada alteração exige reler
+mentalmente tudo o que ela pode ter quebrado, e o custo dessa releitura cresce
+com o sistema até o ponto em que ninguém mais mexe no que funciona. Com testes, a
+pergunta ``eu quebrei alguma coisa?'' vira um comando de dez segundos. A suíte
+não é prova de corretude; é \textbf{rede de segurança para a refatoração}.
+\end{porque}
+
+A pergunta útil, portanto, não é ``devo testar?''. É \textbf{``que teste vale a
+pena escrever?''} --- porque uma suíte grande de testes ruins é \emph{pior} que
+nenhuma: custa manutenção, falha por motivos errados e ensina a equipe a ignorar
+a luz vermelha.
+
+\subsubsection{A pirâmide, e por que ela é uma pirâmide}
+
+Três definições primeiro, porque os termos são usados de forma descuidada. Um
+\textbf{teste unitário} exercita uma unidade --- tipicamente uma classe ou função
+--- isolada de tudo o que ela depende: sem banco, sem rede, sem arquivo, sem
+relógio; roda em microssegundos. Um \textbf{teste de integração} exercita duas ou
+mais peças juntas, com as dependências reais. Um \textbf{teste de ponta a ponta}
+(E2E) exercita o sistema inteiro pela mesma porta que o usuário usa.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=2.5mm]
+  \node[caixarisco, minimum width=32mm] (e2e)
+      {E2E / sistema\\\scriptsize poucos --- lentos, frágeis, caros};
+  \node[caixa, minimum width=54mm, below=of e2e] (int)
+      {integração\\\scriptsize alguns --- banco, rede, IO};
+  \node[caixaok, minimum width=78mm, below=of int] (uni)
+      {UNITÁRIOS\\\scriptsize muitos --- rápidos, estáveis, baratos};
+\end{tikzpicture}
+\caption{A pirâmide de testes. A forma é consequência do custo por teste em três
+         eixos: \textbf{tempo} (microssegundos contra minutos),
+         \textbf{estabilidade} (mais peças, mais motivos de falhar sem haver bug)
+         e \textbf{diagnóstico} (um unitário aponta a linha; um E2E aponta
+         ``algo, em algum lugar'').}
+\label{fig:piramide}
+\end{figure}
+
+\begin{armadilha}[a casquinha de sorvete]
+A pirâmide invertida acontece quando a equipe testa só pela interface do usuário,
+porque é ali que ``dá para ver''. O sintoma é conhecido: a suíte demora 40
+minutos e falha uma vez em cinco sem motivo. A partir daí ninguém confia no
+vermelho, e a suíte inteira vira decoração de \emph{pipeline}.
+\end{armadilha}
+
+\subsubsection{F.I.R.S.T. e o que testar primeiro}
+
+\begin{table}[htbp]
+\centering
+\caption{F.I.R.S.T.: o que cada letra exige, e o que a viola.}
+\label{tab:first}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Letra} & \textbf{Exigência} & \textbf{Inimigo típico} \\
+\midrule
+\textbf{F}ast            & a suíte inteira roda em segundos & IO, \emph{sleep}, banco real \\
+\textbf{I}solated        & independe dos outros e da \textbf{ordem} & estado global, \emph{singleton} \\
+\textbf{R}epeatable      & mesmo resultado em qualquer máquina & relógio, rede, sorteio sem semente \\
+\textbf{S}elf-validating & passa ou falha, sem ninguém ler a saída & teste que pede conferência humana \\
+\textbf{T}imely          & escrito junto com o código & ``a gente testa depois'' \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A lista de inimigos do \textbf{R} é maior do que parece: além do relógio e da
+rede, entram a ordem de iteração de um \classe{std::unordered\_map} --- que não é
+especificada e muda entre versões da biblioteca ---, caminhos absolutos e fuso
+horário. E o \textbf{T} carrega a lição mais valiosa do subprojeto:
+\textbf{código difícil de testar é código mal desenhado}, e o teste escrito cedo
+devolve esse recado a tempo de agir.
+
+Em ordem de retorno sobre o esforço, teste: (1)~\textbf{as fronteiras} --- a
+regra de desconto do sistema sob teste tem faixas em 10, 50 e 100 peças, e os
+casos que importam são 9/10, 49/50, 99/100, porque é ali que mora o \texttt{>}
+que deveria ser \texttt{>=}; (2)~\textbf{o caminho de erro}, que é o menos
+exercitado manualmente e por isso o mais quebrado; (3)~\textbf{o bug que você
+acabou de consertar} --- um teste por bug corrigido é a regra de melhor
+custo-benefício que existe, porque ele nunca volta; (4)~\textbf{a regra de
+negócio}, aquilo que, errado, cobra do cliente o valor errado; (5)~o caminho
+feliz, por último. E não teste \emph{getters} triviais, a biblioteca padrão,
+detalhes privados de implementação nem código gerado.
+
+\begin{armadilha}[os cinco testes que dão prejuízo]
+\textbf{(a) O frágil} --- falha em toda refatoração \emph{correta}; sintoma:
+cheio de \texttt{EXPECT\_CALL}. Testa \emph{como}, não \emph{o quê}.
+\textbf{(b) O instável} (\emph{flaky}) --- passa às vezes. É o pior de todos,
+porque destrói a confiança na suíte inteira: depois de dois falsos alarmes, todo
+mundo reroda em vez de investigar. Deve ser \textbf{consertado ou removido},
+nunca deixado piscando.
+\textbf{(c) O tautológico} --- repete a implementação:
+\texttt{EXPECT\_EQ(c.total(), c.subtotal() * (1 - c.desconto()))} passa mesmo com
+a fórmula errada; o valor esperado precisa vir \textbf{de fora}, como literal.
+\textbf{(d) O sem asserção} --- só verifica que não explodiu.
+\textbf{(e) O gigante} --- quando falha a asserção nº 4, você não descobre se as
+outras 26 falhariam.
+\end{armadilha}
+
+\subsubsection{O sistema sob teste}
+
+Tudo o que vem a seguir gira em torno de uma classe pequena, em
+\texttt{src/testing/carrinho.hpp}, escolhida por ter de propósito os cinco
+problemas que testes de verdade encontram: uma regra de negócio com faixas, uma
+pré-condição que aborta, uma exceção, uma dependência externa e aritmética de
+ponto flutuante.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O sistema sob teste, resumo de \texttt{src/testing/carrinho.hpp}.}]
+class RepositorioDePrecos {                     // a DEPENDÊNCIA, como interface
+    virtual std::optional<double> preco_de(const std::string& sku) const = 0;
+};
+
+class Carrinho {
+    // A dependência entra pelo CONSTRUTOR. É esta linha que torna a classe
+    // testável em microssegundos, sem banco de dados.
+    explicit Carrinho(const RepositorioDePrecos& precos) : precos_{precos} {}
+
+    void adicionar(const std::string& sku, int quantidade) {
+        // PRÉ-CONDIÇÃO: quantidade <= 0 é BUG DO CHAMADOR, não erro de entrada.
+        assert(quantidade > 0 && "quantidade precisa ser positiva");
+        const auto preco = precos_.preco_de(sku);
+        if (!preco) throw ProdutoDesconhecido{sku};   // ← erro de ENTRADA
+    }
+    double percentual_de_desconto() const noexcept;  // faixas: 10, 50, 100
+};
+\end{lstlisting}
+
+A distinção entre as duas espécies de coisa ruim --- erro de entrada, que vira
+exceção, e bug do chamador, que vira aborto --- é o assunto do \cref{sec:errors},
+e aqui tem consequência direta sobre \emph{como} se testa cada uma.
+
+\subsubsection{Anatomia de um teste}
+
+Um caso tem a forma \texttt{TEST(Suite, Caso) \{ ... \}}, e o par
+\texttt{(Suite, Caso)} precisa ser único no binário inteiro. Dentro do corpo, a
+organização que funciona tem três blocos separados por uma linha em branco:
+\textbf{Arrange} (preparar), \textbf{Act} (a ação testada) e \textbf{Assert}.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Arrange / Act / Assert, em \texttt{src/testing/test\_basico.cpp}.}]
+TEST(Carrinho, MesmoSkuDuasVezesSomaQuantidade) {
+    PrecosFixos    precos;                  // ARRANGE
+    loja::Carrinho c{precos};
+
+    c.adicionar("caneta", 2);               // ACT
+    c.adicionar("caneta", 5);
+
+    ASSERT_EQ(c.tamanho(), 1u) << "deveria continuar sendo UM item";
+    EXPECT_EQ(c.itens()[0].quantidade, 7);  // ASSERT
+}
+\end{lstlisting}
+
+Se o \emph{Act} tem mais de duas ou três linhas, ou se há \emph{dois} blocos
+act-assert no mesmo caso, o teste está testando duas coisas --- separe.
+
+\begin{regra}[num teste, a repetição é preferível à abstração]
+É o único código em que isso vale. \texttt{EXPECT\_DOUBLE\_EQ(total, 77.9)} com o
+número literal é \textbf{melhor} que uma função \texttt{calcula\_esperado()} ---
+que repetiria a implementação e passaria a esconder exatamente o bug que o teste
+deveria pegar. O valor esperado precisa entrar \emph{de fora}, calculado por
+outro meio que não o código sob teste.
+\end{regra}
+
+O nome do caso é lido por alguém que não o escreveu, no relatório de uma falha. A
+fórmula que funciona é \texttt{<situação><ação><resultado esperado>}:
+\texttt{TEST(Desconto, ExatamenteDezPecasDaCincoPorCento)} contra
+\texttt{TEST(CarrinhoTest, Test1)} ou \texttt{FuncionaCorretamente}. Os nomes
+viram \textbf{identificadores C++}: nada de espaço, acento ou hífen --- e nada de
+sublinhado, que o próprio GoogleTest desaconselha, porque ele usa \texttt{\_}
+internamente para colar suíte e caso.
+
+\subsubsection{\texttt{EXPECT} contra \texttt{ASSERT}, e o catálogo}
+
+A diferença é de uma palavra e muda o fluxo: \texttt{EXPECT\_*} registra a falha e
+\textbf{continua}; \texttt{ASSERT\_*} registra e faz \texttt{return}.
+
+\begin{regra}[\texttt{EXPECT} por padrão, \texttt{ASSERT} quando o resto não faz sentido]
+\texttt{EXPECT} dá mais informação por execução. Use \texttt{ASSERT} quando
+continuar seria inútil ou perigoso --- o caso clássico é verificar o tamanho
+antes de indexar: \texttt{ASSERT\_EQ(c.tamanho(), 1u);} e só então
+\texttt{EXPECT\_EQ(c.itens()[0].sku, "caneta");}. Sem o \texttt{ASSERT}, a linha
+seguinte indexaria um vetor vazio, o que é \gls{ub}.
+\end{regra}
+
+\begin{armadilha}[\texttt{ASSERT\_*} faz \texttt{return}, e isso tem três consequências]
+(1)~Não funciona em função que devolva valor --- o \texttt{return} é sem
+argumento. (2)~Dentro de uma \textbf{função auxiliar} ele retorna da
+\emph{auxiliar}, e o teste continua como se nada tivesse acontecido; para
+propagar, envolva a chamada em
+\texttt{ASSERT\_NO\_FATAL\_FAILURE(minha\_verificacao())}. (3)~Não pode ser usado
+em construtor nem em destrutor --- é para isso que existem \texttt{SetUp()} e
+\texttt{TearDown()}.
+\end{armadilha}
+
+\begin{table}[htbp]
+\centering
+\caption{As famílias de asserções. Todas têm a variante \texttt{ASSERT\_}.}
+\label{tab:assercoes}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Família} & \textbf{Macros} & \textbf{Observação} \\
+\midrule
+booleanas   & \texttt{EXPECT\_TRUE} / \texttt{FALSE} & imprime só ``false'' na falha \\
+comparação  & \texttt{EXPECT\_EQ NE LT LE GT GE}     & imprimem \textbf{os dois} valores \\
+strings C   & \texttt{EXPECT\_STREQ STRNE STRCASEEQ} & para \texttt{std::string}, use \texttt{EXPECT\_EQ} \\
+ponto flut. & \texttt{EXPECT\_FLOAT\_EQ DOUBLE\_EQ NEAR} & 4 ULPs, ou tolerância explícita \\
+exceções    & \texttt{EXPECT\_THROW NO\_THROW ANY\_THROW} & o tipo é o segundo argumento \\
+morte       & \texttt{EXPECT\_DEATH DEBUG\_DEATH}    & roda em processo filho \\
+controle    & \texttt{FAIL() ADD\_FAILURE() SUCCEED() GTEST\_SKIP()} & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A razão de preferir \texttt{EXPECT\_EQ(a, b)} a \texttt{EXPECT\_TRUE(a == b)}
+está na terceira coluna: o primeiro imprime os dois valores quando falha, o
+segundo imprime ``false''. A mesma lógica leva aos \emph{matchers} do gmock,
+usáveis em testes comuns via \texttt{EXPECT\_THAT} --- um \texttt{ElementsAre} que
+falha imprime os dois vetores inteiros e marca o índice divergente:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\emph{Matchers}: valem sobretudo pela mensagem de falha.}]
+EXPECT_THAT(v, ElementsAre(1, 2, 3));      EXPECT_THAT(v, SizeIs(Ge(3)));
+EXPECT_THAT(v, UnorderedElementsAre(3, 1, 2));  EXPECT_THAT(s, HasSubstr("erro"));
+EXPECT_THAT(x, AllOf(Gt(0), Lt(100)));     EXPECT_THAT(o, Optional(Eq(42)));
+\end{lstlisting}
+
+\subsubsection{Ponto flutuante}
+
+Um \texttt{double} representa números em base 2, e \texttt{0.1} não tem
+representação exata em base 2 --- como $1/3$ não tem representação decimal
+finita. O subprojeto imprime a consequência:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/testing/}: por que \texttt{==} não serve.}]
+0.1 + 0.2 = 0.30000000000000004441
+0.3       = 0.29999999999999998890
+diferença = 5.551e-17
+\end{lstlisting}
+
+A unidade natural de tolerância é o \textbf{ULP} (\emph{unit in the last place}):
+a distância entre dois \texttt{double} consecutivos representáveis em torno
+daquele valor. Ela é minúscula perto de zero e grande perto de $10^{15}$, que é
+exatamente o que se quer --- por isso \texttt{EXPECT\_DOUBLE\_EQ}, que aceita
+4~ULPs, \emph{escala com a magnitude}, enquanto \texttt{EXPECT\_NEAR(a, b, 1e-9)}
+usa tolerância absoluta.
+
+\begin{armadilha}[nenhuma comparação de \emph{float} funciona bem em torno de zero]
+4~ULPs de zero é um número absurdamente pequeno --- praticamente uma exigência de
+igualdade exata. Perto de zero, use \texttt{EXPECT\_NEAR} com uma tolerância que
+faça sentido para o \emph{domínio}. E \texttt{NaN} não é igual a nada, nem a si
+mesmo: verifique com \texttt{EXPECT\_TRUE(std::isnan(x))}.
+\end{armadilha}
+
+\subsubsection{Fixtures e o ciclo de vida}
+
+Uma \textbf{fixture} é uma classe que carrega a preparação comum a vários casos.
+Deriva de \texttt{::testing::Test}, e os casos passam a usar \texttt{TEST\_F},
+com o nome da \emph{classe} como primeiro argumento. A regra que mais surpreende
+é a que garante o ``I'' de isolado: o GoogleTest constrói uma instância
+\textbf{nova} da fixture para \textbf{cada} caso.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={O ciclo de vida, resumo de \texttt{src/testing/demo\_organizacao.hpp}.}]
+SetUpTestSuite()          ← UMA vez, antes de todos os casos
+   construtor  →  SetUp()  →  caso 1  →  TearDown()  →  destrutor
+   construtor  →  SetUp()  →  caso 2  →  TearDown()  →  destrutor
+TearDownTestSuite()       ← UMA vez, depois de todos
+\end{lstlisting}
+
+Há, portanto, dois pares de ganchos, e a escolha entre eles não é estilística:
+use o \textbf{construtor} por padrão --- ele permite membros \texttt{const} e sem
+construtor padrão; use \texttt{SetUp()} quando a preparação puder falhar com
+\texttt{ASSERT\_*} ou quando a fixture for herdada; use o \textbf{destrutor} por
+padrão, e \texttt{TearDown()} quando a limpeza usar \texttt{ASSERT\_*} ou puder
+lançar. O arquivo \texttt{src/testing/test\_fixture.cpp} tem um caso cuja única
+função é \emph{provar} o isolamento --- ele falharia se a fixture fosse
+compartilhada:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O teste que prova que a fixture é reconstruída.}]
+TEST_F(CarrinhoTest, SegundoTesteVeCarrinhoLimpo) {
+    EXPECT_TRUE(carrinho.vazio())
+        << "se este teste falhar, a fixture está sendo compartilhada";
+}
+\end{lstlisting}
+
+\begin{armadilha}[\texttt{SetUpTestSuite} compartilha estado entre casos]
+Os ganchos de \emph{suíte} rodam uma única vez e são estáticos, portanto o que
+eles preparam é comum a todos os casos. É a porta de entrada para o teste que só
+falha numa ordem específica --- e que passa quando você o roda sozinho para
+investigar. Use apenas para recursos \textbf{caros e imutáveis}.
+\end{armadilha}
+
+\subsubsection{As quatro variantes, e as FRONTEIRAS}
+
+\begin{table}[htbp]
+\centering
+\caption{O que cada macro de teste faz variar.}
+\label{tab:variantes-teste}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Macro} & \textbf{Varia} & \textbf{Quando usar} \\
+\midrule
+\texttt{TEST}       & nada    & caso isolado, sem preparação \\
+\texttt{TEST\_F}    & fixture & preparação repetida \\
+\texttt{TEST\_P}    & \textbf{dados} & mesma lógica, muitas entradas \\
+\texttt{TYPED\_TEST}& \textbf{tipos} & \emph{template}, ou $N$ implementações da mesma interface \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\texttt{TEST\_P} é o que mais rende, e a razão não é economia de linhas. Um laço
+\texttt{for} dentro de um \texttt{TEST\_F} produz \textbf{um} teste: ele para na
+primeira falha e a mensagem diz ``algo, em algum caso''. Um
+\texttt{INSTANTIATE\_TEST\_SUITE\_P} produz \textbf{N} testes independentes, e a
+falha diz \texttt{Faixas/DescontoTest.AplicaAFaixaCorreta/exatamente\_50}.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{TEST\_P} sobre as fronteiras, em
+             \texttt{src/testing/test\_parametrizado.cpp}.}]
+struct CasoDesconto {          // um struct com NOMES, não um std::tuple:
+    int         pecas;         // `caso.pecas` se lê melhor que get<0>(caso)
+    double      desconto_esperado;
+    const char* rotulo;        // vira parte do NOME do teste
+};
+class DescontoTest : public ::testing::TestWithParam<CasoDesconto> { /* ... */ };
+
+TEST_P(DescontoTest, AplicaAFaixaCorreta) {
+    const auto& caso = GetParam();
+    loja::Carrinho c{precos};
+    c.adicionar("caneta", caso.pecas);
+    EXPECT_DOUBLE_EQ(c.percentual_de_desconto(), caso.desconto_esperado)
+        << "com " << caso.pecas << " peças";
+}
+
+// As FRONTEIRAS são o que importa: 9/10, 49/50, 99/100. Um teste que só
+// verifica 5, 30 e 200 passaria com um `>` no lugar de um `>=`.
+INSTANTIATE_TEST_SUITE_P(
+    Faixas, DescontoTest,
+    ::testing::Values(CasoDesconto{  9, 0.00, "logo_abaixo_de_10"},
+                      CasoDesconto{ 10, 0.05, "exatamente_10"},
+                      CasoDesconto{ 49, 0.05, "logo_abaixo_de_50"},
+                      CasoDesconto{ 50, 0.10, "exatamente_50"},
+                      CasoDesconto{100, 0.15, "exatamente_100"}),
+    [](const ::testing::TestParamInfo<CasoDesconto>& info) {
+        return std::string{info.param.rotulo};      // o gerador de nomes
+    });
+\end{lstlisting}
+
+Os geradores prontos são \texttt{Values(...)}, \texttt{Range(0, 10)} (com passo
+opcional), \texttt{Bool()}, \texttt{ValuesIn(container)} --- a partir de um vetor
+montado em execução --- e \texttt{Combine(a, b)}, o \textbf{produto cartesiano},
+que explode rápido.
+
+\begin{armadilha}[sem o gerador de nomes, ``o /3 falhou'' não diz nada]
+O último argumento de \texttt{INSTANTIATE\_TEST\_SUITE\_P} é opcional e, na
+prática, quase obrigatório: sem ele os casos se chamam \texttt{.../0},
+\texttt{.../1}, e o relatório do CI vira um enigma. O \emph{lambda} que devolve o
+rótulo custa três linhas.
+\end{armadilha}
+
+Os \textbf{testes tipados} resolvem o problema simétrico: a mesma lógica sobre
+vários \emph{tipos} --- é como se testa um \emph{template}, ou $N$ implementações
+da mesma interface.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{TYPED\_TEST}: um corpo, vários tipos.}]
+template <typename T> class ContainerTest : public ::testing::Test {
+protected: T container;
+};
+using TiposTestados = ::testing::Types<std::vector<int>, std::deque<int>>;
+TYPED_TEST_SUITE(ContainerTest, TiposTestados);
+
+TYPED_TEST(ContainerTest, ComecaVazioEDepoisNao) {
+    EXPECT_TRUE(this->container.empty());     // ← o `this->` é obrigatório
+    this->container.push_back(42);
+    EXPECT_EQ(this->container.size(), 1u);
+}
+\end{lstlisting}
+
+\begin{armadilha}[em \texttt{TYPED\_TEST}, os membros da fixture exigem \texttt{this->}]
+A fixture é um \emph{template}, e \texttt{container} é um \textbf{nome dependente}
+--- depende do parâmetro \texttt{T}. Pela regra de busca de nomes do C++, o
+compilador não procura em classes-base dependentes na primeira fase da compilação
+do \emph{template} (\cref{sec:templates}). Sem o \texttt{this->}, ele nem olha em
+\texttt{ContainerTest<T>} e reporta ``não declarado neste escopo''.
+\end{armadilha}
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={As opções de linha de comando que mais rendem.}]
+--gtest_filter=*Desconto*:-*Lento*   # incluir e excluir por padrão de nome
+--gtest_repeat=200 --gtest_shuffle   # a combinação que caça flakiness
+--gtest_break_on_failure             # parar no depurador
+--gtest_output=xml:res.xml           # para o CI
+meson test -C build testing_mock -v  # um alvo, com a saída na tela
+meson test -C build --repeat 50 --gdb --wrapper=valgrind
+\end{lstlisting}
+
+Um teste temporariamente quebrado se marca renomeando-o para
+\texttt{DISABLED\_...}: o GoogleTest o pula e \textbf{avisa} quantos estão
+desabilitados --- melhor que comentar o teste e esquecer que ele existe.
+
+\begin{armadilha}[dois erros de infraestrutura que deixam o CI verde à toa]
+\textbf{(1)} O Conan expõe quatro pacotes separados: \texttt{gtest} (asserções e
+o \emph{runner}, \textbf{sem} \texttt{main}), \texttt{gtest\_main},
+\texttt{gmock} e \texttt{gmock\_main}. Linkar só com \texttt{gtest} produz
+\texttt{undefined reference to 'main'} --- foi o que aconteceu na primeira versão
+do \texttt{meson.build} deste subprojeto.
+\textbf{(2)} \texttt{RUN\_ALL\_TESTS()} precisa ter o retorno \emph{retornado}:
+ignorá-lo faz o binário sair com código 0 mesmo com testes falhando, e o CI fica
+verde com a suíte quebrada. O GoogleTest marca a função \texttt{[[nodiscard]]}
+justamente por isso.
+\end{armadilha}
+
+\subsubsection{Os cinco dublês e a injeção de dependência}
+
+Um \textbf{dublê de teste} é qualquer objeto que substitui uma dependência real
+durante o teste. A taxonomia de Meszaros distingue cinco, e a distinção importa
+porque cada um responde a uma pergunta diferente.
+
+\begin{table}[htbp]
+\centering
+\caption{Os cinco dublês de teste, e o que cada um verifica.}
+\label{tab:dubles}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Dublê} & \textbf{O que faz} & \textbf{Verifica} \\
+\midrule
+\emph{dummy} & só preenche um parâmetro; nunca é usado & nada \\
+\emph{stub}  & devolve respostas prontas               & \textbf{estado} \\
+\emph{spy}   & um \emph{stub} que anota o que recebeu  & os dois \\
+\emph{mock}  & tem expectativas programadas            & \textbf{interação} \\
+\emph{fake}  & implementação real, simplificada        & \textbf{estado} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{regra}[a escolha certa quase sempre é \emph{fake} ou \emph{stub}]
+O \emph{mock} existe para uma pergunta específica --- ``o código chamou X?'' --- e
+essa pergunta só importa quando a chamada \textbf{é} o efeito que o código
+produz: enviou o e-mail, gravou o \emph{log}, publicou a mensagem. Se o efeito é
+observável no estado, verifique o estado.
+\end{regra}
+
+E tudo isso só é possível por causa de uma única linha de projeto ---
+\texttt{explicit Carrinho(const RepositorioDePrecos\& precos);}. Compare com o
+que quase todo mundo escreve primeiro:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A dependência construída por dentro contra a dependência injetada.}]
+class Carrinho {
+    BancoDeDados db_{"localhost:5432"};   // ✗ só testável com Postgres rodando
+};
+class Carrinho {                          // ✓ a dependência entra de fora
+public:
+    explicit Carrinho(const RepositorioDePrecos& precos);
+};
+\end{lstlisting}
+
+Isso é \textbf{injeção de dependência}, e não é sobre ``usar interfaces em
+tudo'': é sobre inverter \emph{quem decide} a dependência concreta --- não a
+classe, e sim quem a constrói. É o D de SOLID (\cref{sec:solid}). Em ordem de
+preferência: parâmetro de \textbf{função} (menor acoplamento possível), de
+\textbf{construtor} (quando vários métodos a usam), de \textbf{template}
+(despacho estático, sem \gls{vtable} e sem alocação, \cref{sec:templates}).
+
+\begin{armadilha}[os cinco padrões que impedem o teste]
+\textbf{(a) \emph{Singleton}} --- amarra o código a uma configuração global
+compartilhada entre testes, e dois testes com configurações diferentes passam a
+depender da ordem. \textbf{(b) \texttt{new} dentro da classe} --- se o objeto
+constrói a própria dependência, não há como substituí-la. \textbf{(c) O relógio}
+--- \texttt{std::chrono::system\_clock::now()} dentro da lógica torna impossível
+testar a virada do mês; injete o relógio. \textbf{(d) Funções estáticas livres
+que fazem IO} --- não existe ponto de extensão. \textbf{(e) Métodos privados que
+você ``precisa'' testar} --- é sintoma: ou o comportamento é alcançável pela
+interface pública, ou aquilo é outra classe querendo nascer. E
+\texttt{\#define private public} antes do \texttt{\#include} ``funciona'' e é
+\gls{ub}: muda o \emph{layout} do objeto e viola a ODR --- a Regra da Definição
+Única, que exige que todo tipo tenha \emph{a mesma} definição em todas as
+unidades de tradução.
+\end{armadilha}
+
+\subsubsection{gmock: comportamento e interação}
+
+Declarar um \emph{mock} custa uma linha por método virtual. Os parênteses em
+volta dos parâmetros são obrigatórios, e um tipo com vírgula ---
+\texttt{std::map<int,int>} --- precisa dos seus próprios parênteses ou de um
+\emph{alias}, senão o pré-processador quebra a lista de argumentos na vírgula
+errada.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{MOCK\_METHOD} e \texttt{EXPECT\_CALL}, em
+             \texttt{src/testing/test\_mock.cpp}.}]
+class MockPrecos : public loja::RepositorioDePrecos {
+public:
+    // MOCK_METHOD(retorno, nome, (parâmetros), (qualificadores));
+    MOCK_METHOD(std::optional<double>, preco_de, (const std::string& sku),
+                (const, override));
+};
+
+TEST(MockPrecos, ConsultaUmaVezPorAdicionar) {
+    MockPrecos precos;
+    // Esta é a asserção do teste, e ela é verificada no DESTRUTOR do mock:
+    // não há EXPECT_ nenhum no corpo, e ainda assim o teste pode falhar.
+    EXPECT_CALL(precos, preco_de(Eq("caneta")))
+        .Times(2)
+        .WillRepeatedly(Return(std::optional<double>{2.50}));
+
+    loja::Carrinho c{precos};
+    c.adicionar("caneta", 1);
+    c.adicionar("caneta", 1);
+}
+\end{lstlisting}
+
+São duas coisas distintas: \texttt{ON\_CALL(...).WillByDefault(...)}
+\textbf{define comportamento} e não é asserção; \texttt{EXPECT\_CALL(...)}
+\textbf{é a asserção}.
+
+\begin{armadilha}[a ordem das regras de \texttt{ON\_CALL} é a inversa da intuição]
+Descoberta na primeira execução de \texttt{test\_mock.cpp}:
+\begin{lstlisting}[style=bt, language=C++, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+ON_CALL(precos, preco_de(Eq("caneta"))).WillByDefault(Return(2.50));
+ON_CALL(precos, preco_de(_)).WillByDefault(Return(std::nullopt));   // ⚠
+\end{lstlisting}
+Isto falha com \texttt{C++ exception with description "produto desconhecido:
+caneta"}. O gmock tenta as regras da \textbf{mais recente para a mais antiga} ---
+e o \texttt{\_}, declarado por último, captura também a caneta. \textbf{A regra
+genérica precisa vir primeiro}, para que as específicas, declaradas depois,
+ganhem.
+\end{armadilha}
+
+Um \emph{mock} tem ainda três níveis de rigor diante de uma chamada que nenhuma
+expectativa previu: \texttt{NaggyMock} (o padrão) imprime aviso no \emph{log} e o
+teste \emph{passa}; \texttt{NiceMock} ignora em silêncio; \texttt{StrictMock}
+\textbf{falha} o teste. Use \texttt{NiceMock} por padrão --- o \emph{naggy} enche
+o \emph{log} de ruído e o \emph{strict} quebra o teste toda vez que a
+implementação ganha uma chamada legítima a mais.
+
+\begin{regra}[mais de dois ou três \texttt{EXPECT\_CALL} é sinal de teste frágil]
+Um teste assim verifica a \emph{implementação}, não o comportamento; ele passará
+a falhar em toda refatoração correta. \textbf{Mocke} o que é lento, não
+determinístico, irreversível, difícil de levar a um estado de erro, ou o que
+ainda não existe. \textbf{Não mocke} tipos de valor, a biblioteca padrão, código
+seu que é rápido e determinístico, nem tipos que você não possui --- para esses,
+mocke a \emph{sua} camada de adaptação em volta deles.
+\end{regra}
+
+\subsubsection{\emph{Death tests}: verificar que o programa morre}
+
+A pré-condição \texttt{assert(quantidade > 0)} aborta o processo quando violada.
+Como testar isso, se abortar mataria o processo de teste? O GoogleTest resolve
+com \texttt{fork()}: a expressão roda num processo \textbf{filho}, e o pai
+verifica o código de saída e a saída em \emph{stderr}.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{EXPECT\_DEATH}, em \texttt{src/testing/test\_death.cpp}.}]
+// Uma suíte terminada em `DeathTest` é executada ANTES de todas as outras,
+// para reduzir a chance de o fork acontecer com threads já criadas.
+TEST_F(CarrinhoDeathTest, QuantidadeZeroAborta) {
+    loja::Carrinho c{precos};
+    // O segundo argumento casa contra a stderr do filho: é o que distingue
+    // "morreu pelo motivo certo" de "morreu por qualquer motivo".
+    EXPECT_DEATH(c.adicionar("caneta", 0), "quantidade precisa ser positiva");
+}
+\end{lstlisting}
+
+\begin{armadilha}[os quatro perigos dos \emph{death tests}]
+\textbf{(1) Threads.} \texttt{fork()} num processo com \emph{threads} clona
+apenas a \emph{thread} que chamou; se outra segurava um \emph{mutex}, o filho
+trava para sempre --- daí a convenção do sufixo \texttt{DeathTest}.
+\textbf{(2) Efeitos colaterais.} O que a instrução faz acontece no \emph{filho} e
+é descartado: depois de \texttt{EXPECT\_DEATH(\{ x = 1; morre(); \}, "")}, o
+\texttt{x} do pai continua zero.
+\textbf{(3) O regex.} É POSIX estendido no Linux e um subconjunto simples no
+Windows; um regex vazio casa qualquer coisa --- e aí o teste só verifica que
+morreu, não por quê.
+\textbf{(4) Velocidade.} Cada caso é um \emph{fork} mais uma execução.
+\end{armadilha}
+
+Como \texttt{assert} vira um \emph{no-op} sob \texttt{NDEBUG}, os \emph{death
+tests} só existem em compilação de depuração; em \emph{release} eles se
+auto-pulam com \texttt{GTEST\_SKIP()} --- testar um \texttt{assert} desativado
+seria testar o compilador. A macro \texttt{EXPECT\_DEBUG\_DEATH} faz isso
+sozinha, dispensando o \texttt{\#ifndef} escrito à mão. E uma exceção
+\textbf{não} é morte: é comportamento normal e previsto, para o qual existe
+\texttt{EXPECT\_THROW}.
+
+\subsubsection{Cobertura, e o que 100\% não garante}
+
+\textbf{Cobertura} é a fração do código \emph{executada} durante a suíte. Vem em
+quatro sabores, e a diferença entre eles é a diferença entre uma métrica
+confortável e uma métrica útil.
+
+\begin{table}[htbp]
+\centering
+\caption{Os quatro tipos de cobertura, para \texttt{if (a \&\& b) faz\_algo();}.}
+\label{tab:cobertura-tipos}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Tipo} & \textbf{O que mede} & \textbf{Testes necessários} \\
+\midrule
+linha    & a linha executou?                      & 1 \\
+ramo     & os dois lados do \texttt{if}?          & 2 \\
+condição & cada subcondição foi \texttt{true} \textbf{e} \texttt{false}? & \texttt{a} e \texttt{b} variando \\
+caminho  & todas as combinações de todos os ramos & exponencial \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O curto-circuito do \texttt{\&\&} é o que separa \emph{linha} de
+\emph{condição}: com \texttt{a} falso, \texttt{b} nunca é avaliado --- a linha
+conta como coberta e metade da lógica nunca rodou. A maioria das ferramentas
+reporta \emph{linha} por padrão, a métrica mais fácil e menos informativa; peça
+ramo com \texttt{gcov -b} ou \texttt{lcov --rc branch\_coverage=1}.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Medindo cobertura com GCC e com o Meson.}]
+g++ --coverage -O0 -g fonte.cpp teste.cpp -lgtest_main -lgtest
+./a.out && gcov -b fonte.cpp        # relatório por arquivo, com ramos
+lcov --capture -d . -o cov.info && genhtml cov.info -o html/
+
+meson setup build -Db_coverage=true && meson test -C build
+ninja -C build coverage-html
+\end{lstlisting}
+
+Compile com \texttt{-O0}: com otimização, \emph{inlining} e eliminação de código
+morto embaralham a numeração e o relatório passa a mentir nas duas direções.
+
+\begin{armadilha}[o que 100\% de cobertura NÃO garante]
+\textbf{(a) Que as asserções existem.} \texttt{TEST(X, Cobre) \{ minha\_funcao(1,
+2); \}} dá 100\% da função e não verifica \textbf{nada}.
+\textbf{(b) Que os valores certos foram testados.} Cobrir \texttt{if (n >= 10)}
+com \texttt{n=5} e \texttt{n=50} é 100\% de ramo --- e não descobre que o certo
+era \texttt{> 10}. As \textbf{fronteiras} encontram esse bug, e cobertura não
+pede por elas.
+\textbf{(c) Que o código que falta existe.} Um \texttt{else} esquecido não
+aparece em relatório nenhum: cobertura mede o que está escrito, não o que deveria
+estar.
+\textbf{(d) Ausência de \gls{ub}.} Um \texttt{int} que estoura executa a linha e
+conta como coberta.
+\end{armadilha}
+
+\begin{regra}[cobertura é detector de buracos, não meta numérica]
+Lida como relatório --- ``este \texttt{catch} nunca rodou'', ``esta função
+inteira está em zero'' --- é uma das ferramentas mais úteis que existem. Como
+\emph{gate} numérico do CI, produz exatamente o tipo de teste que o item (a)
+descreve. A métrica melhor é o \textbf{teste de mutação}: a ferramenta altera o
+código (troca \texttt{>=} por \texttt{>}, inverte um \texttt{if}) e verifica se
+\emph{algum} teste falha --- um mutante que sobrevive é um buraco real. Em C++:
+\texttt{mull}, \texttt{Dextool}.
+\end{regra}
+
+Além dos testes de exemplo, que verificam \emph{um} caso que você imaginou, há
+duas técnicas para os casos que você não imaginou. O \textbf{teste baseado em
+propriedades} troca ``\texttt{f(2,3) == 5}'' por uma propriedade que vale
+\emph{sempre}, e deixa a ferramenta gerar centenas de entradas: idempotência
+(\texttt{ordena(ordena(v)) == ordena(v)}), ida e volta
+(\texttt{desserializa(serializa(x)) == x}), invariante ou oráculo. No carrinho:
+\emph{``o total nunca é maior que o subtotal''}. Biblioteca: RapidCheck. O
+\textbf{fuzzing} alimenta a função com entradas geradas e guiadas por cobertura,
+procurando \emph{crash} e UB --- vale para tudo que recebe entrada \textbf{não
+confiável}: analisadores sintáticos, decodificadores, protocolos.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O ponto de entrada do libFuzzer.}]
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t* d, size_t n) {
+    meu_parser(std::string_view{reinterpret_cast<const char*>(d), n});
+    return 0;
+}   // clang++ -fsanitize=fuzzer,address fuzz.cpp
+\end{lstlisting}
+
+E a combinação de melhor retorno em C++ é rodar a suíte que já existe sob
+\emph{sanitizer}: os testes já exercitam o código, e sob instrumentação cada um
+vira um detector de \emph{use-after-free}, \emph{overflow}, vazamento e UB ---
+\textbf{sem escrever um teste a mais}. É a ponte para a próxima seção.
+
+% =============================================================================
+\subsection{Comportamento indefinido}
+\label{sec:ub}
+% =============================================================================
+
+\begin{porque}[que problema esta seção resolve]
+Uma crença: a de que um programa com \gls{ub} ``dá um valor errado''. Não dá. Ele
+autoriza o compilador a \textbf{remover código que você escreveu} --- inclusive a
+verificação que você pôs justamente para se proteger. A diferença entre as duas
+visões é a diferença entre um bug e uma classe inteira de vulnerabilidades.
+\end{porque}
+
+A definição do padrão é curta e implacável: \emph{``behavior for which this
+document imposes no requirements''}. Nenhuma exigência. E --- o ponto que quase
+todo mundo perde --- o efeito \textbf{não precisa se limitar ao trecho errado}:
+pode aparecer \emph{antes} da linha do erro, porque o compilador reorganizou o
+código supondo que o UB não aconteceria. O exemplo canônico não é acadêmico:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O \texttt{tun\_chr\_poll} do kernel Linux --- CVE-2009-1897.}]
+struct sock* sk = tun->sk;      // ← desreferencia tun
+if (!tun) return POLLERR;       // ← checa DEPOIS
+\end{lstlisting}
+
+O GCC raciocinou: \texttt{tun->sk} só é legal se \texttt{tun != nullptr}, logo
+\texttt{!tun} é sempre falso, logo o \texttt{if} inteiro pode sumir. E sumiu.
+Virou escalação de privilégio --- um atacante conseguia mapear a página zero.
+
+\subsubsection{As quatro categorias, e por que UB existe}
+
+O padrão distingue quatro graus de compromisso, e confundi-los é a origem de
+metade das discussões improdutivas sobre portabilidade.
+
+\begin{table}[htbp]
+\centering
+\caption{As quatro categorias. As três primeiras são seguras; a quarta não tem limite.}
+\label{tab:ub-categorias}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Categoria} & \textbf{O compilador\ldots} & \textbf{Exemplo} \\
+\midrule
+bem definido              & faz o que o padrão manda        & \texttt{2 + 2} \\
+\emph{implementation-defined} & escolhe \textbf{e documenta} & \texttt{sizeof(int)} \\
+\emph{unspecified}        & escolhe, sem documentar         & ordem de avaliação \\
+\textbf{UNDEFINED}        & \textbf{não tem obrigação nenhuma} & \emph{overflow} de \texttt{int} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Neste \emph{toolchain}, \texttt{sizeof(long)} é 8 --- e é \textbf{4 no Windows};
+\texttt{char} é \texttt{signed} --- e é \texttt{unsigned} em ARM por padrão. Nos
+dois casos, o código que supõe o contrário compila e roda até ser portado. A
+ordem de avaliação de argumentos é \emph{unspecified}: numa chamada
+\texttt{print("\{\} \{\} \{\}", f(), f(), f())} o GCC imprime \texttt{3 2 1}. É
+legal, e é armadilha.
+
+\begin{porque}[a troca que o comitê fez de propósito]
+\textbf{(a) Desempenho.} Se \texttt{i + 1 > i} pudesse ser falso, o compilador não
+poderia simplificar \texttt{for (int i = 0; i <= n; ++i)} nem promover \texttt{i}
+a um registrador de 64 bits. Como \emph{overflow} com sinal é UB, ele \emph{pode}
+supor que não acontece.
+\textbf{(b) Portabilidade.} O padrão precisa valer para máquinas com complemento
+de um, palavras de 9 bits e sem unidade de gerenciamento de memória.
+\textbf{(c) Custo zero para quem não usa.} Definir ``acesso fora do vetor lança
+exceção'' exigiria verificação em \textbf{todo} acesso --- e o C++ não cobra por
+segurança que você não pediu.
+\end{porque}
+
+O C++20 converteu um caso famoso: inteiros com sinal passaram a ser
+obrigatoriamente complemento de dois (P0907). O \emph{overflow} deles, no
+entanto, \textbf{continua sendo UB} --- a representação foi fixada, o
+\emph{overflow} não.
+
+\begin{table}[htbp]
+\centering
+\caption{O catálogo de UB, agrupado por quem tem chance de pegá-lo.}
+\label{tab:ub-catalogo}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Grupo} & \textbf{Casos} \\
+\midrule
+memória (ASan) & fora dos limites; \emph{use-after-free}; \emph{use-after-scope};
+                 \emph{double free}; \texttt{delete[]} em ponteiro de \texttt{new};
+                 \texttt{nullptr}; referência a objeto morto \\
+aritmética (UBSan) & \emph{overflow} \textbf{com sinal} (sem sinal é definido!);
+                 divisão por zero; \texttt{INT\_MIN / -1}; \emph{shift} $\geq$
+                 largura do tipo; \texttt{double} $\rightarrow$ \texttt{int} fora
+                 de faixa \\
+tipos          & \emph{strict aliasing}; ler membro inativo de \texttt{union};
+                 desalinhamento; usar objeto antes do construtor ou depois do
+                 destrutor \\
+controle       & função não-\texttt{void} sem \texttt{return}; \gls{datarace};
+                 laço infinito sem efeito observável; exceção escapando de
+                 \texttt{noexcept} \\
+biblioteca     & \texttt{v[i]} com \texttt{i >= size()}; desreferenciar
+                 \texttt{end()} ou iterador inválido; \texttt{.front()} em
+                 container vazio; \texttt{memcpy} com \texttt{nullptr}, mesmo com
+                 tamanho 0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Dois itens surpreendem sempre: \emph{overflow} de inteiro \textbf{sem} sinal é
+\textbf{bem definido} --- envolve módulo $2^N$, por exigência do padrão; é só o
+com sinal que é UB. E ler um membro inativo de uma \texttt{union} é o idioma
+padrão de \emph{type punning} em C desde o C99, e é \textbf{UB em C++}.
+
+\subsubsection{Como o UB licencia o otimizador}
+
+A cadeia de raciocínio do compilador é impecável e sempre a mesma: \emph{``este
+programa não tem UB --- o padrão diz que programas corretos não têm. Logo, se
+\texttt{p} foi desreferenciado, \texttt{p != nullptr}. Logo, a verificação
+\texttt{if (p)} três linhas abaixo é sempre verdadeira. Logo, posso apagá-la.''}
+
+\begin{armadilha}[a verificação de \emph{overflow} que não verifica]
+\begin{lstlisting}[style=bt, language=C++, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+if (a + b < a) trata_overflow();     // ✗ some com -O2
+\end{lstlisting}
+Se \texttt{a + b} estoura, o programa já tem UB antes da comparação; logo o
+compilador pode supor que não estoura; logo \texttt{a + b < a} é sempre falso;
+logo a chamada é código morto. As formas corretas verificam \textbf{antes} de
+estourar:
+\begin{lstlisting}[style=bt, language=C++, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+if (__builtin_add_overflow(a, b, &r)) trata_overflow();  // usa o flag da CPU
+if (b > 0 && a > INT_MAX - b)         trata_overflow();  // sem extensão
+\end{lstlisting}
+\end{armadilha}
+
+O arquivo \texttt{src/undefined\_behavior/ub\_exemplos.cpp} --- o único do
+repositório que contém UB de propósito, não instalado e com cada caso exigindo um
+argumento explícito --- tem doze casos. Um deles produziu o resultado que mais
+ensina de todo o subprojeto:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O caso \texttt{uaf}: leitura de memória já liberada.}]
+int caso_uaf(int n) {
+    int* p = new int[4];
+    p[0] = n;
+    delete[] p;
+    return p[0];            // ← use-after-free
+}
+\end{lstlisting}
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Medido em \texttt{src/undefined\_behavior/} com
+             \texttt{-fsanitize=address}: o MESMO código, dois níveis.}]
+-O0 → ERROR: AddressSanitizer: heap-use-after-free
+-O1 → imprime 42, sem diagnóstico nenhum
+\end{lstlisting}
+
+Com \texttt{-O1}, o compilador viu \texttt{p[0] = n; ... return p[0]} e propagou
+a constante: \texttt{return n}. \textbf{A leitura desapareceu antes de o
+\emph{sanitizer} poder instrumentá-la.} Não há acesso, logo não há o que
+reportar.
+
+\begin{regra}[duas conclusões que valem para qualquer projeto]
+(1)~Rode a suíte sob \emph{sanitizer} em \texttt{-O0} \textbf{e} em
+\texttt{-O1}/\texttt{-O2}: cada nível esconde e revela coisas diferentes.
+(2)~\textbf{``O ASan não acusou'' não é prova de que não há UB.} A recomendação
+oficial do ASan é \texttt{-O1}, pelo equilíbrio entre velocidade e fidelidade ---
+e este exemplo mostra que ela também tem custo.
+\end{regra}
+
+O padrão não diz que a execução fica indefinida \emph{a partir} do UB: diz que a
+execução \textbf{inteira} fica indefinida. É o chamado \emph{time travel}:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O efeito que aparece antes da causa.}]
+void f(int* p, bool cond) {
+    printf("antes\n");      // ← pode NÃO ser impresso
+    if (cond) *p = 1;       // ← o UB está aqui
+}
+\end{lstlisting}
+
+Se o compilador provar que \texttt{cond} é sempre verdadeiro e \texttt{p} é
+sempre nulo, o corpo inteiro vira ``inalcançável'' e ele pode remover tudo ---
+inclusive o \texttt{printf} anterior. É o que torna a depuração de UB tão
+desagradável: \textbf{a última mensagem que apareceu não delimita onde o problema
+está}. O corolário é que \texttt{std::unreachable()} (C++23) e
+\texttt{[[assume(x)]]} são \textbf{UB deliberado}: você promete que aquilo não
+acontece, e o compilador otimiza em cima da promessa.
+
+\begin{armadilha}[três casos famosos, e o aviso que pega cada um]
+\textbf{\texttt{memset} para apagar senha} --- não é UB, é eliminação de escrita
+morta perfeitamente legítima: ninguém lê o \emph{buffer} depois, logo a escrita é
+removida, logo a senha fica na memória. Use \texttt{explicit\_bzero} ou um
+ponteiro \texttt{volatile}.
+\textbf{\texttt{if (this == nullptr)}} --- chamar um método já pressupõe
+\texttt{this != nullptr}, então a verificação some
+(\texttt{-Wnonnull-compare}).
+\textbf{Função sem \texttt{return}} --- cair fora de uma função não-\texttt{void}
+é UB, e na prática o compilador emite código que ``continua'' para a função
+seguinte no binário. Ligue \texttt{-Werror=return-type}.
+\end{armadilha}
+
+\subsubsection{Os \emph{sanitizers}, medidos}
+\label{sec:ub-sanitizers}
+
+Um \textbf{\emph{sanitizer}} é instrumentação inserida em tempo de compilação: o
+compilador põe verificações em torno de cada acesso, e uma biblioteca de tempo de
+execução mantém o mapa do que é memória válida. Custa desempenho e memória, e por
+isso não vai para produção --- vai para os \textbf{testes}.
+
+\begin{table}[htbp]
+\centering
+\caption{Os quatro \emph{sanitizers} e o custo de cada um.}
+\label{tab:sanitizers}
+\footnotesize
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Nome} & \textbf{Flag} & \textbf{Pega} & \textbf{Custo} \\
+\midrule
+Address   & \texttt{-fsanitize=address}   & memória (UAF, \emph{overflow}, vazamento) & ${\approx}2\times$ \\
+Undefined & \texttt{-fsanitize=undefined} & UB aritmético e de conversão & ${\approx}1{,}2\times$ \\
+Thread    & \texttt{-fsanitize=thread}    & \gls{datarace}   & $5$--$15\times$ \\
+Memory    & \texttt{-fsanitize=memory}    & leitura de não inicializado & ${\approx}3\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O ASan traz junto o LeakSanitizer, ligado por padrão no Linux: ele reporta, ao fim
+do programa, o que não foi liberado.
+
+\begin{armadilha}[ASan e TSan são incompatíveis; MSan é quase inviável]
+Os dois primeiros instrumentam os mesmos acessos e não podem ser ligados juntos
+--- exigem \textbf{dois jobs separados no CI}. Já o MSan exige que \textbf{toda} a
+pilha esteja instrumentada, inclusive a libstdc++: sem uma libc++ compilada com
+MSan, ele produz falsos positivos ou --- como medido aqui --- \textbf{simplesmente
+não reporta}. É o menos usável dos quatro, e o único que o GCC não implementa. A
+combinação padrão, barata e compatível, é \texttt{address,undefined}.
+\end{armadilha}
+
+Nenhuma linha da \cref{tab:matriz-ub} foi copiada de documentação: cada uma saiu
+de rodar \texttt{ub\_exemplos.cpp} com \texttt{-fsanitize=address,undefined} neste
+\emph{toolchain} (GCC 13.3 e clang 18.1.3).
+
+\begin{table}[htbp]
+\centering
+\caption{Matriz de detecção medida. Três resultados contrariam o senso comum.}
+\label{tab:matriz-ub}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Caso} & \texttt{-O0} & \texttt{-O1} \\
+\midrule
+heap          & ASan: \emph{buffer-overflow}      & ASan: \emph{buffer-overflow} \\
+pilha         & UBSan: \emph{index out of bounds} & idem \\
+\textbf{uaf}  & \textbf{ASan: \emph{heap-use-after-free}} & \textbf{NADA} \\
+dangling      & UBSan: \emph{null reference binding} & idem \\
+overflow      & UBSan: \emph{signed integer overflow} & idem \\
+shift         & UBSan: \emph{shift exponent too large} & idem \\
+divisao       & UBSan: \emph{division by zero}    & idem \\
+nulo          & UBSan: \emph{load of null pointer} & idem \\
+vazamento     & LSan: \emph{detected memory leaks} & idem \\
+\textbf{aliasing}    & \textbf{NADA}              & \textbf{NADA} \\
+\textbf{naoinit}     & \textbf{NADA}              & \textbf{NADA} \\
+\textbf{alinhamento} & \textbf{NADA (GCC)}        & \textbf{NADA (GCC)} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Os três destacados: \textbf{(1)}~\texttt{uaf} some com \texttt{-O1}, pelo motivo
+já explicado; \textbf{(2)}~\texttt{alinhamento} não é pego pelo GCC, nem com
+\texttt{-fsanitize=alignment} isolado --- o clang pega (\texttt{runtime error:
+load of misaligned address ... which requires 4 byte alignment}), de modo que, se
+alinhamento importa no seu código, esta verificação exige clang;
+\textbf{(3)}~\texttt{aliasing} não é pego por nenhum dos dois.
+
+\begin{armadilha}[o que nenhum \emph{sanitizer} pega]
+\textbf{(a) \emph{Strict aliasing}} --- não há instrumentação para isso; a
+violação simplesmente produz o valor que o otimizador decidiu.
+\textbf{(b) Leitura de não inicializado}, na prática --- o MSan existe e é
+inviável sem toda a stdlib instrumentada; a defesa real é
+\texttt{-Wmaybe-uninitialized} e a regra de sempre inicializar.
+\textbf{(c) Violação de ODR entre unidades de tradução} --- só \texttt{-flto} com
+\texttt{-Wodr} tem chance.
+\textbf{(d) A lógica errada} --- nenhum \emph{sanitizer} sabe que a sua fórmula de
+desconto está trocada; é para isso que existem os testes.
+\textbf{(e) O caminho que não foi executado} --- \emph{sanitizer} é análise
+\textbf{dinâmica}: só vê o que rodou. Um \texttt{catch} que os testes nunca
+exercitam pode ter UB e passar limpo. É por isso que \emph{sanitizer} e cobertura
+formam um par: um mede o que rodou, o outro diz o que não rodou.
+\end{armadilha}
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Como rodar --- e a flag que decide se o CI serve para alguma coisa.}]
+g++ -std=c++20 -O1 -g -fsanitize=address,undefined \
+    -fno-omit-frame-pointer -fno-sanitize-recover=all arq.cpp -o prog
+
+meson setup build-asan -Db_sanitize=address,undefined -Db_lundef=false
+meson test -C build-asan
+
+ASAN_OPTIONS=detect_leaks=1:abort_on_error=1
+ASAN_OPTIONS=detect_stack_use_after_return=1
+UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1
+\end{lstlisting}
+
+\begin{regra}[\texttt{-fno-sanitize-recover=all} é essencial no CI]
+Sem ela, o UBSan apenas \textbf{imprime} o diagnóstico e continua a execução --- e
+o código de saída do processo fica 0. A suíte passa \emph{com o UB detectado}, e o
+relatório verde esconde a mensagem no meio do \emph{log}.
+\end{regra}
+
+\subsubsection{\emph{Strict aliasing} e \texttt{bit\_cast}}
+
+A regra, em uma frase: acessar o valor de um objeto por um \emph{lvalue} de tipo
+\textbf{incompatível} é UB. As exceções são poucas e vale decorá-las: o tipo exato
+(com ou sem \texttt{const}/\texttt{volatile}); a versão com ou sem sinal do mesmo
+tipo; uma classe \textbf{base}; e \texttt{char}, \texttt{unsigned char} e
+\classe{std::byte} --- os três únicos universais. \texttt{signed char}
+\textbf{não} está na lista, e é uma assimetria fácil de esquecer.
+
+\begin{porque}[por que a regra existe]
+Para o otimizador. Considere \texttt{void f(int* pi, float* pf)} que escreve em
+\texttt{*pi}, escreve em \texttt{*pf} e depois lê \texttt{*pi}. Com \emph{strict
+aliasing}, o compilador \textbf{sabe} que \texttt{pf} não pode apontar para o
+mesmo objeto que \texttt{pi} e pode reusar o valor que já está no registrador.
+Sem a regra, toda escrita por ponteiro invalidaria todos os valores em
+registrador, e código com ponteiros ficaria sistematicamente mais lento.
+\end{porque}
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\emph{Type punning}: o errado e os dois certos.}]
+int i = *reinterpret_cast<const int*>(&f);      // ✗ UB — e NENHUM sanitizer avisa
+std::memcpy(&i, &f, sizeof f);                  // ✓ legal desde sempre
+auto i = std::bit_cast<std::uint32_t>(f);       // ✓ C++20
+
+static_assert(std::bit_cast<std::uint32_t>(1.0f) == 0x3F800000u);  // constexpr!
+\end{lstlisting}
+
+Medido: os dois caminhos legais dão \texttt{0x4048F5C3} para \texttt{3.14f}. E
+\texttt{memcpy} \textbf{não é lento}: com \texttt{-O2} o compilador reconhece o
+padrão e emite um único \texttt{mov}. \classe{std::bit\_cast} ainda é melhor em
+quatro pontos: exige \texttt{sizeof} igual (erro de \textbf{compilação} se não
+for); exige os dois tipos \emph{trivially copyable}; não menciona ponteiro, então
+não há como errar o \texttt{sizeof}; e é \texttt{constexpr}.
+
+\begin{armadilha}[\texttt{union} para \emph{type punning}: legal em C, UB em C++]
+Ler o membro \textbf{inativo} de uma \texttt{union} é o idioma padrão em C desde o
+C99. Em C++ é UB --- só um membro \emph{existe} por vez, e ler outro viola a regra
+de tempo de vida. GCC e Clang aceitam como extensão; o MSVC não dá a mesma
+garantia. \textbf{Use \texttt{bit\_cast}.}
+\end{armadilha}
+
+Quando a violação já está no código antigo e auditar é inviável, existe a saída de
+emergência \texttt{-fno-strict-aliasing}, que faz o compilador supor que qualquer
+ponteiro pode apontar para qualquer coisa --- o kernel Linux compila com ela desde
+2003, não porque a regra seja ruim, mas porque auditar milhões de linhas de C
+antigo não é possível. A ordem de preferência é: \texttt{bit\_cast}/\texttt{memcpy};
+depois \texttt{char}/\texttt{std::byte} quando você precisa mesmo ver bytes;
+depois \texttt{\_\_attribute\_\_((may\_alias))} cirúrgico; e só então a flag no
+projeto inteiro.
+
+\begin{armadilha}[a flag precisa valer para TODAS as unidades de tradução]
+Uma \textbf{unidade de tradução} é um arquivo \texttt{.cpp} depois do
+pré-processador --- a menor coisa que o compilador compila de uma vez. Se uma
+delas for compilada \emph{sem} \texttt{-fno-strict-aliasing}, ela otimizará em
+cima de uma suposição que outra viola: nenhum erro de \emph{link}, nenhum aviso,
+corrupção em execução.
+\end{armadilha}
+
+\subsubsection{As cinco camadas de defesa}
+
+Da mais barata para a mais cara --- e a mais barata é também a mais eficaz, o que
+costuma surpreender. \textbf{Camada 1: escrever código que não tem como ter UB}
+(custo zero), pela substituição sistemática da \cref{tab:camada-um}.
+
+\begin{table}[htbp]
+\centering
+\caption{Substituições que eliminam categorias inteiras de UB.}
+\label{tab:camada-um}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Em vez de\ldots} & \textbf{Use\ldots} \\
+\midrule
+\texttt{new} / \texttt{delete}        & \classe{std::unique\_ptr}, \classe{std::vector} \\
+\texttt{T*} mais tamanho              & \classe{std::span} \\
+array de C                            & \classe{std::array} \\
+\texttt{v[i]} em código duvidoso      & \texttt{v.at(i)} \\
+\texttt{reinterpret\_cast}            & \classe{std::bit\_cast} \\
+\texttt{int} para tamanhos            & \texttt{std::size\_t} \\
+\texttt{strcpy} / \texttt{sprintf}    & \classe{std::string}, \classe{std::format} \\
+\texttt{T*} que pode ser nulo         & \classe{std::optional}, \texttt{T\&} \\
+\texttt{union} para \emph{punning}    & \classe{std::variant} / \texttt{bit\_cast} \\
+laço com índice                       & \texttt{for (auto\& x : c)} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O exemplo que resume a tabela é o \texttt{span}: \texttt{soma\_c(v.data(), 100)}
+compila sem reclamar; \texttt{soma\_span(v)} não tem \emph{onde} errar o tamanho.
+Sobre \texttt{at()} contra \texttt{[]}: o custo é uma comparação por acesso,
+irrelevante fora do laço mais quente.
+
+\textbf{Camada 2: os avisos do compilador} (custo zero). Além de \texttt{-Wall
+-Wextra -Wpedantic}, que não são negociáveis: \texttt{-Wshadow},
+\texttt{-Wconversion}, \texttt{-Wsign-conversion}, \texttt{-Wold-style-cast},
+\texttt{-Wnull-dereference} (o caso do CVE do kernel),
+\texttt{-Wnon-virtual-dtor}, \texttt{-Wduplicated-cond}, \texttt{-Wlogical-op}. E
+três que devem ser \textbf{erro}: \texttt{-Werror=return-type},
+\texttt{-Werror=uninitialized}, \texttt{-Werror=implicit-fallthrough}.
+
+\textbf{Camada 3: análise estática} --- \texttt{g++ -fanalyzer},
+\texttt{clang-tidy --checks='bugprone-*,cert-*'}, \texttt{cppcheck
+--enable=all}. O valor específico dela é encontrar o caminho que os testes
+\textbf{não} executaram, exatamente o ponto cego do \emph{sanitizer}; falso
+positivo é a norma, então adote incrementalmente, ligando em código novo.
+\textbf{Camada 4: \emph{sanitizers} nos testes} --- a \cref{sec:ub-sanitizers}.
+\textbf{Camada 5: \emph{hardening} em produção} ---
+\texttt{-D\_GLIBCXX\_ASSERTIONS} (verifica \texttt{v[i]}, \texttt{.front()}),
+\texttt{-D\_FORTIFY\_SOURCE=3}, \texttt{-fstack-protector-strong},
+\texttt{-fcf-protection}. O primeiro transforma \texttt{v[i]} fora de faixa de UB
+em aborto com mensagem, ao custo de uma comparação; Red Hat e Google já o ligam
+por padrão.
+
+\begin{armadilha}[\texttt{\_GLIBCXX\_ASSERTIONS} muda a \gls{abi}]
+Ele altera o \emph{layout} de alguns tipos da biblioteca padrão. Precisa valer
+para \textbf{todas} as unidades de tradução e \textbf{todas} as bibliotecas
+linkadas: misturar produz corrupção silenciosa, não erro de \emph{link}. Vale a
+mesma disciplina de \texttt{-fno-strict-aliasing}.
+\end{armadilha}
+
+\begin{aviso}
+A parte honesta: mesmo com as cinco camadas, C++ não é uma linguagem segura por
+construção. Elas reduzem a probabilidade; não a zeram. Isso não é argumento para
+abandonar C++ --- é argumento para levar as camadas a sério, e para reconhecer que
+\textbf{``eu tomo cuidado'' nunca foi uma delas}.
+\end{aviso}
+
+% =============================================================================
+\subsection{Desempenho: medir, e não supor}
+\label{sec:desempenho}
+% =============================================================================
+
+\begin{porque}[que problema o subprojeto \texttt{performance} resolve]
+A intuição de desempenho que a maioria de nós tem foi formada contando
+\emph{operações} --- e a máquina moderna não cobra por operação, cobra por
+\textbf{acesso à memória que não estava no cache}. A consequência é que
+programadores experientes erram por uma ordem de grandeza ao prever qual de duas
+versões é mais rápida. A única saída é medir --- e medir sem se enganar, que é
+mais difícil do que parece.
+\end{porque}
+
+Este é o subprojeto que mais mede: nada nele é afirmado sem um número obtido na
+própria execução, e \textbf{três das medições contrariaram o texto escrito antes
+de medir}. Nos três casos o texto estava errado, e a explicação era mais
+interessante que a expectativa.
+
+\subsubsection{A hierarquia de memória e a linha de cache}
+
+Um \textbf{cache} é uma memória pequena e rápida, junto ao processador, que guarda
+cópias do que foi lido recentemente da RAM. Há três níveis (L1, L2, L3), cada um
+maior e mais lento que o anterior.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=1.6mm]
+  \node[caixaok, minimum width=30mm] (reg) {registrador \quad 0 ciclos};
+  \node[caixaok, minimum width=40mm, below=of reg] (l1)  {cache L1 \quad 4};
+  \node[caixa,   minimum width=52mm, below=of l1]  (l2)  {cache L2 \quad 12};
+  \node[caixa,   minimum width=66mm, below=of l2]  (l3)  {cache L3 \quad 40};
+  \node[caixarisco, minimum width=84mm, below=of l3] (ram)
+      {RAM \quad 200 ciclos --- $50\times$ mais lento que L1};
+\end{tikzpicture}
+\caption{A maior assimetria do hardware moderno. Em 200 ciclos o processador
+         executaria centenas de instruções --- por isso, em código que percorre
+         dados, ``quantas operações'' quase nunca é a pergunta certa, e ``quantos
+         \emph{cache miss}'' é.}
+\label{fig:hierarquia}
+\end{figure}
+
+O processador nunca lê 4 bytes da RAM. Ele lê uma \textbf{linha de cache} --- um
+bloco alinhado de 64 bytes no x86-64. Ler \texttt{v[0]} traz \texttt{v[0..15]}
+junto, de graça: se você usar os quinze vizinhos, eles saíram grátis; se não usar,
+você pagou por eles do mesmo jeito. O experimento soma 1 milhão de elementos de um
+vetor de 64\,MB variando o \emph{passo} entre acessos --- mesmo número de somas em
+todos os casos:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/performance/}: o joelho está exatamente em
+             $64 / \texttt{sizeof(int)}$.}]
+passo | bytes entre acessos | tempo
+------|---------------------|------------------
+    1 |                   4 | 0.38 ms  (1.0×)
+    4 |                  16 | 0.36 ms  (0.9×)
+    8 |                  32 | 0.61 ms  (1.6×)
+   16 |                  64 | 1.39 ms  (3.7×)   ← o joelho
+   32 |                 128 | 2.48 ms  (6.5×)
+\end{lstlisting}
+
+Até o passo 16, vários acessos compartilham a mesma linha e o custo mal se move; a
+partir dali, cada acesso paga uma linha inteira. O passo 32 é ainda pior por causa
+do \textbf{prefetcher} --- o circuito que detecta padrões de acesso e busca as
+linhas \emph{antes} de serem pedidas: ele traz linhas adjacentes, e com 128 bytes
+de passo metade do que ele traz nunca é usada.
+
+\begin{armadilha}[nota de método: um benchmark que produz um número não produziu um número certo]
+A primeira versão deste experimento ia até o passo 1024 e afirmava que o tempo
+``estabiliza'' depois de 16. A medição desmentiu as duas coisas:
+\begin{lstlisting}[style=bt, language=bash, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+passo  256 → 1.75 ms   ← CAIU
+passo  512 → 1.56 ms   ← caiu mais
+passo 1024 → 4.05 ms   ← disparou
+\end{lstlisting}
+A causa é um defeito do \textbf{experimento}: o \texttt{if (i >= kN) i = 0} faz o
+índice dar a volta. Com passo 256, só 65\,536 posições distintas são tocadas ---
+4\,MB, que \textbf{cabem no L3}. O benchmark deixou de medir latência de RAM e
+passou a medir L3. (O salto em 1024 é outro efeito: 4096 bytes é o tamanho da
+página de memória, e ali começa a pressão sobre o TLB, a cache de tradução de
+endereços.) A tabela para no passo 32 porque é a faixa em que o experimento mede o
+que diz medir.
+\end{armadilha}
+
+\subsubsection{Linha contra coluna, \texttt{vector} contra \texttt{list}, e o prefetcher}
+
+Uma matriz $2048 \times 2048$ de \texttt{int} ocupa 16\,MB e é armazenada por
+linhas. Somar \emph{todos} os elementos nas duas ordens possíveis:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/performance/}: mesmo $O(n^2)$, mesmo número de
+             somas, 35 vezes de diferença.}]
+por linha  (i, depois j) :  0.44 ms
+por coluna (j, depois i) : 15.54 ms   ← 35× mais lento
+\end{lstlisting}
+
+A única diferença é a \textbf{ordem} dos acessos: por coluna, cada acesso salta
+8192 bytes --- uma linha de cache nova por elemento, e 15 dos 16 \texttt{int}
+trazidos são descartados antes de serem usados. É por isso que BLAS e Eigen fazem
+\emph{tiling}: quebram a matriz em blocos que cabem em L1.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/performance/}: somando 2 milhões de \texttt{int}.}]
+std::vector<int> : 0.43 ms      4 bytes/elemento, contíguo
+std::list<int>   : 2.80 ms     20 bytes/elemento, uma alocação por nó
+\end{lstlisting}
+
+A \classe{std::list} paga por elemento: 4 bytes de dado mais dois ponteiros mais o
+custo do alocador, cada nó numa alocação separada e potencialmente distante das
+outras. O detalhe que fecha o argumento é que ela tem inserção $O(1)$ no meio --- e
+ainda assim o \texttt{vector} costuma ganhar \emph{até nesse caso}: o
+\texttt{memmove} de $N$ elementos contíguos é mais rápido que \emph{percorrer} a
+lista até a posição de inserção. É a palestra de Bjarne Stroustrup em Going Native
+2012, e continua valendo (\cref{sec:stl}).
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/performance/}: os mesmos 8 milhões de elementos,
+             em três ordens.}]
+crescente   :  0.97 ms  (1.0×)
+decrescente :  1.04 ms  (1.1×)   ← o prefetcher também prevê para trás
+aleatória   : 25.69 ms  (26.4×)
+\end{lstlisting}
+
+O prefetcher detecta passo constante em qualquer direção. Acesso aleatório não tem
+padrão: cada \emph{miss} é pago integralmente. É por isso que uma tabela
+\emph{hash} com sondagem linear ganha de uma com encadeamento --- não por fazer
+menos operações, mas por o prefetcher conseguir ajudar.
+
+\begin{aviso}
+O caso aleatório percorre um \emph{segundo} vetor, o de índices, então parte da
+diferença é esse tráfego a mais. O subprojeto registra a ressalva no próprio
+código, e ela é o tipo de honestidade que separa uma medição de uma propaganda ---
+ainda que o fator seja grande demais para ser só isso.
+\end{aviso}
+
+\subsubsection{AoS contra SoA}
+
+\emph{Array of Structs} (AoS) é como quase todo mundo modela, e é a forma mais
+legível: um \texttt{vector} de estruturas. \emph{Struct of Arrays} (SoA) inverte:
+uma estrutura de vetores, um por campo.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Os dois layouts, de \texttt{src/performance/demo\_aos\_soa.hpp}.}]
+// AoS — legível, e o padrão
+struct Particula { float x, y, z, vx, vy, vz, massa, carga; int id; bool ativa; };
+std::vector<Particula> mundo;
+
+// SoA — o layout que a máquina prefere para alguns laços
+struct Mundo { std::vector<float> x, y, z, vx, vy, vz, massa, carga; };
+\end{lstlisting}
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/performance/}: somando APENAS \texttt{massa} de
+             4 milhões de partículas.}]
+AoS : 3.72 ms      trouxe 152 MB da RAM (a struct inteira, 40 B por partícula)
+SoA : 2.47 ms      trouxe  15 MB        (só o vetor de massa)
+\end{lstlisting}
+
+Aqui está a primeira lição de método: a razão de \textbf{bytes} é $10\times$, e a
+de \textbf{tempo} é só $1{,}5\times$. A diferença entre esses dois números é o
+prefetcher --- o acesso do AoS continua sequencial, e o hardware busca as linhas
+antes de serem pedidas. Ele não elimina o tráfego; elimina a \textbf{espera} por
+ele, até saturar a banda de memória.
+
+\begin{regra}[contar bytes prevê o teto, não o tempo]
+O cálculo ``quantos bytes este laço precisa trazer'' dá o limite inferior imposto
+pela banda de memória. Quanto do teto se realiza depende do prefetcher, da
+vetorização e do número de fluxos simultâneos. Use a conta de bytes para saber
+\emph{se vale a pena tentar}; use o cronômetro para saber \emph{o que aconteceu}.
+\end{regra}
+
+O demo foi escrito supondo que, num laço que usa \emph{quase todos} os campos, o
+AoS venceria --- afinal a \emph{struct} inteira é útil e nada é desperdiçado. Não
+venceu:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/performance/}: o laço que usa todos os campos ---
+             o resultado que contrariou a hipótese.}]
+AoS : 8.62 ms
+SoA : 5.39 ms      ← o SoA ainda ganhou (1.60×)
+\end{lstlisting}
+
+Duas razões prováveis nesta máquina. Primeira: \texttt{sizeof(Particula)} é
+\textbf{40}, e $64 / 40 = 1$ --- cada partícula já ocupa mais de uma linha, então o
+AoS não colhe o benefício de ``tudo na mesma linha''. Segunda: o laço SoA
+\textbf{vetoriza} (o compilador emite uma instrução SIMD que soma oito
+\texttt{float} de uma vez) e o AoS, com passo de 40 bytes, não --- carregar oito
+massas espalhadas exigiria um \emph{gather}, que é lento e nem sempre é escolhido.
+
+\begin{regra}[SoA não é ``o layout rápido'']
+Ele troca \textbf{desperdício de linha} por \textbf{mais fluxos simultâneos}. O
+prefetcher acompanha um número limitado de \emph{streams} --- tipicamente 8 a 16
+--- e oito vetores percorridos em paralelo já disputam esse recurso. Para o AoS
+ganhar, a \emph{struct} precisaria caber confortavelmente numa linha, o que torna
+reordenar campos e cortar \emph{padding} um pré-requisito, e não um detalhe.
+\end{regra}
+
+O custo do SoA é legibilidade: some a entidade como objeto --- não existe mais um
+\texttt{Particula\&} para passar adiante, e funções que operavam sobre uma
+partícula passam a receber um índice e uma referência ao mundo inteiro. Os
+meios-termos, em ordem de esforço: \textbf{(1)~separar por temperatura} --- campos
+quentes numa \emph{struct}, frios em outra, o que mantém a legibilidade e resolve a
+maior parte; \textbf{(2)~AoSoA} --- blocos de $N$ em SoA dentro de um array
+(\texttt{struct Bloco \{ float x[8], y[8], z[8]; \}}), que vetoriza bem e mantém
+localidade, e é o layout de \emph{engines} de física e de código de alto
+desempenho; \textbf{(3)~uma visão} sobre o SoA, um \emph{proxy} que se parece com
+\texttt{Particula\&}. E a regra que vale antes de todas: \textbf{só reorganize o
+layout depois que o \emph{profiler} apontar aquele laço}.
+
+\subsubsection{\emph{False sharing}: $11{,}7\times$ em código correto}
+
+Duas \emph{threads}, duas variáveis \textbf{diferentes}, nenhum \emph{mutex},
+nenhum \gls{datarace}. E o programa fica quase doze vezes mais lento.
+
+\begin{porque}[por que variáveis independentes brigam]
+Porque a unidade de coerência de cache não é a variável --- é a \textbf{linha}. Os
+núcleos mantêm consistência entre seus caches por um protocolo (MESI) que opera em
+linhas inteiras. Se \texttt{a} e \texttt{b} caem na mesma linha de 64 bytes e o
+núcleo 0 escreve em \texttt{a}, o protocolo \textbf{invalida a linha} no núcleo 1
+--- que precisa buscá-la de novo para ler \texttt{b}. Os dois passam a trocar a
+mesma linha entre os caches, ida e volta, milhões de vezes.
+\end{porque}
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/performance/}: 4 threads × 20 milhões de
+             incrementos, cada uma no SEU contador.}]
+contadores na MESMA linha : 336.32 ms
+contadores SEPARADOS      :  28.72 ms   ← 11.7× mais rápido
+\end{lstlisting}
+
+\textbf{O código está correto nos dois casos.} A única diferença entre eles é um
+\texttt{alignas(64)}:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={As duas versões, de \texttt{src/performance/demo\_false\_sharing.hpp}.}]
+struct Grudados {                       // 4 × 8 B = 32 B: tudo na mesma linha
+    std::atomic<long> c[kThreads]{};
+};
+struct Separados {
+    struct alignas(kLinha) Isolado {    // kLinha = 64
+        std::atomic<long> valor{0};
+    };
+    Isolado c[kThreads]{};
+};
+\end{lstlisting}
+
+As correções, em ordem: \textbf{(1)~a melhor é não compartilhar} --- acumule numa
+variável local da \emph{thread} e escreva uma vez no fim; o \texttt{++local} vira
+um registrador, sem tocar em memória nenhuma;
+\textbf{(2)~\texttt{alignas(std::hardware\_destructive\_interference\_size)}},
+quando o compartilhamento é inevitável --- o custo aqui foi 32 para 256 bytes,
+irrelevante para quatro contadores e proibitivo para quatro milhões;
+\textbf{(3)~\emph{padding} manual}, se for preciso portabilidade estrita.
+
+\begin{armadilha}[onde o \emph{false sharing} se esconde]
+\textbf{(a)} Contadores por \emph{thread} num array: \texttt{std::atomic<long>
+acessos[kThreads];}.
+\textbf{(b)} Uma \emph{struct} com campos ``independentes'':
+\texttt{\{ atomic<size\_t> cabeca; atomic<size\_t> cauda; \}} --- é exatamente por
+isso que a fila SPSC de \cref{sec:concorrencia} separa os dois índices com
+\texttt{alignas}.
+\textbf{(c)} Um \texttt{std::vector<bool>} escrito por várias \emph{threads} ---
+aqui é \emph{pior}: os bits compartilham bytes, então é \gls{datarace} de verdade,
+UB e não só lentidão.
+\textbf{(d)} Objetos pequenos alocados em sequência e distribuídos entre
+\emph{threads}: o alocador os põe lado a lado.
+Para diagnosticar em vez de adivinhar: \texttt{perf c2c record} e \texttt{perf c2c
+report} mostram \emph{quais} linhas estão pingando entre núcleos.
+\end{armadilha}
+
+\subsubsection{Predição de desvio, e o experimento que não reproduz mais}
+
+Um processador moderno tem um \emph{pipeline} de 15 a 20 estágios --- começa a
+executar uma instrução muitos ciclos antes de terminar a anterior. Ao chegar num
+\texttt{if}, não pode esperar a condição: \textbf{aposta} num caminho e continua
+especulativamente. Se acerta, custo zero; se erra, o \emph{pipeline} inteiro é
+descartado e recomeçado --- 15 a 20 ciclos perdidos.
+
+O experimento clássico soma condicionalmente 8 milhões de valores aleatórios,
+ordenados contra embaralhados: no vetor ordenado a condição muda uma única vez e o
+preditor acerta quase sempre; no embaralhado ela é aleatória, com $\approx$50\% de
+erro.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Medido em \texttt{src/performance/}: \texttt{for (int x : v) if (x >=
+             128) s += x;} em quatro níveis de otimização.}]
+nível | ordenado | embaralhado | razão | cmov no binário
+------|----------|-------------|-------|----------------
+-O0   | 41.50 ms |   69.31 ms  | 1.7×  |  18
+-O1   |  3.40 ms |    3.41 ms  | 1.0×  |  45
+-O2   |  3.39 ms |    3.42 ms  | 1.0×  |  36
+-O3   |  1.38 ms |    1.38 ms  | 1.0×  |  52
+\end{lstlisting}
+
+O efeito aparece em \texttt{-O0} e \textbf{desaparece a partir de \texttt{-O1}}. A
+causa está na última coluna: com otimização, o GCC 13 converte o \texttt{if} em
+\texttt{cmov} --- \emph{conditional move}, uma instrução que escolhe entre dois
+valores \textbf{sem desviar}. Não há aposta, logo não há como errar a aposta. Esta
+é a resposta mais votada de todo o Stack Overflow (\emph{``Why is processing a
+sorted array faster than an unsorted array?''}, 2012) --- e, no compilador de hoje
+com otimização ligada, \textbf{ela não reproduz mais}.
+
+\begin{regra}[um benchmark medido em \texttt{-O0} não diz nada sobre o binário que você entrega]
+Duas lições, e a segunda vale para sempre: (1)~o compilador moderno já elimina boa
+parte dos desvios imprevisíveis por conta própria; (2)~medir no nível de
+otimização de \textbf{produção} não é detalhe de configuração, é a diferença entre
+um resultado e um artefato. O efeito de predição continua real --- ele só não está
+mais \emph{neste} laço; um desvio que o compilador não consegue converter, com
+chamada de função no corpo, continua pagando os ${\approx}15$ ciclos por erro.
+\end{regra}
+
+A mesma medição resolve a tentação de reescrever \texttt{if} como aritmética:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/performance/}: as três formas são a mesma coisa,
+             porque o compilador já fazia.}]
+(a) if (x >= 128) s += x;      3.42 ms
+(b) s += x & -(x >= 128);      3.40 ms  (0.99×)
+(c) s += x * (x >= 128);       3.35 ms  (0.98×)
+\end{lstlisting}
+
+Antes de trocar legibilidade por aritmética, confirme em vez de supor:
+\texttt{g++ -O2 -S -masm=intel arq.cpp -o - | grep -c cmov}. As dicas explícitas
+--- \texttt{[[likely]]}, \texttt{[[unlikely]]}, \texttt{\_\_builtin\_expect} ---
+ajudam quando você \textbf{sabe} a proporção; chutar errado piora, e o \textbf{PGO}
+(\texttt{-fprofile-generate} seguido de \texttt{-fprofile-use}) \emph{mede} em vez
+de chutar.
+
+\begin{armadilha}[quando não se preocupar com predição de desvio]
+Ela só importa quando \textbf{três} coisas coincidem: o desvio está num laço muito
+quente; a condição é genuinamente imprevisível; \textbf{e} o corpo é curto --- se
+ele faz trabalho de verdade, os ${\approx}15$ ciclos desaparecem no meio. Desvios
+que o preditor acerta quase sempre: a condição de parada de um \texttt{for} (erra
+\emph{uma} vez, no fim), a verificação de erro que quase nunca dispara, e qualquer
+desvio fora de um laço quente. Para medir: \texttt{perf stat -e
+branches,branch-misses ./prog} --- abaixo de 1\% é normal, acima de 5\% num laço
+quente investigue, acima de 20\% você achou.
+\end{armadilha}
+
+\subsubsection{Como medir sem se enganar}
+
+Esta é a parte mais importante do subprojeto: as anteriores dão números, esta
+ensina a desconfiar deles. São cinco jeitos de produzir um número falso.
+
+\paragraph{(1) O código foi eliminado.} Se o resultado de um cálculo nunca é lido,
+o compilador tem licença para apagar o cálculo inteiro:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/performance/}: o número falso mais comum de
+             todos.}]
+somando 10 M ints, resultado DESCARTADO :  0.000 ms
+o mesmo, com `nao_otimize(s)`           :  1.317 ms
+→ o primeiro foi ELIMINADO: ~20000× "mais rápido" porque não aconteceu
+\end{lstlisting}
+
+A defesa é um \textbf{sumidouro} --- uma construção que impede o compilador de
+provar que o valor é inútil. O bloco de \emph{assembly} abaixo está vazio e não
+emite instrução nenhuma; o que ele faz é \emph{informar} ao compilador que uma
+função leu \texttt{valor} e pode ter mexido em qualquer memória, e isso basta para
+que o cálculo não possa ser removido nem reordenado por cima dele. É o mesmo
+truque de \texttt{benchmark::DoNotOptimize} do Google Benchmark.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O sumidouro e o cronômetro, de \texttt{src/performance/bench.hpp}.}]
+template <typename T>
+inline void nao_otimize(T const& valor) {
+    asm volatile("" : : "r,m"(valor) : "memory");
+}
+
+template <typename F>
+double mediana_ms(F&& corpo, int repeticoes = 7) {
+    std::vector<double> amostras;
+    corpo();                                     // aquecimento, fora da conta
+    for (int i = 0; i < repeticoes; ++i) {
+        const auto t0 = std::chrono::steady_clock::now();
+        corpo();
+        const auto t1 = std::chrono::steady_clock::now();
+        amostras.push_back(
+            std::chrono::duration<double, std::milli>(t1 - t0).count());
+    }
+    std::sort(amostras.begin(), amostras.end());
+    return amostras[amostras.size() / 2];        // MEDIANA, não média
+}
+\end{lstlisting}
+
+\paragraph{(2) A primeira execução paga a mais.} Falhas de página --- a primeira
+escrita numa página recém-alocada exige que o sistema operacional a mapeie de fato
+---, cache frio, TLB frio, carregamento de bibliotecas. Sempre \textbf{aqueça}
+antes de cronometrar.
+
+\paragraph{(3) Uma amostra é ruído.} Uma interrupção do sistema operacional no
+meio da medição distorce a \textbf{média} e não move a \textbf{mediana}. Use a
+mediana de 5 a 11 execuções --- e o \classe{std::steady\_clock}, não o
+\texttt{system\_clock}, que pode andar para trás quando o NTP ajusta a hora.
+
+\paragraph{(4) O nível de otimização errado} --- é o caso da predição de desvio,
+$1{,}7\times$ em \texttt{-O0} e $1{,}0\times$ em \texttt{-O2}.
+\textbf{(5) O dado é amigável demais} --- é o caso do passo 256 que cabia no L3.
+
+\begin{regra}[\emph{benchmark} ou \emph{profiler}? Os dois, nesta ordem]
+O \emph{benchmark} responde ``a versão B é mais rápida que a A?''; o
+\emph{profiler} responde ``\textbf{onde} o programa gasta o tempo?''.
+\emph{Profiler} primeiro, para achar o trecho que importa; \emph{benchmark}
+depois, para comparar alternativas naquele trecho. Otimizar sem \emph{profiler} é
+o erro mais caro que existe --- não porque a otimização não funcione, mas porque
+ela se aplica ao lugar errado: acelerar em $10\times$ uma função que consome 2\%
+do tempo melhora o total em \textbf{1,8\%}.
+\end{regra}
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={\texttt{perf}, o mínimo que vale saber.}]
+perf stat ./prog                 # IPC, branch-misses, cache-misses
+perf record -g ./prog            # -g = pilha de chamadas
+perf report                      # navegável
+perf annotate                    # linha a linha, com o assembly
+perf stat -e LLC-load-misses ./prog
+perf c2c record ./prog           # false sharing
+\end{lstlisting}
+
+O \textbf{IPC} (\emph{instructions per cycle}) é o indicador mais informativo de
+uma linha só: abaixo de 1,0 significa que o processador está esperando memória;
+acima de 2,0 é bom.
+
+\begin{armadilha}[compile com \texttt{-g} mesmo em \emph{release}]
+Sem informação de depuração e sem \texttt{-fno-omit-frame-pointer}, o
+\texttt{perf report} mostra endereços em vez de nomes de função. \texttt{-g} não
+deixa o binário mais lento: só maior. É o que o \texttt{meson.build} deste
+subprojeto faz --- ele é o único do repositório que \textbf{fixa} a otimização,
+porque o padrão do Meson vem do \texttt{buildtype} (\emph{debug} implica
+\texttt{-O0}) e um \emph{benchmark} sem otimização não diz nada sobre o binário
+que se entrega. Em WSL e em contêineres, o \texttt{perf} costuma exigir
+\texttt{sudo sysctl kernel.perf\_event\_paranoid=1}, e alguns eventos de hardware
+simplesmente não existem em máquina virtual.
+\end{armadilha}
+
+\begin{table}[htbp]
+\centering
+\caption{A ordem certa de otimizar: do que mais rende para o que menos rende.}
+\label{tab:ordem-otimizar}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Passo} & \textbf{O que é} & \textbf{Ganho típico} \\
+\midrule
+1. o algoritmo        & $O(n \log n)$ no lugar de $O(n^2)$ & ilimitado \\
+2. fazer menos        & cache de resultado, saída antecipada, lote & alto \\
+3. o layout dos dados & é onde estão os $10\times$ e $35\times$ deste capítulo & alto \\
+4. paralelizar        & limitado pelos núcleos; nova classe de bugs & médio \\
+5. micro-otimização   & SIMD manual, código sem desvio & 10--30\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+E as \emph{flags}, que são de graça: \texttt{-O2} (o padrão sensato);
+\texttt{-O3} (mais vetorização --- \textbf{meça}, às vezes piora);
+\texttt{-march=native} (libera AVX2/AVX-512 da máquina local, e produz binário que
+\textbf{não roda} em CPU mais antiga); \texttt{-flto}; e o \textbf{PGO}, que é o
+ganho mais consistente (5 a 15\%) e quase nunca usado.
+
+\begin{regra}[meça, mude, meça de novo]
+Sem o primeiro passo você não sabe onde mexer; sem o terceiro, não sabe se
+melhorou. Todo o resto desta seção é consequência dessas duas frases.
+\end{regra}
+
+% =============================================================================
+\subsection{Síntese}
+% =============================================================================
+
+As três seções tratam de assuntos diferentes e chegam à mesma conclusão, que vale
+nomear: \textbf{em C++, a ausência de sintoma não é evidência de correção}.
+
+O teste que passa não prova que o código está certo --- prova que aquele caminho,
+com aqueles valores, produziu aquele resultado; e 100\% de cobertura não garante
+sequer que existam asserções. O \emph{sanitizer} que não acusa não prova que não
+há UB --- o \emph{use-after-free} medido aqui \textbf{desaparece} em \texttt{-O1},
+e \emph{strict aliasing} não é pego por instrumentação nenhuma. E o
+\emph{benchmark} que produz um número não produziu, com isso, um número certo ---
+o experimento do passo de cache mediu L3 achando que media RAM, e o experimento
+mais citado do Stack Overflow não reproduz mais no compilador de hoje.
+
+A resposta comum aos três é a mesma disciplina: \textbf{várias camadas
+independentes, e nenhuma confiança em uma só}. Testes mais cobertura mais
+\emph{sanitizer} mais análise estática, porque cada um vê o que os outros não
+veem. Medição em vários níveis de otimização, porque cada nível esconde coisas
+diferentes. Mediana em vez de média, aquecimento antes do cronômetro, sumidouro em
+volta do resultado.
+
+\begin{regra}[o que levar deste capítulo]
+Três frases, uma por seção. \textbf{Código difícil de testar é código mal
+desenhado} --- o teste é o primeiro cliente a reclamar do seu projeto, e a injeção
+de dependência é o que separa uma classe testável em microssegundos de uma que
+exige um banco de dados. \textbf{UB não é um valor errado, é a remoção do código
+que você escreveu} --- e a defesa mais barata, escrever código que não tem como ter
+UB, é também a mais eficaz. \textbf{O layout dos dados vem antes da instrução} ---
+os fatores de $35\times$ e $11{,}7\times$ medidos aqui não vieram de trocar
+operação por operação, vieram de mudar a ordem em que a memória é tocada.
+\end{regra}

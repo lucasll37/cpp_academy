@@ -1,0 +1,1994 @@
+% =============================================================================
+%  Texto, tempo e bits
+%  Cobre os subprojetos strings, chrono, bits e file_io.
+% =============================================================================
+
+% =============================================================================
+\section{Texto, tempo e bits}
+\label{sec:texto-tempo-bits}
+% =============================================================================
+
+Três assuntos que parecem não ter nada em comum ocupam este capítulo: cadeias de
+caracteres, medição de tempo e manipulação de bits. Eles estão juntos por uma
+razão precisa --- são os três lugares em que o programador acredita saber o que
+está acontecendo e \textbf{está errado}. Concatenar duas \emph{strings} parece
+grátis e aloca memória quatro vezes; cronometrar um trecho parece trivial e
+mede o relógio em vez do código; inverter os bits de um byte parece produzir
+outro byte e produz um inteiro negativo de 32 bits.
+
+O capítulo percorre os subprojetos \projeto{strings}, \projeto{chrono},
+\projeto{bits} e \projeto{file\_io}. O último é a saída natural dos três
+primeiros: texto formatado, instantes registrados e bytes serializados
+precisam, no fim, chegar a um arquivo.
+
+\begin{porque}[por que estes três assuntos merecem medição, e não afirmação]
+Em quase todo o resto do C++ o erro é detectável: o compilador recusa, o
+\emph{sanitizer} aborta, o teste falha. Nos três assuntos deste capítulo o erro
+é \textbf{quantitativo}. Um programa que aloca quatro vezes onde poderia alocar
+uma vez continua correto; um \emph{benchmark} que mede o compilador em vez do
+algoritmo continua produzindo números; uma \texttt{regex} que custa cem vezes
+mais que um \texttt{find} continua devolvendo a resposta certa. A única forma
+de descobrir a diferença é instrumentar e medir --- e é isso que os subprojetos
+fazem, contando alocações de verdade e cronometrando com o relógio certo.
+\end{porque}
+
+Vale fixar de saída um vocabulário mínimo, porque ele reaparece em todas as
+seções.
+
+\begin{description}
+\item[Alocação.] O pedido de memória ao sistema de tempo de execução, feito por
+\texttt{operator new} ou \texttt{malloc}. Ela custa muito mais que uma
+atribuição: envolve procurar um bloco livre, atualizar metadados e,
+eventualmente, pedir mais memória ao sistema operacional. Contar alocações é,
+por isso, uma métrica melhor que cronometrar --- é determinística.
+\item[\emph{Heap}.] A região de memória de onde vêm as alocações dinâmicas, em
+oposição à \emph{pilha}, que é a região onde vivem as variáveis locais e cujo
+espaço é reservado e devolvido pelo simples avanço e recuo de um registrador.
+\item[Linha de cache.] A unidade mínima que o processador traz da memória
+principal para a memória rápida interna --- tipicamente 64 bytes. Ler um byte
+custa o mesmo que ler os 64 da linha; por isso dados vizinhos são quase
+gratuitos e dados espalhados custam uma espera por elemento.
+\item[Unidade de tradução.] Um arquivo \texttt{.cpp} depois de o
+pré-processador ter inserido todos os cabeçalhos que ele inclui. É o que o
+compilador vê de cada vez, e a razão de o subprojeto \projeto{strings} precisar
+declarar o \texttt{operator new} instrumentado em uma unidade só.
+\end{description}
+
+% =============================================================================
+\subsection{Texto}
+\label{sec:texto}
+% =============================================================================
+
+O subprojeto \projeto{strings} abre com três números que resumem o problema
+inteiro:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/strings/}: o resumo do subprojeto.}]
+strings de até 15 chars          →  0 alocações (SSO)
+200 chars, um a um, sem reserve  →  4 alocações
+extrair um campo de log:
+  find + from_chars    →   0 ms
+  std::regex           → 133 ms      ← mesmo com a regex fora do laço
+\end{lstlisting}
+
+As três linhas dizem respectivamente que texto curto é barato, que texto montado
+sem planejamento é caro, e que a ferramenta genérica de casamento de padrões
+custa duas ordens de grandeza mais que o código específico. As subseções
+seguintes explicam cada uma.
+
+\subsubsection{\classe{std::string} por dentro: a SSO, medida}
+
+O primeiro problema que \classe{std::string} resolve é a posse: quem libera a
+memória de uma sequência de caracteres de tamanho variável. A resposta é
+\gls{raii} --- o construtor aloca, o destrutor libera --- e ela custa uma
+alocação por \emph{string}. Para nomes, chaves de dicionário e identificadores,
+que são curtos e existem aos milhares, essa alocação seria ruinosa.
+
+A solução das implementações é a \textbf{SSO}, sigla de \emph{Small String
+Optimization}: o objeto \texttt{string} reserva alguns bytes dentro de si mesmo
+e guarda ali as \emph{strings} curtas, sem tocar na \emph{heap}. O detalhe é que
+o padrão não obriga nem documenta o limite --- ele é uma decisão de
+implementação. O subprojeto, então, mede:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/strings/}: o limite da SSO na libstdc++.}]
+sizeof(std::string) = 32 bytes
+ 1 chars → 0 alocações  ← cabe no SSO
+15 chars → 0 alocações  ← cabe no SSO
+16 chars → 1 alocação
+\end{lstlisting}
+
+A medição é feita substituindo o \texttt{operator new} global por uma versão que
+incrementa um contador --- a mesma técnica de diagnóstico usada em
+\cref{sec:vocabulary}. E há uma segunda prova, estrutural: numa \emph{string}
+curta, o endereço devolvido por \texttt{.data()} fica 16 bytes depois do
+endereço do próprio objeto, ou seja, \emph{dentro} dele; numa \emph{string}
+longa, fica a uma distância arbitrária, na \emph{heap}.
+
+Três consequências práticas decorrem disso, e a segunda contraria a intuição
+corrente:
+
+\begin{itemize}
+\item \emph{strings} curtas são quase de graça --- não evite \classe{std::string}
+      em nomes, chaves e identificadores por medo de alocação;
+\item mas o \gls{move} de uma \emph{string} curta \textbf{copia} os bytes: não há
+      ponteiro a roubar, porque os dados estão dentro do objeto. O \emph{move} de
+      \texttt{string} só é $O(1)$ \emph{acima} do limite da SSO;
+\item \texttt{sizeof(std::string)} é 32 bytes, então um
+      \texttt{vector<string>} de um milhão de elementos gasta 32~MB apenas de
+      cabeçalhos, antes de qualquer caractere.
+\end{itemize}
+
+\begin{armadilha}[o \emph{move} barato de \texttt{string} não é sempre barato]
+A regra de bolso ``mover é $O(1)$, copiar é $O(n)$'' vale para
+\classe{std::vector} sem exceção e para \classe{std::string} apenas acima de 15
+caracteres. Abaixo disso, mover e copiar custam exatamente o mesmo --- uma cópia
+de 16 bytes. Isso não é motivo para deixar de mover; é motivo para não
+\emph{esperar} ganho ao mover uma coleção de \emph{strings} curtas, e para
+desconfiar de um perfil que mostra \texttt{std::string} caro sem que haja
+alocação envolvida.
+\end{armadilha}
+
+\subsubsection{\texttt{capacity}, crescimento e \texttt{reserve}}
+
+\texttt{size()} é quantos caracteres existem; \texttt{capacity()} é quantos
+cabem antes de a \emph{string} precisar de um \emph{buffer} maior. Quando a
+capacidade acaba, a implementação aloca um bloco maior, copia o conteúdo e
+libera o antigo --- e a política de crescimento é a mesma do \texttt{vector}
+(\cref{sec:stl}): dobrar.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/strings/}: o mesmo laço, com e sem
+             \texttt{reserve}.}]
+crescendo char a char: 15→30 30→60 60→120 120→240     ← dobra, igual ao vector
+200 chars sem reserve → 4 alocações
+200 chars com reserve → 1 alocação
+\end{lstlisting}
+
+Repare que a sequência começa em 15, e não em zero: a capacidade inicial de uma
+\emph{string} vazia já é o \emph{buffer} da SSO, que existe de qualquer maneira
+dentro do objeto.
+
+Assim como no \texttt{vector}, \texttt{clear()} zera o tamanho e \textbf{mantém}
+a capacidade, e \texttt{shrink\_to\_fit()} é uma requisição não vinculante. O
+idioma que funciona sempre é o mesmo: \texttt{std::string\{\}.swap(s);}.
+
+\subsubsection{Concatenação: por que \texttt{+} custa mais}
+
+A expressão \texttt{a + b + c + d} não é uma operação com quatro argumentos: é
+\texttt{((a + b) + c) + d}, e cada \texttt{+} produz uma \emph{string}
+\textbf{temporária} nova. Numa cadeia com $N$ trechos, isso tende a $N-1$
+objetos intermediários.
+
+Na prática o número não explode, e a razão é interessante: a libstdc++
+sobrecarrega \texttt{operator+} para o caso em que o operando da esquerda é um
+\gls{categoriadevalor} \emph{rvalue} --- isto é, um temporário --- e nesse caso
+reaproveita o \emph{buffer} dele em vez de alocar outro. O subprojeto conta as
+alocações das quatro formas de montar o mesmo texto e mostra que a diferença
+existe, mas é menor do que a análise ingênua prevê.
+
+\begin{regra}[para $N$ trechos, \texttt{reserve} mais \texttt{append}]
+Quando o tamanho final é conhecido ou estimável, \texttt{reserve} seguido de
+\texttt{append} (ou de \texttt{+=}) faz exatamente uma alocação. Para texto
+formatado, \texttt{std::format} e \texttt{fmt::format} já fazem isso
+internamente, e \texttt{format\_to} escreve direto num destino existente ---
+ver a \cref{sec:format}.
+\end{regra}
+
+\subsubsection{O que \classe{std::string} não sabe}
+
+\classe{std::string} é \texttt{basic\_string<char>}: uma sequência de
+\textbf{bytes}. Ela não sabe o que é um caractere Unicode, e \texttt{size()}
+conta bytes:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/strings/}: bytes não são letras.}]
+"cafe".size() = 4     (4 letras, 4 bytes)
+"café".size() = 5     (4 letras, 5 BYTES)
+\end{lstlisting}
+
+O acento em UTF-8 ocupa dois bytes (\texttt{C3~A9}), e a consequência atinge
+todas as operações posicionais: \texttt{s[i]} pode cair no meio de um caractere,
+\texttt{substr} pode cortá-lo ao meio, e \texttt{std::reverse} sobre UTF-8
+produz lixo. Comparar sem normalização Unicode também dá resultados errados,
+porque a mesma letra acentuada tem mais de uma representação válida.
+
+\begin{armadilha}[a biblioteca padrão não resolve Unicode, e finge que sim]
+Os tipos \texttt{u8string}, \texttt{u16string} e \texttt{u32string} apenas
+marcam a intenção: nenhum deles implementa normalização, segmentação de
+\emph{grafemas} ou comparação sensível a idioma. O cabeçalho
+\cabecalho{codecvt}, que prometia conversão entre codificações, foi
+\textbf{depreciado no C++17} e nunca ganhou substituto. Para Unicode de verdade
+a resposta está fora da biblioteca padrão: ICU, utf8cpp ou Boost.Locale.
+\end{armadilha}
+
+O ponto de extensão que existe é o \texttt{char\_traits}, o segundo parâmetro de
+\texttt{basic\_string}, que define comparação, cópia e busca. Trocá-lo permite,
+por exemplo, uma \emph{string} insensível a maiúsculas sem alocar --- mas o
+resultado é um \textbf{tipo diferente}, que não converte para
+\classe{std::string}. Quase sempre é melhor normalizar os dados na entrada.
+
+\subsubsection{\classe{std::string\_view}: a janela que não possui}
+\label{sec:string-view}
+
+\begin{porque}[que problema o \emph{view} resolve]
+Uma função que aceita \texttt{const std::string\&} obriga quem tem um
+\texttt{const char*} --- um literal, um \emph{buffer} de rede, um trecho de
+outra \emph{string} --- a \textbf{construir uma \texttt{std::string} inteira} só
+para passar o argumento. É uma alocação e uma cópia por chamada, para uma
+função que só vai ler. \classe{std::string\_view} é o par (ponteiro, tamanho)
+que descreve caracteres pertencentes a outra pessoa: converte implicitamente de
+tudo o que já é contíguo, e não aloca nada.
+\end{porque}
+
+O ganho é duplo. Na chamada, \texttt{contar\_vogais(literal)} deixa de alocar.
+E nas operações de recorte: \texttt{str.substr(4,5)} constrói uma
+\emph{string} nova, enquanto \texttt{view.substr(4,5)} apenas ajusta o ponteiro
+e o tamanho --- é $O(1)$ e não toca na \emph{heap}.
+
+O preço é que o \emph{view} não possui nada, e disso decorrem duas famílias de
+armadilhas.
+
+\paragraph{A ausência do terminador nulo.} Uma \emph{C-string} é uma sequência
+de bytes terminada por um byte zero (\texttt{'\textbackslash 0'}); é assim que
+\texttt{printf}, \texttt{fopen} e toda API C descobrem onde o texto acaba. Um
+\emph{view} não tem esse byte: ele é um recorte de outra coisa, e o byte
+seguinte ao último caractere pertence à origem.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/strings/}: o que uma API C leria.}]
+parcial = "abc" (size=3)
+o que printf("%s", parcial.data()) leria: 'abcdefghij'    ← foi até o fim da ORIGEM
+\end{lstlisting}
+
+No exemplo do subprojeto a origem é uma \classe{std::string}, que por acaso
+termina em nulo, e a leitura para em dez caracteres. Se a origem fosse um
+\emph{buffer} binário, a leitura seguiria memória adentro até encontrar um zero
+qualquer --- leitura fora de limites, que o AddressSanitizer
+(\cref{sec:sanitizers}) detectaria.
+
+\begin{table}[htbp]
+\centering
+\caption{As três formas corretas de levar um \emph{view} a uma API que espera
+         C-string.}
+\label{tab:view-c-api}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Forma} & \textbf{Como} \\
+\midrule
+(a) copiar        & \texttt{std::string\{v\}.c\_str()} --- aloca, mas é correto \\
+(b) passar o par  & \texttt{printf("\%.*s", (int)v.size(), v.data())} \\
+(c) garantir na origem & assegurar que o \emph{view} cobre até um
+                         \texttt{'\textbackslash 0'} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{regra}[\texttt{.data()} de um \emph{view} nunca vai direto para uma API C]
+A assinatura de \texttt{.data()} é a mesma de \texttt{std::string::data()} ---
+\texttt{const char*} --- e é justamente por serem indistinguíveis que o erro
+passa na revisão. Se a função de destino não recebe também o tamanho, o
+\emph{view} precisa virar \classe{std::string} antes.
+\end{regra}
+
+\paragraph{Tempo de vida.} O \emph{view} é tão frágil quanto um ponteiro, porque
+\emph{é} um ponteiro. Os três erros clássicos são: apontar para um temporário
+que morre no fim da expressão; devolver um \emph{view} para uma variável local;
+e guardar um \emph{view} como membro sem documentar quem é o dono do texto.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O caso seguro em \texttt{src/strings/demo\_string\_view.hpp}: o
+             \emph{view} aponta para um membro.}]
+class Documento {
+public:
+    explicit Documento(std::string conteudo) : conteudo_(std::move(conteudo)) {}
+
+    // Seguro: o view aponta para o membro, cuja vida é a do Documento
+    std::string_view titulo() const {
+        const auto fim = conteudo_.find('\n');
+        return std::string_view{conteudo_}.substr(0, fim);
+    }
+
+private:
+    std::string conteudo_;
+};
+\end{lstlisting}
+
+\begin{regra}[as três regras de tempo de vida de um \emph{view}]
+(1)~\emph{view} é \textbf{parâmetro} --- o uso dominante, e sempre seguro,
+porque o argumento vive até o fim da expressão que contém a chamada.
+(2)~\emph{view} como \textbf{retorno} só se a origem sobrevive à chamada, como
+no \texttt{Documento} acima. (3)~\emph{view} como \textbf{membro} exige
+documentar quem é o dono --- e, quase sempre, é melhor guardar uma
+\classe{std::string}.
+\end{regra}
+
+\paragraph{As conversões, e a que custa.} \texttt{string $\rightarrow$
+string\_view} é implícita e barata. \texttt{string\_view $\rightarrow$ string} é
+\textbf{explícita}, porque aloca: \texttt{std::string t = v;} não compila, e
+\texttt{std::string t\{v\};} compila. O desenho é intencional --- a conversão
+cara precisa ser visível no código.
+
+Há, porém, uma conversão implícita que custa: \texttt{const char* $\rightarrow$
+string\_view} chama \texttt{strlen}, que é $O(n)$. Num laço quente com
+literais, isso se paga a cada iteração. A saída é o literal \texttt{sv} do
+C++17, cujo tamanho é \gls{constexpr}:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Transcrição de \texttt{src/strings/demo\_string\_view.hpp}: o
+             literal cujo tamanho é conhecido em compilação.}]
+    using namespace std::string_view_literals;
+    constexpr auto literal_sv = "tamanho conhecido na compilação"sv;
+
+    // ⚠ 33, não 31: a frase tem 31 CARACTERES, mas o 'ç' e o 'ã' ocupam 2
+    //   bytes cada em UTF-8. `size()` conta bytes — é a mesma lição de
+    //   demo_string.hpp, seção 1.5, e aqui ela foi pega por um static_assert.
+    static_assert(literal_sv.size() == 33);
+\end{lstlisting}
+
+O comentário registra um caso em que a medição contrariou a expectativa do
+próprio autor: o \texttt{static\_assert} foi escrito com 31, o valor que a
+contagem de letras sugere, e o compilador recusou. São 33 bytes, porque
+\texttt{ç} e \texttt{ã} ocupam dois cada --- exatamente a lição da subseção
+anterior, aplicada a quem já a tinha escrito.
+
+\begin{table}[htbp]
+\centering
+\caption{Escolhendo a assinatura de um parâmetro de texto.}
+\label{tab:assinatura-texto}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Assinatura} & \textbf{Quando} \\
+\midrule
+\texttt{std::string\_view}   & só \textbf{lê}, e não guarda --- o padrão \\
+\texttt{const std::string\&} & precisa de \texttt{.c\_str()} garantido \\
+\texttt{std::string} por valor & vai \textbf{guardar} uma cópia (mais \texttt{std::move}) \\
+\texttt{std::string\&}       & vai \textbf{modificar} a do chamador \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{\texttt{std::format}: formatação verificada em compilação}
+\label{sec:format}
+
+\begin{porque}[por que uma terceira forma de formatar]
+O C++ tinha duas, e as duas eram ruins. O \texttt{printf} é conciso e rápido, e
+não tem segurança de tipo: \texttt{printf("\%d", 1.5)} compila e imprime lixo,
+\texttt{printf("\%s", std::string\{\})} compila e é \gls{ub}, e
+\texttt{printf("\%d \%d", 1)} lê a pilha. Os \emph{iostreams} são seguros e
+verbosíssimos, e seus manipuladores são \textbf{estado global e pegajoso}: um
+\texttt{std::hex} esquecido contamina toda a saída seguinte. \texttt{std::format}
+(C++20) tem a sintaxe do primeiro, a segurança do segundo e uma propriedade que
+nenhum dos dois tem --- a \emph{string} de formato é validada na
+\textbf{compilação}.
+\end{porque}
+
+O subprojeto usa \texttt{fmt::format}, a biblioteca que originou a proposta,
+porque é o que já está no \texttt{conanfile.py} do repositório
+(\cref{sec:ambiente}); a API é a mesma.
+
+\paragraph{O que a validação pega.} As três linhas abaixo não compilam:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Erros de formato que viram erro de \emph{build}.}]
+fmt::format("{:d}", "texto")   // NÃO COMPILA — 'd' não se aplica a texto
+fmt::format("{} {}", 1)        // NÃO COMPILA — dois campos, um argumento
+fmt::format("{", 1)            // NÃO COMPILA — chave não fechada
+\end{lstlisting}
+
+O mecanismo é o \texttt{consteval} (\cref{sec:compile-time}): a \emph{string} de
+formato é analisada em tempo de compilação, e um \texttt{throw} durante uma
+avaliação constante é, por definição, erro de \emph{build}. Não há custo em
+tempo de execução --- a análise já aconteceu.
+
+\begin{armadilha}[a validação pega o autor deste livro também]
+O demo original continha um \texttt{\{:.1\%\}} para imprimir uma porcentagem.
+O \texttt{\%} não é especificador válido para \texttt{double} nem na fmt~10 nem
+no \texttt{std::format} do C++20, e o \textbf{arquivo não compilou}. É o
+comportamento anunciado funcionando contra quem o anunciou: com
+\texttt{printf}, o mesmo erro teria produzido saída errada em silêncio. A
+porcentagem se faz multiplicando por 100 antes e usando \texttt{\{:.1f\}\%}.
+\end{armadilha}
+
+\paragraph{A mini-linguagem.} A forma geral de um campo de substituição é
+\texttt{\{índice:preenchimento alinhamento sinal \# 0 largura .precisão tipo\}}.
+Vale memorizar os grupos, não a gramática:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/strings/}: os grupos da especificação.}]
+{:<10}  {:>10}  {:^10}  {:*^10}      alinhamento e preenchimento
+{:08.3f}  {:+}  {:.2e}  {:g}          números
+{:b}  {:#b}  {:o}  {:#x}  {:#X}       bases
+{0} {1} {0}                            índices explícitos e reuso
+{:{}.{}f}                              largura/precisão dinâmicas
+\end{lstlisting}
+
+Duas capacidades merecem nota porque não têm equivalente em \texttt{printf}: o
+\textbf{reuso de argumento} por índice explícito (\texttt{\{0\} \{1\} \{0\}}
+imprime o primeiro argumento duas vezes, sem passá-lo duas vezes) e a
+formatação de tipos da biblioteca padrão --- \texttt{vector}, \texttt{pair},
+\texttt{map} --- que na fmt vem de \cabecalho{fmt/ranges.h} e no padrão chegou
+no C++23.
+
+\paragraph{Formatar sem alocar.} \texttt{format} devolve uma
+\classe{std::string} nova, portanto aloca. Quando isso importa, a família tem
+variantes que escrevem num destino existente:
+
+\begin{table}[htbp]
+\centering
+\caption{As quatro portas de saída da biblioteca de formatação.}
+\label{tab:format-destinos}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Função} & \textbf{Destino} & \textbf{Aloca} \\
+\midrule
+\texttt{format}      & \classe{std::string} nova  & sim \\
+\texttt{format\_to}  & qualquer iterador de saída & não$^*$ \\
+\texttt{format\_to\_n} & idem, com limite de bytes & não \\
+\texttt{print}       & \emph{stdout} direto        & não \\
+\bottomrule
+\end{tabular}\\[2pt]
+\footnotesize $^*$ depende do destino: um \texttt{back\_inserter} sobre um
+\texttt{vector} pode realocar.
+\end{table}
+
+\texttt{format\_to\_n} escrevendo num vetor de \texttt{char} na pilha é o
+equivalente seguro do \texttt{snprintf}; \texttt{fmt::print} escreve direto no
+\emph{stdout} sem construir a \emph{string} intermediária, e é por isso que ele
+aparece em todo o repositório em vez de
+\texttt{std::cout << fmt::format(...)}.
+
+\paragraph{Um \texttt{formatter} para o seu tipo.} Ensinar a biblioteca a
+formatar um tipo próprio é especializar \texttt{std::formatter<T>} (ou
+\texttt{fmt::formatter<T>}) com dois métodos: \texttt{parse}, que consome os
+especificadores entre \texttt{:} e \texttt{\}}, e \texttt{format}, que escreve
+no iterador de saída.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Transcrição de \texttt{src/strings/demo\_format.hpp}: um
+             \emph{formatter} com especificadores próprios.}]
+template <>
+struct fmt::formatter<demo_format::Temperatura> {
+    char unidade = 'C';
+
+    constexpr auto parse(format_parse_context& ctx) {
+        auto it = ctx.begin();
+        if (it != ctx.end() && (*it == 'C' || *it == 'F' || *it == 'K')) {
+            unidade = *it++;
+        }
+        if (it != ctx.end() && *it != '}') {
+            throw format_error("Temperatura aceita apenas C, F ou K");
+        }
+        return it;
+    }
+
+    auto format(const demo_format::Temperatura& t, format_context& ctx) const {
+        switch (unidade) {
+            case 'F': return fmt::format_to(ctx.out(), "{:.1f}°F", t.celsius * 9 / 5 + 32);
+            case 'K': return fmt::format_to(ctx.out(), "{:.2f}K",  t.celsius + 273.15);
+            default:  return fmt::format_to(ctx.out(), "{:.1f}°C", t.celsius);
+        }
+    }
+};
+\end{lstlisting}
+
+O detalhe decisivo é o \texttt{constexpr} no \texttt{parse}: como a análise
+acontece em tempo de compilação, o \texttt{throw} daquele terceiro \texttt{if}
+não é uma exceção em tempo de execução --- é um \textbf{erro de compilação}.
+\texttt{fmt::print("\{:F\}", t)} imprime \texttt{77.0°F}; \texttt{"\{:X\}"} não
+compila. O seu tipo ganha a mesma verificação que os tipos nativos têm.
+
+O atalho, quando o tipo é essencialmente um número, é herdar de um
+\emph{formatter} existente: \texttt{struct formatter<Metros> :
+formatter<double>} reaproveita toda a mini-linguagem, e \texttt{\{:8.2f\}}
+passa a funcionar de graça.
+
+\paragraph{O custo, e a lição que vale mais que ele.} O subprojeto cronometra
+quatro formas de produzir a mesma linha, cem mil vezes --- e o resultado
+\textbf{não} mostra a fmt ganhando:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/strings/}: 100\,000 formatações, nas duas
+             configurações de compilação.}]
+-O0: snprintf 18ms · format_to_n 78ms · format 91ms
+-O2: snprintf 18ms · format_to_n 53ms · format 57ms
+\end{lstlisting}
+
+O demo explica por quê, em vez de esconder: este repositório linka
+\texttt{libfmtd}, a variante de \textbf{depuração} que o Conan compilou com
+\texttt{build\_type=Debug}. Compilar o arquivo do demo com \texttt{-O2} quase
+não muda o quadro, porque o custo está dentro da biblioteca --- que já foi
+compilada. O \texttt{snprintf}, por sua vez, vem da glibc, sempre otimizada.
+
+\begin{regra}[um número sem as \emph{flags} ao lado é um boato]
+Três exigências decorrem do caso acima, e nenhuma delas é sobre a fmt.
+(1)~Saiba em que modo a \textbf{biblioteca} foi compilada, não só o seu código.
+(2)~Compare pares que diferem em \textbf{uma} variável só --- aqui, a única
+comparação controlada é \texttt{format\_to\_n} contra \texttt{format}, que
+diferem apenas no destino e isolam o custo de alocar uma \emph{string} por
+iteração. (3)~Desconfie de qualquer \emph{benchmark} cujo autor não declara as
+\emph{flags} --- inclusive deste.
+\end{regra}
+
+E há o argumento que não depende de medição alguma: \texttt{snprintf} não tem
+segurança de tipo, e o \texttt{ostringstream} carrega estado global pegajoso.
+\texttt{format} dá as duas coisas.
+
+\subsubsection{\cabecalho{charconv}: texto e número sem alocar e sem locale}
+\label{sec:charconv}
+
+Converter \texttt{"42"} em \texttt{42} parece trivial, e o C++ acumulou cinco
+formas de fazê-lo --- todas com algum defeito.
+
+\begin{table}[htbp]
+\centering
+\caption{As cinco formas de converter texto em número, e o defeito de cada uma.}
+\label{tab:texto-numero}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Forma} & \textbf{Defeito} \\
+\midrule
+\texttt{atoi}         & sem detecção de erro --- \texttt{"abc"} devolve 0, igual a \texttt{"0"} \\
+\texttt{strtol}       & detecta, via a variável global \texttt{errno} \\
+\texttt{stoi}         & \textbf{lança} --- caro no caminho de erro \\
+\texttt{stringstream} & aloca, e respeita o \emph{locale} \\
+\texttt{from\_chars}  & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\emph{Locale} é a configuração global de convenções culturais do processo:
+separador decimal, separador de milhar, nomes de meses. É definido por
+\texttt{setlocale} e afeta \texttt{printf}, os \emph{iostreams} e as funções
+\texttt{sto*} --- inclusive quando quem o mudou foi uma biblioteca de terceiros
+na inicialização.
+
+\paragraph{\texttt{from\_chars}.} A assinatura recebe um intervalo
+\texttt{[primeiro, último)} de \texttt{char} e uma referência ao destino, e
+devolve uma \emph{struct} com dois campos: \texttt{ptr}, onde a conversão parou,
+e \texttt{ec}, um \texttt{std::errc}. Os casos:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/strings/}: \texttt{from\_chars} sobre entradas
+             típicas.}]
+'42'             → 42 ✓
+'3.14'           → 3 — mas SOBROU '.14'      ← o ptr permite detectar
+'42abc'          → 42 — mas SOBROU 'abc'      ← stoi devolveria 42 calado
+' 42'            → invalid_argument            ← não pula espaços
+'99999999999999' → result_out_of_range
+\end{lstlisting}
+
+O \texttt{ptr} devolvido é a diferença prática mais importante:
+\texttt{stoi("42abc")} devolve 42 sem reclamar, e não há como o chamador
+descobrir que sobrou lixo. Com \texttt{from\_chars}, comparar \texttt{ptr} com o
+fim do intervalo responde exatamente isso. E é o mesmo \texttt{ptr} que
+realimenta o laço quando se \emph{parseia} uma sequência inteira --- o padrão
+que sustenta os \emph{parsers} rápidos de JSON e CSV.
+
+A lista do que \texttt{from\_chars} \textbf{não} faz é a lista de suas
+qualidades: não pula espaços, não aceita o prefixo \texttt{0x} (a base vai por
+parâmetro), não aceita \texttt{+} inicial, não aloca, não lança e não olha o
+\emph{locale}. Cada ``não'' é uma política devolvida a quem chama, que passa a
+pagar por ela só quando precisa.
+
+\paragraph{\texttt{to\_chars} e o \emph{round-trip} garantido.} Na direção
+inversa há uma garantia que nenhuma alternativa oferece: chamado \textbf{sem}
+especificar precisão, \texttt{to\_chars} produz a \textbf{menor} \emph{string}
+que faz \texttt{from\_chars} devolver exatamente o mesmo \texttt{double}.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/strings/}: ida e volta exata.}]
+0.1                → '0.1'                ✓ round-trip exato
+0.3333333333333333 → '0.3333333333333333' ✓
+123456789.12345679 → '123456789.12345679' ✓
+\end{lstlisting}
+
+O algoritmo por trás disso (Ryū / Grisu) resolve um problema real:
+\texttt{printf("\%g")} usa seis dígitos significativos e perde precisão, e
+\texttt{printf("\%.17g")} sempre imprime dezessete, produzindo
+\texttt{0.10000000000000001} para \texttt{0.1}. Onde o número precisa voltar
+idêntico depois de virar texto --- serialização JSON, telemetria, formatos
+textuais --- essa é a ferramenta.
+
+\begin{armadilha}[o \emph{locale} corrompe dados em silêncio]
+Com o \emph{locale} global em \texttt{pt\_BR} ou \texttt{de\_DE}, o separador
+decimal é a vírgula:
+\begin{lstlisting}[style=bt, language=bash, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+ostringstream << 3.14  → "3,14"     ← VÍRGULA
+stod("3.14")           → 3.0        ← para no ponto, e não reclama
+\end{lstlisting}
+O bug completo tem quatro passos: o programa grava um CSV numa máquina
+\texttt{en\_US}, outra máquina em \texttt{pt\_BR} lê o mesmo arquivo,
+\texttt{stod("3.14")} devolve 3.0 sem erro, e o dado fica errado para sempre. E
+basta uma biblioteca de terceiros chamar \texttt{setlocale(LC\_ALL, "")} para o
+comportamento do \emph{seu} código mudar. \cabecalho{charconv} é imune por
+projeto: não tem parâmetro de \emph{locale}, e o separador é sempre o ponto.
+\end{armadilha}
+
+\begin{regra}[\emph{locale} é apresentação, não dado]
+Para \textbf{dados} --- arquivos, rede, protocolos, formatos de intercâmbio ---
+use \cabecalho{charconv}. Para \textbf{apresentação} ao usuário, use
+\texttt{std::format} com o especificador \texttt{\{:L\}}, que pede a formatação
+sensível a \emph{locale} \emph{explicitamente}, no ponto em que ela é desejada.
+\end{regra}
+
+O subprojeto também cronometra as três formas convertendo a mesma
+\classe{std::string} no mesmo \texttt{int}, e aqui a comparação \emph{é}
+controlada. As diferenças são estruturais e não dependem de \emph{build}:
+\texttt{stoi} constrói uma \emph{string} temporária internamente e usa
+\texttt{strtol} com \texttt{errno}; \texttt{istringstream} constrói um objeto de
+\emph{stream} inteiro por conversão, com \emph{locale}, \emph{sentry} e
+\emph{flags}; \texttt{from\_chars} é um laço sobre os dígitos. Há ainda um custo
+que o cronômetro não vê: \texttt{stoi} \textbf{lança} em entrada inválida, e num
+\emph{parser} que encontra lixo com frequência cada erro custa um
+desempilhamento completo --- medido em \cref{sec:errors} como cerca de mil vezes
+mais caro que o caminho feliz.
+
+\subsubsection{\classe{std::regex}: o custo real}
+\label{sec:regex}
+
+Uma expressão regular é uma notação para descrever conjuntos de cadeias de
+caracteres. \classe{std::regex} chegou no C++11 e é, com folga, a parte mais
+criticada da biblioteca padrão: a API é razoável, a implementação é
+notoriamente lenta.
+
+\paragraph{\texttt{match} contra \texttt{search}.} É o erro número um, e vem de
+quem conhece outras linguagens:
+
+\begin{table}[htbp]
+\centering
+\caption{As três formas de aplicar uma expressão regular.}
+\label{tab:regex-funcoes}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Função} & \textbf{Casa} \\
+\midrule
+\texttt{regex\_match}     & a \emph{string} \textbf{inteira} \\
+\texttt{regex\_search}    & a primeira ocorrência, em qualquer posição \\
+\texttt{sregex\_iterator} & todas as ocorrências \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Em Python, \texttt{re.match} casa no \emph{início} da \emph{string}; em C++,
+\texttt{regex\_match} exige a \emph{string} toda. Sobre
+\texttt{"pedido 42 entregue"} com o padrão \texttt{\textbackslash d+},
+\texttt{regex\_match} devolve falso e \texttt{regex\_search} devolve verdadeiro.
+
+\paragraph{Capturas.} Grupos entre parênteses são recuperados por um objeto
+\texttt{std::smatch}: \texttt{m[0]} é o casamento inteiro, \texttt{m[1]} em
+diante são os grupos, e \texttt{m.prefix()} e \texttt{m.suffix()} são o texto
+antes e depois. Em \texttt{regex\_replace}, o formato de substituição usa
+\texttt{\$1} a \texttt{\$9} para os grupos, \texttt{\$\&} para o casamento
+inteiro e \texttt{\$\$} para um cifrão literal.
+
+\begin{armadilha}[\texttt{smatch} guarda iteradores, não cópias]
+Um \texttt{std::smatch} não copia o texto: ele guarda \textbf{iteradores} para a
+\emph{string} original. Se ela morrer, o \texttt{smatch} fica pendurado, e o
+caso mais comum é fatal:
+\begin{lstlisting}[style=bt, language=C++, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+std::smatch m;
+std::regex_search(obterTexto(), m, re);   // ✗ argumento temporário
+m[1].str();                               // use-after-free
+\end{lstlisting}
+O comitê considerou o caso grave o bastante para \textbf{deletar} a sobrecarga
+que recebe \texttt{const std::string\&\&}: a primeira linha nem compila. É um
+dos poucos lugares da biblioteca padrão em que um erro de tempo de vida virou
+erro de compilação por decreto.
+\end{armadilha}
+
+\paragraph{Duas regras de escrita.} Sempre use \emph{raw string} para o padrão
+--- \texttt{R"(\textbackslash d+)"} em vez de
+\texttt{"\textbackslash\textbackslash d+"} ---, porque sem ela o compilador
+processa os escapes antes de a expressão chegar à biblioteca. E nunca construa
+uma \texttt{std::regex} dentro de um laço: o construtor \emph{compila} a
+expressão, e isso é caro.
+
+\paragraph{O custo, medido.} O subprojeto extrai o campo
+\texttt{codigo=(\textbackslash d+)} de uma linha de \emph{log} de três formas:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/strings/}: o mesmo campo, três formas.}]
+find + from_chars    :   0 ms   (20000 iterações)
+regex fora do laço   : 133 ms   (20000 iterações)
+regex DENTRO do laço : 176 ms   ( 2000 iterações — 10× MENOS trabalho!)
+\end{lstlisting}
+
+São duas lições distintas, e a segunda é a que surpreende. A primeira: construir
+a expressão dentro do laço domina tudo --- a terceira linha fez \textbf{dez
+vezes menos trabalho} e ainda assim levou mais tempo que a segunda. A segunda:
+mesmo pré-construída, para um padrão \textbf{fixo e simples} a expressão regular
+não se paga; um \texttt{find} seguido de \texttt{from\_chars} resolve o mesmo
+problema num tempo que o cronômetro em milissegundos nem registra.
+
+\begin{table}[htbp]
+\centering
+\caption{Quando a expressão regular é a ferramenta certa.}
+\label{tab:regex-quando}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Use \texttt{std::regex} quando} & \textbf{Não use quando} \\
+\midrule
+o padrão vem do \textbf{usuário}      & laço quente com padrão fixo \\
+a expressão é complexa e roda uma vez & o formato é conhecido: escreva o \emph{parser} \\
+legibilidade importa mais que velocidade & precisa de desempenho: RE2, PCRE2, CTRE \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{armadilha}[ReDoS: entrada de terceiros com padrão de terceiros]
+\classe{std::regex} usa \emph{backtracking} --- ao falhar, volta atrás e tenta
+outra combinação. Para padrões com quantificadores aninhados, como
+\texttt{(a+)+\$}, o número de combinações cresce \textbf{exponencialmente} com o
+tamanho da entrada, e uma cadeia de algumas dezenas de caracteres trava o
+processo. É o ataque conhecido como ReDoS. A regra é dupla: nunca aplique uma
+expressão vinda de terceiros a uma entrada vinda de terceiros; e, se o padrão é
+configurável pelo usuário, prefira RE2, que garante tempo linear por construção.
+\end{armadilha}
+
+% =============================================================================
+\subsection{Tempo}
+\label{sec:chrono}
+% =============================================================================
+
+\begin{porque}[por que \cabecalho{chrono} não é ``pegar a hora'']
+A API C de tempo é um conjunto de inteiros sem unidade: \texttt{time\_t} conta
+segundos, \texttt{clock\_t} conta tiques de origem indefinida, e
+\texttt{sleep(1)} dorme um segundo enquanto \texttt{usleep(1)} dorme um
+microssegundo. Nada no tipo distingue os dois, e passar um pelo outro é um bug
+de fator um milhão que compila. \cabecalho{chrono} é a resposta: um
+\textbf{sistema de unidades com verificação em compilação}, aplicado ao tempo.
+Somar horas com milissegundos funciona e dá o resultado certo; somar horas com
+o número 5 não compila, porque 5 não é uma quantidade de tempo.
+\end{porque}
+
+\subsubsection{\texttt{duration}: a unidade vive no tipo}
+
+A declaração é:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A forma geral de uma duração.}]
+template <class Rep, class Period = std::ratio<1>>
+class duration;
+\end{lstlisting}
+
+\texttt{Rep} é o tipo que guarda a contagem --- \texttt{int64\_t},
+\texttt{double}; \texttt{Period} é a fração de \textbf{segundo} que cada tique
+representa, expressa como um \texttt{std::ratio}, que é um par de inteiros
+(numerador e denominador) codificado no tipo. Assim,
+\texttt{std::chrono::milliseconds} é \texttt{duration<int64\_t, ratio<1,1000>>}:
+o ``milli'' está no \textbf{tipo}, não em uma variável.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/chrono/}: as unidades e o que elas custam.}]
+nanoseconds    Rep=int64_t  Period=1/1000000000
+milliseconds   Rep=int64_t  Period=1/1000
+hours          Rep=int64_t  Period=3600/1
+sizeof(milliseconds) = 8 bytes      ← é só o int64_t
+\end{lstlisting}
+
+Toda a segurança dimensional custa \textbf{zero} em tempo de execução: o objeto
+é do tamanho do inteiro que ele guarda, e as conversões viram multiplicações
+por constantes que o compilador resolve.
+
+O método \texttt{.count()} extrai o número cru e \textbf{descarta a unidade}. Ele
+é a saída do sistema de tipos, e deve aparecer só na fronteira --- ao imprimir,
+ao gravar, ao chamar uma API C. Usá-lo no meio de um cálculo devolve o problema
+que a biblioteca resolve.
+
+\subsubsection{Conversões: implícitas quando são exatas}
+
+A regra é uma só, e é o coração do desenho: \textbf{a conversão é implícita
+quando não pode perder informação}.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/chrono/}: o que o compilador aceita e o que
+             recusa.}]
+2h → milliseconds     ✓ implícito (exato)
+1500ms → seconds      ✗ NÃO COMPILA (truncaria)
+duration_cast<seconds>(1500ms) = 1 s     ← trunca em direção a ZERO
+\end{lstlisting}
+
+Converter para uma unidade \emph{menor} multiplica por um inteiro e é sempre
+exato; converter para uma unidade \emph{maior} pode truncar, e o compilador
+exige que a perda seja escrita à mão. Quando truncar não é a política desejada,
+existem \texttt{floor}, \texttt{ceil} e \texttt{round}, todos do C++17.
+
+\begin{armadilha}[para negativos, truncar e arredondar para baixo são coisas diferentes]
+\texttt{duration\_cast} trunca \textbf{em direção a zero};
+\texttt{floor} arredonda \textbf{para baixo}. Para valores positivos os dois
+coincidem, e é por isso que a diferença passa despercebida em teste:
+\begin{lstlisting}[style=bt, language=bash, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+duration_cast<seconds>(-1500ms) = -1 s
+floor<seconds>(-1500ms)         = -2 s
+\end{lstlisting}
+Em cálculo de fuso horário, de compensação de deriva ou de qualquer diferença
+que possa ser negativa, escolher o errado produz um segundo de erro que só
+aparece em metade dos casos.
+\end{armadilha}
+
+\subsubsection{Aritmética e unidades derivadas}
+
+Somar durações de unidades diferentes produz o \emph{tipo comum}: a unidade mais
+fina que representa exatamente as duas.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/chrono/}: a álgebra das durações.}]
+1h + 30min + 45s = 5445 s      ← tipo comum: seconds
+1s + 500ms       = 1500 ms     ← tipo comum: milliseconds
+1h / 15min       = 4           ← escalar puro, sem unidade
+1h * 1h          ✗ tempo² não é um duration
+1h + 5           ✗ 5 do quê?
+\end{lstlisting}
+
+A terceira linha é a mais instrutiva: dividir tempo por tempo produz um número
+\textbf{sem unidade}, e o tipo do resultado é um inteiro, não uma
+\texttt{duration}. É a álgebra dimensional correta, obtida de graça pelo sistema
+de tipos.
+
+\texttt{Rep} não precisa ser inteiro. Com \texttt{double}, converter para uma
+unidade maior deixa de perder informação e passa a ser implícito ---
+\texttt{duration<double> s = 1500ms;} compila. A troca é a exatidão: para
+contabilidade de tempo (agendamento, \emph{timeouts}), prefira inteiros; para
+\emph{relatar} medições, \texttt{double} é mais legível.
+
+Definir uma unidade nova é uma linha, e ela participa de toda a aritmética e de
+todas as verificações automaticamente:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Transcrição de \texttt{src/chrono/demo\_duration.hpp}: quadros de
+             vídeo como unidade de tempo.}]
+    using Frame60 = ch::duration<int64_t, std::ratio<1, 60>>;
+    using Frame24 = ch::duration<int64_t, std::ratio<1, 24>>;
+
+    const Frame60 um_segundo_de_video = 1s;
+\end{lstlisting}
+
+\texttt{1s} converte implicitamente para 60 quadros, porque a conversão é
+exata; converter de 60~fps para 24~fps exige \texttt{duration\_cast}, porque
+trunca. O compilador aplica a mesma regra a uma unidade que ele nunca viu.
+
+\subsubsection{Os relógios, e por que escolher o errado é um bug}
+\label{sec:clocks}
+
+A diferença entre os relógios da biblioteca não é de precisão --- é de
+\textbf{garantia}. Um relógio \emph{monotônico} nunca anda para trás; um relógio
+de \emph{parede} corresponde à hora do mundo e, por isso mesmo, pode ser
+ajustado --- pelo NTP, pelo usuário, pelo horário de verão.
+
+\begin{table}[htbp]
+\centering
+\caption{Os três relógios clássicos e para que serve cada um.}
+\label{tab:relogios}
+\footnotesize
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Relógio} & \textbf{Monotônico} & \textbf{É hora real} & \textbf{Usar para} \\
+\midrule
+\texttt{system\_clock}          & \textbf{não}    & sim     & \textbf{datar} \\
+\texttt{steady\_clock}          & \textbf{sim}    & não     & \textbf{medir} \\
+\texttt{high\_resolution\_clock}& depende!        & depende!& \textbf{nada} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O bug que a distinção previne é este: com \texttt{system\_clock}, um ajuste do
+NTP entre as duas leituras faz a diferença ser \textbf{negativa}. Com
+\texttt{steady\_clock}, isso é impossível por construção.
+
+\begin{armadilha}[\texttt{high\_resolution\_clock} é um apelido, e neste ambiente é o errado]
+O padrão permite que \texttt{high\_resolution\_clock} seja um \emph{alias} para
+outro relógio, e não diz qual. O subprojeto mede:
+\begin{lstlisting}[style=bt, language=bash, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+é o mesmo que system_clock? true         ← libstdc++
+high_resolution_clock::is_steady = false
+\end{lstlisting}
+Ou seja: na libstdc++, o relógio cujo nome sugere ``o melhor para medir'' é
+justamente o \textbf{não monotônico}. Todo código que mede duração com ele neste
+compilador está sujeito a resultado negativo. E o mapeamento muda: libstdc++
+aponta para \texttt{system\_clock}, libc++ e MSVC apontam para
+\texttt{steady\_clock}. O mesmo código muda de comportamento ao trocar de
+compilador, e o bug não aparece em teste --- só quando o relógio do sistema é
+ajustado. A recomendação, que é também a do cppreference, é não usá-lo nunca.
+\end{armadilha}
+
+\paragraph{Resolução do tipo contra resolução real.} O \texttt{period} de um
+relógio diz a resolução que o \textbf{tipo} é capaz de representar. A resolução
+\emph{efetiva} --- o menor intervalo que duas leituras consecutivas conseguem
+distinguir --- é outra coisa, e se mede:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/chrono/}: o tipo promete nanossegundos; a
+             realidade é outra.}]
+system_clock   tipo: 1/1000000000 s  |  resolução medida: 10 ns
+custo de steady_clock::now(): ~19 ns por chamada
+\end{lstlisting}
+
+Chamar \texttt{now()} custa cerca de dezenove nanossegundos. Medir algo que dura
+menos que isso é \textbf{medir o relógio} --- e é a razão de existir a
+\cref{sec:medicao}.
+
+\subsubsection{\texttt{time\_point}: instantes, e a álgebra que faz sentido}
+
+A distinção que organiza a biblioteca inteira é entre \emph{quanto tempo}
+(\texttt{duration}) e \emph{quando} (\texttt{time\_point}). Um
+\texttt{time\_point} é, por dentro, apenas uma \texttt{duration} contada desde a
+\textbf{\emph{epoch}} do seu relógio --- o instante de referência a partir do
+qual ele conta. Para \texttt{system\_clock}, o C++20 garante que a \emph{epoch}
+é 1970-01-01 00:00:00 UTC; para \texttt{steady\_clock}, é um ponto arbitrário,
+tipicamente o momento em que a máquina ligou.
+
+\begin{table}[htbp]
+\centering
+\caption{A álgebra de instantes e durações.}
+\label{tab:algebra-tempo}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Expressão} & \textbf{Resultado} \\
+\midrule
+\texttt{time\_point - time\_point} & \texttt{duration} --- ``quanto durou'' \\
+\texttt{time\_point + duration}    & \texttt{time\_point} --- ``daqui a'' \\
+\texttt{duration $\pm$ duration}   & \texttt{duration} \\
+\texttt{time\_point + time\_point} & \textbf{erro de compilação} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A última linha é a que importa: somar dois instantes não tem significado, e o
+sistema de tipos impede. Pela mesma razão, o relógio faz parte do \emph{tipo} do
+\texttt{time\_point}, e \texttt{system\_clock::now() - steady\_clock::now()}
+não compila --- as \emph{epochs} são diferentes, e a subtração não teria
+sentido. A consequência prática é boa: não há como, por acidente, medir duração
+com o relógio de parede e datar um evento com o monotônico.
+
+\paragraph{Instante em texto.} A via C ainda aparece em código legado:
+\texttt{to\_time\_t}, \texttt{localtime\_r}, \texttt{strftime}. Vale registrar
+que \texttt{localtime} \textbf{sem} o sufixo \texttt{\_r} não é seguro em
+programas com várias \emph{threads}: ele devolve um ponteiro para um
+\emph{buffer} estático compartilhado. A via C++20 é formatar o
+\texttt{time\_point} diretamente, com \texttt{\{:\%Y-\%m-\%d\}} e afins; e
+\texttt{time\_point\_cast<seconds>} trunca a precisão quando se quer comparar
+carimbos sem os nanossegundos.
+
+\begin{regra}[\emph{deadline} em vez de \emph{timeout} sempre que puder aninhar]
+Uma API que espera pode receber ``quanto tempo esperar'' (\emph{timeout}) ou
+``até quando esperar'' (\emph{deadline}). A diferença aparece em cadeia:
+\begin{lstlisting}[style=bt, language=bash, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+conectar(timeout=100ms) → autenticar(timeout=100ms) → consultar(timeout=100ms)
+Total possível: 300ms, embora o chamador tenha pedido 100.
+
+auto limite = steady_clock::now() + 100ms;
+conectar(limite) → autenticar(limite) → consultar(limite)
+Total garantido: 100ms.
+\end{lstlisting}
+É por isso que a biblioteca oferece os dois: \texttt{wait\_for} recebe duração,
+\texttt{wait\_until} recebe instante (\cref{sec:concurrency}). Use
+\texttt{\_until} em qualquer função que possa ser chamada dentro de outra, e
+\texttt{\_for} apenas na folha da cadeia.
+\end{regra}
+
+\subsubsection{O calendário do C++20}
+
+Até o C++17, trabalhar com datas significava \texttt{std::tm}: uma \emph{struct}
+C de campos \texttt{int} em que o mês vai de 0 a 11, o ano é ``anos desde
+1900'', e nada impede escrever \texttt{tm.tm\_mon = 47}. O C++20 trouxe um
+sistema de tipos completo: \texttt{year}, \texttt{month}, \texttt{day},
+\texttt{weekday}, e as combinações entre eles.
+
+A sintaxe de composição usa \texttt{operator/}, escolhido por já lembrar data em
+quase toda notação do mundo, e aceita as três ordens culturais:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={As três ordens, todas válidas e todas o mesmo dia.}]
+2026y / August / 25d
+August / 25d / 2026y
+25d / August / 2026y
+\end{lstlisting}
+
+Os tipos são minúsculos --- a segurança não custa memória --- e trazem
+validação que \texttt{std::tm} nunca teve: \texttt{ok()} responde se a data
+existe, e \texttt{year::is\_leap()} implementa a regra bissexta completa
+(divisível por 4, exceto os divisíveis por 100 que não sejam por 400 --- por
+isso 1900 e 2100 não são bissextos, e 2000 é).
+
+\begin{armadilha}[\texttt{ok()} não é chamado automaticamente]
+Construir uma data inválida \textbf{compila e não lança}:
+\texttt{2026y/February/30d} é um objeto perfeitamente formado cujo
+\texttt{ok()} devolve falso. A biblioteca deixa a verificação para você, e o
+lugar de fazê-la é a fronteira de entrada --- ao ler de um arquivo, de um
+formulário, de uma requisição.
+\end{armadilha}
+
+\paragraph{\texttt{sys\_days}: a ponte.} \texttt{year\_month\_day} é o tipo do
+\emph{calendário}: mês, ano, validação. \texttt{sys\_days} é um
+\texttt{time\_point<system\_clock, days>}, e é o tipo da \emph{aritmética}:
+somar dias, calcular diferenças, descobrir o dia da semana. Converter entre os
+dois é barato, e o padrão de uso é converter conforme a operação.
+
+\begin{armadilha}[somar meses pode produzir uma data que não existe]
+Somar dias nunca produz data inválida; somar meses ou anos, sim:
+\begin{lstlisting}[style=bt, language=bash, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+2026-01-31 + 1 mês   = 2026-02-31 is not a valid date  → ok() = false
+2026-01-31 + 31 dias = 2026-03-03                       → ok() = true
+\end{lstlisting}
+A biblioteca \textbf{não conserta}: ela devolve a data inválida e deixa a
+política com você. As três políticas possíveis são ir para o último dia do mês
+(28/02), transbordar --- que é o que \texttt{sys\_days\{data\_inválida\}} faz,
+normalizando para 03/03 --- ou rejeitar, porque \texttt{ok()} é falso. O mesmo
+vale para aniversários de quem nasceu em 29 de fevereiro:
+\texttt{2024-02-29 + 1 ano} é inválido.
+\end{armadilha}
+
+\paragraph{Fusos horários.} A API existe --- \texttt{current\_zone},
+\texttt{zoned\_time} --- mas depende do banco \texttt{tzdata} e do suporte
+compilado na libstdc++; no GCC~13 ela pode lançar \texttt{std::runtime\_error}
+ou falhar na ligação, e por isso o demo não a chama. A regra que não depende de
+suporte nenhum é outra, e é a mais importante da subseção:
+
+\begin{regra}[armazene em UTC, converta para local só na apresentação]
+Guardar hora local em banco de dados é a origem de metade dos \emph{bugs} de
+horário de verão que existem: uma hora do ano acontece duas vezes e outra não
+acontece, e não há como distinguir os dois carimbos depois de gravados.
+Armazene \texttt{system\_clock} (que é UTC), e converta apenas ao exibir.
+\end{regra}
+
+\subsubsection{Como cronometrar sem se enganar}
+\label{sec:medicao}
+
+Esta é a subseção que sustenta todos os números do livro. São cinco armadilhas,
+em ordem de frequência.
+
+\paragraph{1. O compilador elimina o que você quer medir.} Chama-se
+\emph{eliminação de código morto}: se o resultado de um cálculo não é usado, o
+compilador tem o direito de apagar o cálculo. Em \texttt{-O2}, um laço que soma
+dois milhões de números e descarta o resultado simplesmente \textbf{não existe}
+no binário, e o cronômetro mede zero.
+
+\begin{table}[htbp]
+\centering
+\caption{As três defesas contra a eliminação, em ordem de preferência.}
+\label{tab:defesas-dce}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Defesa} & \textbf{Qualidade} \\
+\midrule
+barreira de otimização (\texttt{asm volatile}) & \textbf{a correta} \\
+\texttt{volatile} na variável de resultado     & simples, mas impede otimizações legítimas em volta \\
+imprimir ou somar o resultado                  & polui a medida \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A barreira cabe em três linhas e é o que o Google Benchmark chama de
+\texttt{DoNotOptimize}:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Transcrição de \texttt{src/chrono/demo\_medicao.hpp}: a barreira de
+             otimização.}]
+template <typename T>
+inline void nao_otimize(T&& valor) {
+    // Diz ao compilador: "este valor pode ser lido e modificado por código
+    // que você não vê". Ele então precisa materializá-lo de verdade.
+    asm volatile("" : : "r,m"(valor) : "memory");
+}
+\end{lstlisting}
+
+\paragraph{2. O trecho é curto demais.} Como \texttt{now()} custa cerca de vinte
+nanossegundos, medir uma operação de poucos nanossegundos mede o relógio:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/chrono/}: a mesma operação, medida de duas
+             formas.}]
+uma execução medida direto : ~20 ns    ← mediu o RELÓGIO
+1000000 execuções / N      :   ~2 ns   ← mediu a operação
+\end{lstlisting}
+
+A regra prática: o trecho medido precisa durar pelo menos cem vezes a resolução
+do relógio. Com vinte nanossegundos de sobrecarga, isso significa alvos de dois
+microssegundos ou mais --- ou repetir e dividir.
+
+\paragraph{3. Aquecimento.} A primeira execução paga o que as seguintes não
+pagam: \emph{page faults} --- a materialização, pelo núcleo do sistema
+operacional, de páginas de memória que foram reservadas mas nunca tocadas ---,
+cache frio, preditor de saltos sem histórico, CPU ainda em frequência baixa.
+
+O demo mede dois casos, e é honesto quando o efeito não aparece: no caso em que
+um \texttt{std::iota} preencheu o vetor antes da medição, as cinco execuções
+saem parecidas, porque o \texttt{iota} já pagou tudo. A conclusão é a mesma nos
+dois casos --- \emph{descarte as primeiras execuções}. O custo de descartar é
+zero; o de não descartar é uma conclusão errada.
+
+\paragraph{4. Mediana, não média.}
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/chrono/}: 21 execuções do mesmo trabalho.}]
+mínimo  : 221 µs   ← o mais próximo do custo REAL
+mediana : 225 µs   ← robusta a outliers
+média   : 228 µs   ← puxada por qualquer pico
+p95     : 240 µs
+máximo  : 261 µs   ← o escalonador interferiu
+\end{lstlisting}
+
+A média é a pior estatística possível aqui, porque um único pico --- uma troca
+de contexto, uma interrupção, outro processo acordando --- a contamina inteira.
+
+\begin{table}[htbp]
+\centering
+\caption{Qual estatística responde a qual pergunta.}
+\label{tab:estatistica-bench}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Você quer} & \textbf{Use} \\
+\midrule
+o custo típico             & mediana \\
+o melhor caso real         & mínimo \\
+a latência de um contrato de serviço & p95 / p99 \\
+---                        & média (quase nunca) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{5. Um cronômetro reutilizável.} O subprojeto fecha com um cronômetro
+\gls{raii} e uma função de medição que fazem o básico certo:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Transcrição de \texttt{src/chrono/demo\_medicao.hpp}: aquecimento,
+             repetição e barreira, em oito linhas.}]
+template <typename F>
+ch::nanoseconds medir(F&& f, int repeticoes = 1) {
+    // Aquecimento: descarta a primeira
+    { auto r = f(); nao_otimize(r); }
+
+    const auto t0 = ch::steady_clock::now();
+    for (int i = 0; i < repeticoes; ++i) { auto r = f(); nao_otimize(r); }
+    const auto dt = ch::steady_clock::now() - t0;
+
+    return ch::duration_cast<ch::nanoseconds>(dt) / repeticoes;
+}
+\end{lstlisting}
+
+E o subprojeto lista o que ele \textbf{não} faz, e que um \emph{benchmark} sério
+faria: estatística (mediana, desvio, intervalo de confiança), ajuste automático
+de $N$ até a medida estabilizar, fixação da \emph{thread} numa CPU com
+\emph{turbo boost} desligado, detecção de interferência do escalonador. Para
+isso existem Google Benchmark, nanobench e o suporte do Catch2.
+
+% =============================================================================
+\subsection{Bits}
+\label{sec:bits}
+% =============================================================================
+
+Os operadores \texttt{\&}, \texttt{|}, \texttt{\textasciicircum},
+\texttt{\textasciitilde}, \texttt{<<} e \texttt{>>} parecem os mais simples da
+linguagem, e escondem três regras que produzem \gls{ub}. O subprojeto
+\projeto{bits} abre com as três, resumidas em três linhas:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={As três armadilhas dos operadores de bit.}]
+uint8_t x = 0x0F;
+~x                    // NÃO é 0xF0 — é -16, um int    (promoção inteira)
+uint64_t m = 1 << 40; // ✗ UB: o literal `1` é int      (shift fora de faixa)
+int f : 1; f = 1;     // f vale -1                       (bit de sinal)
+\end{lstlisting}
+
+\subsubsection{As quatro operações com máscara}
+
+Uma \emph{máscara} é um valor em que os bits de interesse estão em 1. Com ela,
+as quatro operações fundamentais se escrevem sempre da mesma forma:
+
+\begin{table}[htbp]
+\centering
+\caption{Os quatro idiomas com máscara.}
+\label{tab:mascaras}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Operação} & \textbf{Idioma} \\
+\midrule
+testar   & \texttt{(x \& M) != 0} \\
+ligar    & \texttt{x |= M} \\
+desligar & \texttt{x \&= \textasciitilde M} \\
+alternar & \texttt{x \textasciicircum= M} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{A promoção inteira, que morde}
+
+\begin{porque}[por que existe a promoção inteira]
+Herdada do C, a regra diz que todo operando de tipo \emph{menor} que
+\texttt{int} --- \texttt{char}, \texttt{short}, \texttt{uint8\_t} --- é
+convertido para \texttt{int} \textbf{antes} da operação. A motivação era
+histórica e razoável: as unidades aritméticas trabalham na largura da palavra, e
+uniformizar os operandos simplifica a linguagem. A consequência é que uma
+operação escrita sobre oito bits acontece sobre trinta e dois.
+\end{porque}
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/bits/}: a promoção, medida.}]
+uint8_t x = 0x0F;
+~x como int       : -16 (0xFFFFFFF0)      ← não é 0xF0
+uint8_t(0xFF) << 4 = 0xFF0 (12 bits!)     ← não trunca
+\end{lstlisting}
+
+O bug real que isso causa é uma comparação que nunca é verdadeira:
+\texttt{if (flags == \textasciitilde MASCARA)} compara um \texttt{uint8\_t} com
+um \texttt{int} \textbf{negativo}. O código compila, roda e nunca entra no
+\texttt{if}.
+
+As defesas são três: use \texttt{unsigned} ou \texttt{uint32\_t} para máscaras;
+faça o \texttt{static\_cast} de volta ao tipo pequeno, explicitamente; e compile
+com \texttt{-Wconversion}, para que o compilador cobre a conversão em vez de
+fazê-la calado.
+
+\subsubsection{\emph{Shift} fora de faixa}
+
+A regra é: \texttt{x << n} e \texttt{x >> n} são \gls{ub} se \texttt{n} for
+negativo ou maior ou igual ao número de bits de \texttt{x} \textbf{após a
+promoção}. As consequências são pouco intuitivas:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Quatro deslocamentos: dois corretos, dois \gls{ub}.}]
+uint32_t x = 1;  x << 32;    // ✗ UB (32 bits, deslocamento de 32)
+uint8_t  b = 1;  b << 8;     // ✓ ok! b virou int (32 bits)
+uint64_t m = 1 << 40;        // ✗ UB — o literal `1` é int
+uint64_t m = 1ull << 40;     // ✓
+\end{lstlisting}
+
+A segunda linha é o caso em que a medição contraria a expectativa: deslocar um
+\texttt{uint8\_t} por 8 seria \gls{ub} se a operação fosse de 8 bits, e é segura
+precisamente por causa da promoção inteira --- a mesma regra que causa o
+problema da subseção anterior. A terceira é a armadilha mais frequente do
+mundo real: o literal \texttt{1} é \texttt{int}, e o tipo do \emph{destino} não
+influencia o tipo da \emph{expressão}. Máscaras de 64 bits exigem
+\texttt{1ull}.
+
+\begin{armadilha}[o UBSan pega, o compilador não]
+Nenhum dos casos acima gera \emph{warning} com \texttt{-Wall}. O
+UndefinedBehaviorSanitizer (\cref{sec:sanitizers}) detecta em tempo de execução
+e imprime \texttt{runtime error: shift exponent 32 is too large}. É mais um
+argumento para rodar os testes sob \emph{sanitizer} ao menos uma vez.
+\end{armadilha}
+
+Vale registrar uma regra que \textbf{mudou}: \texttt{-1 << 1} era \gls{ub} até o
+C++17 e passou a ser definido no C++20, porque esse padrão fixou a representação
+em complemento de dois como obrigatória.
+
+\subsubsection{\texttt{>>} em \emph{signed} contra \emph{unsigned}}
+
+Em tipos sem sinal, \texttt{>>} insere zeros à esquerda (deslocamento
+\emph{lógico}). Em tipos com sinal e valor negativo, insere cópias do bit de
+sinal (deslocamento \emph{aritmético}), preservando o valor:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/bits/}: os mesmos bits, dois resultados.}]
+int32_t(-16) >> 2 = -4           ← preencheu com o bit de SINAL
+uint32_t     >> 2 = 1073741820   ← preencheu com zeros
+
+-7 >> 1 = -4    (arredonda para -∞)
+-7 /  2 = -3    (trunca para zero)
+\end{lstlisting}
+
+As duas últimas linhas desmentem a substituição que quase todo programador já
+fez: \texttt{x >> 1} \textbf{não} é \texttt{x / 2} para negativos.
+
+\begin{regra}[\emph{unsigned} para bits, \emph{signed} para aritmética]
+Para manipulação de bits, use sempre tipos sem sinal: eles não têm bit de sinal
+para propagar, não têm estouro com comportamento indefinido e não mudam de
+significado ao deslocar. Tipos com sinal são para aritmética, onde o sinal
+significa alguma coisa.
+\end{regra}
+
+\subsubsection{Extrair e inserir campos, de forma portável}
+
+O padrão que aparece em todo protocolo binário e em todo registrador de hardware
+é um inteiro que empacota vários campos. Fazê-lo à mão, com deslocamento e
+máscara, dá um tipo pequeno e \gls{constexpr}:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Transcrição de \texttt{src/bits/demo\_operadores.hpp}: campos com
+             layout definido por você.}]
+struct CampoBits {
+    unsigned deslocamento;
+    unsigned largura;
+
+    constexpr std::uint32_t mascara() const {
+        return ((1u << largura) - 1u) << deslocamento;
+    }
+    constexpr std::uint32_t extrair(std::uint32_t reg) const {
+        return (reg & mascara()) >> deslocamento;
+    }
+    constexpr std::uint32_t inserir(std::uint32_t reg, std::uint32_t valor) const {
+        return (reg & ~mascara()) | ((valor << deslocamento) & mascara());
+    }
+};
+
+constexpr CampoBits VERSAO {24, 8};
+constexpr CampoBits TIPO   {16, 8};
+constexpr CampoBits TAMANHO{ 4, 12};
+constexpr CampoBits FLAGS  { 0, 4};
+\end{lstlisting}
+
+Como tudo é \texttt{constexpr}, o layout é verificável em compilação, e um
+deslocamento errado vira erro de \emph{build}:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Transcrição de \texttt{src/bits/demo\_operadores.hpp}: o layout
+             conferido pelo compilador.}]
+    static_assert(VERSAO.mascara()  == 0xFF000000u);
+    static_assert(TAMANHO.mascara() == 0x0000FFF0u);
+    static_assert(TAMANHO.extrair(TAMANHO.inserir(0, 4095)) == 4095);
+\end{lstlisting}
+
+Guarde este exemplo: ele é a alternativa \textbf{portável} aos campos de bits
+nativos, e a diferença entre os dois é o assunto de duas subseções adiante.
+
+\subsubsection{\cabecalho{bit}: as operações que o hardware já sabia fazer}
+
+Todo processador moderno tem instruções para contar bits, achar o bit mais
+significativo e rotacionar. Até o C++20 não havia forma portável de chamá-las:
+o código usava \texttt{\_\_builtin\_popcount} no GCC,
+\texttt{\_BitScanReverse} no MSVC, ou um laço que o compilador talvez
+reconhecesse. O \cabecalho{bit} padronizou tudo.
+
+\paragraph{\texttt{bit\_cast}: o fim do \emph{type punning} informal.}
+\emph{Type punning} é reinterpretar os bits de um objeto como se fossem de outro
+tipo --- operação legítima e comum em serialização e em algoritmos de ponto
+flutuante. Todas as formas antigas eram inválidas ou incômodas.
+
+\begin{table}[htbp]
+\centering
+\caption{As quatro formas de reinterpretar bits, e o veredito de cada uma.}
+\label{tab:type-punning}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Forma} & \textbf{Veredito} \\
+\midrule
+\texttt{*(int*)\&f}                & viola \emph{strict aliasing} --- \gls{ub} \\
+\texttt{union \{ float f; int i; \}} & ler o membro inativo é \gls{ub} em C++ \\
+\texttt{memcpy(\&i, \&f, 4)}       & correto, mas verboso e \textbf{não} é \gls{constexpr} \\
+\texttt{std::bit\_cast<int>(f)}    & correto, conciso \textbf{e} \gls{constexpr} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\emph{Strict aliasing} é a regra que permite ao compilador supor que ponteiros
+de tipos diferentes não apontam para o mesmo objeto --- suposição sem a qual
+quase nenhuma otimização de laço seria possível. Violá-la não produz erro:
+produz código que funciona em \texttt{-O0} e falha em \texttt{-O2}.
+
+\texttt{bit\_cast} exige que os dois tipos tenham o mesmo \texttt{sizeof} e
+sejam trivialmente copiáveis, e verifica isso em compilação. E, por ser
+\gls{constexpr}, a representação de um \texttt{float} passa a ser conferível por
+\texttt{static\_assert}:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Transcrição de \texttt{src/bits/demo\_bit.hpp}: a representação
+             conferida em compilação.}]
+    constexpr auto bits_const = std::bit_cast<std::uint32_t>(2.0f);
+    static_assert(bits_const == 0x40000000u);
+\end{lstlisting}
+
+\paragraph{Contagem.} Três funções, e um uso prático para cada uma:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/bits/}: contagem sobre um valor de 32 bits.}]
+v = 00001011011000000000000000000000
+  popcount    = 5    bits 1 no total
+  countl_zero = 4    zeros à esquerda
+  countr_zero = 21   zeros à direita
+\end{lstlisting}
+
+\texttt{popcount} dá a distância de Hamming entre dois valores (basta contar os
+bits de \texttt{a \textasciicircum{} b}) e a cardinalidade de um conjunto
+representado como máscara. \texttt{countl\_zero} dá a posição do bit mais
+significativo, e portanto o logaritmo de base 2 inteiro.
+\texttt{countr\_zero} dá o alinhamento de um endereço e a posição do próximo
+\emph{slot} livre num alocador de bitmap.
+
+\paragraph{Potências de dois.} Quatro funções respondem a perguntas distintas:
+\texttt{has\_single\_bit} (``é potência de 2?''), \texttt{bit\_width} (quantos
+bits são necessários), \texttt{bit\_floor} (maior potência de 2 menor ou igual)
+e \texttt{bit\_ceil} (menor potência de 2 maior ou igual).
+
+\begin{table}[htbp]
+\centering
+\caption{Saída de \texttt{src/bits/}: as quatro funções sobre dois valores.}
+\label{tab:potencias-dois}
+\footnotesize
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Valor} & \texttt{has\_single\_bit} & \texttt{bit\_width} & \texttt{bit\_floor} & \texttt{bit\_ceil} \\
+\midrule
+100  & não & 7  & 64  & 128 \\
+1000 & não & 10 & 512 & 1024 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O uso canônico é dimensionar um \emph{buffer}: pedir mil elementos e alocar
+\texttt{bit\_ceil(1000)}~=~1024 permite trocar o resto de divisão
+\texttt{i \% n} pelo mascaramento \texttt{i \& (n-1)}, que é uma instrução em
+vez de dezenas. Antes do C++20, \texttt{has\_single\_bit(v)} se escrevia
+\texttt{v \&\& !(v \& (v - 1))} --- correto, ilegível, e errado para
+\texttt{v == 0} se alguém esquecesse o primeiro termo.
+
+\begin{armadilha}[\texttt{bit\_ceil} tem um caso de \gls{ub}]
+\texttt{bit\_ceil(v)} é \gls{ub} se o resultado não couber no tipo. Para
+\texttt{uint32\_t}, qualquer \texttt{v} acima de $2^{31}$ pede $2^{32}$, que não
+existe no tipo. Verifique antes, ou trabalhe num tipo mais largo.
+\end{armadilha}
+
+\paragraph{Rotação.} Rotacionar é diferente de deslocar: os bits que saem de um
+lado \textbf{entram} pelo outro. É a operação-base de funções de \emph{hash} e
+de criptografia.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/bits/}: deslocamento contra rotação.}]
+v          = 10010011
+v << 3     = 10011000    (shift: entram zeros, perde bits)
+rotl(v, 3) = 10011100    (rotação: os bits VOLTAM)
+rotl(v, 11)= 10011100    (11 % 8 = 3 — sem UB)
+rotl(v, -3)= 01110010    (negativo inverte o sentido)
+\end{lstlisting}
+
+Duas propriedades merecem destaque, porque contrastam com o deslocamento:
+\texttt{rotl} reduz a contagem módulo a largura do tipo, e aceita contagem
+\textbf{negativa} invertendo o sentido. Não há \gls{ub} para valor nenhum ---
+enquanto o idioma manual pré-C++20, \texttt{(v << n) | (v >> (32 - n))}, é
+\gls{ub} exatamente quando \texttt{n == 0}, que é o caso que ninguém testa.
+
+\begin{armadilha}[a instrução única depende da \emph{flag} de compilação]
+\texttt{popcount} mapeia para a instrução \texttt{POPCNT}, \texttt{countl\_zero}
+para \texttt{LZCNT}, \texttt{rotl} para \texttt{ROL} --- mas só se o compilador
+tiver permissão para usar a extensão correspondente. Com \texttt{g++ -O2} e
+nada mais, \texttt{POPCNT} não é garantido, e o compilador emite a sequência
+genérica de cerca de doze instruções. Com \texttt{-msse4.2} ou
+\texttt{-march=native}, vira uma. Este subprojeto compila \emph{sem} a
+\emph{flag} de propósito: o objetivo é o comportamento, não a instrução.
+\end{armadilha}
+
+\subsubsection{\classe{std::bitset}: bits com nome}
+
+\texttt{bitset<N>} é um vetor de $N$ bits empacotados com uma interface de alto
+nível: \texttt{b.test(3)} em vez de \texttt{(flags >> 3) \& 1},
+\texttt{b.set(3)} em vez de \texttt{flags |= (1u << 3)}, \texttt{b.count()} em
+vez de \texttt{\_\_builtin\_popcount(flags)}. É mais legível e igualmente
+rápido --- as operações compilam para as mesmas instruções.
+
+Ele suporta as operações de conjunto diretamente: \texttt{|} é união,
+\texttt{\&} é interseção, \texttt{\textasciicircum} é diferença simétrica,
+\texttt{a \& \textasciitilde b} é diferença, e \texttt{(a \& b).none()} responde
+se são disjuntos.
+
+\begin{armadilha}[o índice 0 fica à direita da \emph{string}]
+O índice $i$ corresponde ao valor $2^i$, portanto o índice 0 é o bit
+\textbf{menos} significativo --- o mais à \textbf{direita} quando se imprime:
+\begin{lstlisting}[style=bt, language=bash, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+b.set(0) → to_string() = "00000001"
+b.set(7) → to_string() = "10000000"
+\end{lstlisting}
+A regra completa é \texttt{string[j]} $\rightarrow$ índice \texttt{(N-1-j)}. A
+\emph{string} lê da esquerda para a direita como um número binário; os índices
+contam da direita para a esquerda, como potências. Confundir os dois ao
+converter de e para texto é a fonte de \emph{bug} mais comum com
+\texttt{bitset}.
+\end{armadilha}
+
+Como no \texttt{vector}, há duas formas de acessar com contratos diferentes:
+\texttt{test(i)} verifica os limites e lança \texttt{std::out\_of\_range};
+\texttt{b[i]} não verifica, e é \gls{ub} fora da faixa. E \texttt{to\_ulong()}
+lança \texttt{overflow\_error} se houver bits significativos além do que cabe
+num \texttt{unsigned long}.
+
+\begin{table}[htbp]
+\centering
+\caption{\texttt{bitset} contra as alternativas.}
+\label{tab:bitset-alternativas}
+\footnotesize
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Opção} & \textbf{Tamanho} & \textbf{Legível} & \textbf{Seguro} & \textbf{Dinâmico} \\
+\midrule
+\texttt{uint32\_t} + máscara & fixo & não & não & não \\
+\texttt{enum class} de \emph{flags} & fixo & \textbf{sim} & \textbf{sim} & não \\
+\texttt{std::bitset<N>}      & fixo & \textbf{sim} & sim & não \\
+\texttt{std::vector<bool>}   & \textbf{dinâmico} & sim & não$^*$ & \textbf{sim} \\
+\texttt{std::vector<char>}   & dinâmico & sim & sim & sim \\
+\bottomrule
+\end{tabular}\\[2pt]
+\footnotesize $^*$ \texttt{operator[]} devolve um \emph{proxy}, não um
+\texttt{bool\&} --- ver \cref{sec:stl}.
+\end{table}
+
+A comparação com \classe{std::vector} de \texttt{bool} merece ser explícita,
+porque os dois empacotam bits e a escolha entre eles não é de gosto.
+\texttt{vector<bool>} é a única opção quando o tamanho só é conhecido em tempo
+de execução, e paga por isso com o \emph{proxy}: \texttt{auto x = vb[0]} não
+produz um \texttt{bool}, produz uma referência disfarçada, e atribuir a ela
+modifica o vetor. \texttt{bitset<N>} tem tamanho fixo em compilação e devolve
+\texttt{bool} de verdade em \texttt{test()}. Quando o tamanho é dinâmico e o
+\emph{proxy} incomoda, a resposta é \texttt{vector<char>} ou
+\texttt{boost::dynamic\_bitset}.
+
+O tamanho do \texttt{bitset} é arredondado para múltiplos da palavra:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/bits/}: o arredondamento para a palavra.}]
+sizeof: bitset<8>=8  bitset<64>=8  bitset<65>=16  bitset<100>=16
+\end{lstlisting}
+
+Um único bit a mais que 64 dobra o custo. Para conjuntos grandes e homogêneos
+--- o crivo de Eratóstenes do subprojeto usa \texttt{bitset<1001>}, cerca de 126
+bytes --- o ganho é de oito vezes sobre um vetor de \texttt{bool} nativo, e o
+que importa não é a memória em si: é que a estrutura inteira cabe no cache L1.
+
+\subsubsection{Campos de bits nativos, e por que evitá-los}
+
+O C++ tem sintaxe própria para empacotar campos num inteiro:
+\texttt{unsigned versao : 4;}. Parece a solução ideal para protocolos binários.
+\textbf{Não é} --- porque quase tudo sobre o layout é \emph{definido pela
+implementação}: a ordem dos campos dentro da palavra, se um campo pode
+atravessar a fronteira da unidade de alocação, o alinhamento e o tamanho total.
+
+A ``unidade de alocação'' aqui é a palavra de memória que o compilador escolhe
+para acomodar os campos --- e a escolha é dele. O subprojeto \emph{mede} o
+layout no GCC para x86-64 e encontra o primeiro campo nos bits menos
+significativos; nada garante que outro compilador faça igual.
+
+\begin{armadilha}[um \emph{struct} com campos de bits não é um formato]
+Escrever um cabeçalho de protocolo com campos de bits e enviá-lo pela rede é um
+\emph{bug} esperando o dia em que a outra ponta usa outro compilador ou outra
+arquitetura. O formato precisa ser definido pelo \textbf{seu} código --- é
+exatamente o que o \texttt{CampoBits} da subseção anterior faz, ao custo de mais
+verbosidade.
+\end{armadilha}
+
+\begin{armadilha}[um campo com sinal de 1 bit vale $-1$, não $1$]
+A faixa de \texttt{int x : 1} é $\{-1, 0\}$, não $\{0, 1\}$: o único bit
+\emph{é} o bit de sinal. Atribuir 1 e ler $-1$ é o comportamento correto, e o
+GCC avisa (\texttt{overflow in conversion... changes value from '1' to '-1'}).
+O \emph{bug} clássico:
+\begin{lstlisting}[style=bt, language=C++, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+struct Flags { int ativo : 1; };
+f.ativo = 1;
+if (f.ativo == 1) ...    // FALSO! f.ativo é -1
+if (f.ativo)      ...    // ✓ verdadeiro (-1 é truthy)
+\end{lstlisting}
+Campos de bits são \textbf{sempre} \texttt{unsigned} ou \texttt{bool}. E
+\texttt{char x : 1} tem o mesmo problema, porque a existência de sinal em
+\texttt{char} também é definida pela implementação.
+\end{armadilha}
+
+\begin{armadilha}[um campo de bits não tem endereço]
+Um campo de bits não ocupa bytes inteiros, logo não tem endereço próprio:
+\texttt{\&x.campo} não compila, e nenhuma referência pode ser ligada a ele. Isso
+significa que passá-lo a qualquer função que receba por referência ---
+\texttt{fmt::print}, por exemplo --- falha com \texttt{error: cannot bind
+bit-field to 'unsigned char\&'}. O contorno é o \texttt{+} unário, que promove o
+campo a um \texttt{int} temporário: \texttt{fmt::print("\{\}", +h.versao)}. O
+demo precisou do \texttt{+} em cada campo, e isso \emph{é} a lição.
+\end{armadilha}
+
+Há ainda dois custos que não são óbvios. Ler ou escrever um campo vira
+deslocamento mais máscara --- mais instruções que acessar um byte inteiro. E
+dois campos na mesma palavra \textbf{não} podem ser acessados concorrentemente:
+escrever num deles faz leitura-modificação-escrita da palavra inteira, o que é
+uma \gls{datarace} pela definição que o C++11 introduziu (\cref{sec:concurrency}).
+
+\begin{table}[htbp]
+\centering
+\caption{A ferramenta certa para cada objetivo com bits.}
+\label{tab:bits-ferramenta}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Objetivo} & \textbf{Ferramenta} \\
+\midrule
+economizar memória \textbf{interna} ao programa & campos de bits \\
+protocolo binário ou arquivo                    & máscaras e deslocamento \\
+registrador de hardware                         & máscaras e \texttt{volatile} \\
+conjunto de \emph{flags} nomeadas               & \texttt{enum class} com operadores \\
+muitos bits homogêneos                          & \classe{std::bitset} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{\emph{Endianness}, \texttt{bit\_cast} e serialização}
+
+Um \texttt{uint32\_t} com o valor \texttt{0x12345678} ocupa quatro bytes. A
+\textbf{ordem} desses bytes na memória depende da arquitetura: em
+\emph{little-endian} (x86, ARM na configuração usual), o byte menos
+significativo fica no menor endereço; em \emph{big-endian} (PowerPC, e a
+convenção de rede), o mais significativo.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/bits/}: os bytes na memória, nesta máquina.}]
+uint32_t 0x12345678 → 78 56 34 12      ← little-endian: menos significativo 1º
+\end{lstlisting}
+
+Enquanto os dados vivem na memória do processo, isso é invisível. Assim que eles
+viram bytes --- arquivo, \emph{socket}, memória compartilhada --- a ordem passa
+a fazer parte do formato. Duas observações fecham o conceito: o \emph{endianness}
+afeta a ordem dos \textbf{bytes}, nunca a dos bits dentro de cada byte; e, desde
+o C++20, \texttt{std::endian::native} responde a pergunta em tempo de
+\emph{compilação}, permitindo \texttt{if constexpr} --- antes disso o truque era
+ler o primeiro byte de um \texttt{uint16\_t} por um ponteiro para
+\texttt{char}, o que tecnicamente violava \emph{strict aliasing}.
+
+\begin{armadilha}[serializar o \emph{struct} inteiro está sempre errado]
+\begin{lstlisting}[style=bt, language=bash, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+struct Pacote { uint16_t tipo; uint32_t tamanho; uint8_t versao; };
+  sizeof = 12 bytes (os campos somam 7 — o resto é PADDING)
+
+write(fd, &p, sizeof(p)) escreve:
+  02 01 00 00 06 05 04 03 07 00 00 00
+\end{lstlisting}
+São três problemas, todos silenciosos. \textbf{Padding}: os bytes que o
+compilador insere entre campos para respeitar o alinhamento têm valor
+indefinido, e enviá-los vaza memória do processo --- já foi CVE.
+\textbf{\emph{Endianness}}: a ordem gravada é a da arquitetura de quem escreveu,
+não a do formato. \textbf{Layout}: outro compilador pode ordenar ou alinhar
+diferente. Nenhum dos três aparece em teste, porque quem escreve e quem lê é o
+\emph{mesmo binário}.
+\end{armadilha}
+
+A forma correta é serializar campo a campo, numa ordem que o \emph{seu} código
+define:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Transcrição de \texttt{src/bits/demo\_endianness.hpp}: escrita em
+             \emph{big-endian}, independente da máquina.}]
+    template <typename T>
+    void escrever(T v) {
+        static_assert(std::is_unsigned_v<T>, "serialize só tipos sem sinal");
+        for (int i = sizeof(T) - 1; i >= 0; --i) {
+            saida_.push_back(static_cast<std::uint8_t>(v >> (i * 8)));
+        }
+    }
+\end{lstlisting}
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/bits/}: sete bytes contra doze, e ida e volta
+             exata.}]
+serializado campo a campo, big-endian:
+  01 02 03 04 05 06 07        ← 7 bytes, contra 12 do struct cru
+round-trip: ✓ idêntico
+\end{lstlisting}
+
+\begin{porque}[por que o deslocamento resolve o \emph{endianness}]
+Porque \texttt{v >> (i*8)} é uma operação sobre o \textbf{valor numérico}, não
+sobre os bytes. \texttt{v >> 24} devolve o byte mais significativo em qualquer
+arquitetura, porque ``mais significativo'' é uma propriedade do número, não da
+memória. \emph{Endianness} só existe quando alguém olha os bytes --- e este
+código nunca olha. É o mecanismo por trás de Protobuf, MessagePack e Cap'n
+Proto.
+\end{porque}
+
+Quando é mesmo necessário inverter a ordem de um valor inteiro --- ao ler um
+formato de outra convenção, por exemplo --- a ferramenta é
+\texttt{std::byteswap}, do C++23, que vira uma instrução \texttt{BSWAP}. As
+alternativas, em ordem decrescente de qualidade, são
+\texttt{\_\_builtin\_bswapNN} do GCC e do Clang, o par
+\texttt{htonl}/\texttt{ntohl} do POSIX (limitado a 16 e 32 bits) e os
+deslocamentos escritos à mão, que o compilador em geral reconhece e converte na
+mesma instrução.
+
+% =============================================================================
+\subsection{O IO de arquivo com \emph{streams}}
+\label{sec:io-streams}
+% =============================================================================
+
+A \cref{sec:file-io} apresentou a hierarquia dos \emph{streams} e o
+\classe{std::filesystem}; esta seção completa o assunto pelo lado prático, com o
+que o subprojeto \projeto{file\_io} demonstra em código.
+
+Um \emph{stream} é uma abstração de sequência de caracteres com direção. Por
+baixo dele há um \texttt{streambuf}, o objeto que efetivamente conversa com o
+destino --- um arquivo, um terminal, uma região de memória --- e que guarda o
+\emph{buffer}: uma área intermediária onde os caracteres se acumulam antes de
+serem entregues, para que uma única chamada ao sistema operacional escreva
+muitos deles de uma vez.
+
+\subsubsection{Os quatro objetos globais, e a diferença que importa}
+
+\texttt{std::cin} lê da entrada padrão; \texttt{std::cout} escreve na saída
+padrão, com \emph{buffer}; \texttt{std::cerr} e \texttt{std::clog} escrevem
+ambos no erro padrão, e a diferença entre eles é exatamente o \emph{buffer}.
+
+\begin{regra}[\texttt{cerr} para o que precisa sobreviver ao \emph{crash}]
+\texttt{std::cerr} não tem \emph{buffer}: cada escrita chega ao destino
+imediatamente. Isso custa caro --- uma chamada ao sistema por operação --- e é
+precisamente o que se quer da última mensagem antes de um aborto.
+\texttt{std::clog} escreve no mesmo lugar com \emph{buffer}, e é a escolha certa
+para \emph{log} volumoso, desde que se aceite perder as últimas linhas num
+encerramento anormal. Pela mesma razão, prefira \texttt{'\textbackslash n'} a
+\texttt{std::endl}: o segundo é o primeiro \emph{mais um flush}, e o flush
+desnecessário em laço é um dos custos de IO mais comuns.
+\end{regra}
+
+\subsubsection{Manipuladores: poderosos e pegajosos}
+
+Os manipuladores de \cabecalho{iomanip} controlam base (\texttt{dec},
+\texttt{hex}, \texttt{oct}), notação de ponto flutuante (\texttt{fixed},
+\texttt{scientific}), precisão, largura, preenchimento e alinhamento.
+
+\begin{armadilha}[o manipulador muda o \emph{stream}, não a expressão]
+\texttt{std::hex} não formata o próximo valor: ele altera o \textbf{estado} do
+\emph{stream}, e o estado permanece. Um \texttt{std::hex} esquecido faz toda a
+saída seguinte sair em hexadecimal, inclusive a de outra função, de outro
+arquivo, escrita por outra pessoa. A exceção é \texttt{std::setw}, que vale
+\emph{apenas} para a próxima inserção --- o que torna o conjunto ainda menos
+previsível. É a razão de existir \texttt{std::format} (\cref{sec:format}), cuja
+especificação é local à chamada e não deixa resíduo.
+\end{armadilha}
+
+\subsubsection{Arquivos: texto, binário e posicionamento}
+
+As três classes de \cabecalho{fstream} correspondem às três direções:
+\texttt{ofstream} escreve, \texttt{ifstream} lê, \texttt{fstream} faz as duas.
+Todas são \gls{raii}: o destrutor fecha o arquivo e esvazia o \emph{buffer}.
+
+\begin{table}[htbp]
+\centering
+\caption{Os modos de abertura mais usados.}
+\label{tab:modos-abertura}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Declaração} & \textbf{Efeito} \\
+\midrule
+\texttt{ofstream f("a.txt");}                 & \texttt{out | trunc} --- apaga o conteúdo \\
+\texttt{ofstream f("a.txt", ios::app);}       & acrescenta ao fim \\
+\texttt{ifstream f("a.txt");}                 & \texttt{in} \\
+\texttt{fstream f("a.txt", ios::in|ios::out);}& lê e escreve, sem truncar \\
+\texttt{ofstream f("a.bin", ios::binary);}    & binário, sem tradução de fim de linha \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O posicionamento tem \textbf{dois} cursores independentes: \texttt{tellg} e
+\texttt{seekg} governam a leitura (\emph{get}), \texttt{tellp} e \texttt{seekp}
+governam a escrita (\emph{put}). As origens são \texttt{ios::beg},
+\texttt{ios::cur} e \texttt{ios::end}. É com eles que se lê um arquivo inteiro
+de uma vez --- ir ao fim, medir a posição, voltar ao início, ler tudo --- e que
+se faz acesso aleatório a registros de tamanho fixo, saltando
+\texttt{n * sizeof(Registro)} bytes.
+
+\begin{armadilha}[o modo binário do demo é um exemplo do que não fazer em rede]
+O subprojeto grava \emph{structs} com \texttt{ofs.write(reinterpret\_cast<const
+char*>(\&r), sizeof(Registro))}, e isso é legítimo enquanto o arquivo é privado
+do programa. Para qualquer formato que atravesse máquinas, compiladores ou
+versões, vale integralmente a advertência da subseção anterior: \emph{padding},
+\emph{endianness} e layout tornam o resultado dependente de quem escreveu.
+Formato que sai do processo se serializa campo a campo.
+\end{armadilha}
+
+Quanto a erros, um \emph{stream} tem quatro estados consultáveis ---
+\texttt{good}, \texttt{fail}, \texttt{bad}, \texttt{eof} --- e, por padrão,
+\textbf{não lança}: uma leitura que falha apenas liga um bit, e é o
+\texttt{if (!ifs)} que precisa existir. Quem preferir exceções pode pedi-las com
+\texttt{ifs.exceptions(std::ios::failbit | std::ios::badbit)}, e aí um
+\texttt{open} malsucedido lança \texttt{std::ios\_base::failure}.
+
+\subsubsection{\emph{String streams}: a mesma interface, em memória}
+
+\texttt{ostringstream} monta texto, \texttt{istringstream} \emph{parseia},
+\texttt{stringstream} faz as duas sobre o mesmo \emph{buffer}. O uso mais
+frequente do segundo é a tokenização: \texttt{std::getline(iss, token, ',')}
+separa um CSV, e \texttt{std::getline(iss, chave, '=')} seguido de
+\texttt{std::getline(iss, valor)} \emph{parseia} uma linha de configuração.
+
+Duas notas de desempenho. Primeiro, \texttt{str()} devolve uma \textbf{cópia} da
+\emph{string} interna; desde o C++20 existe \texttt{view()}, que devolve um
+\classe{std::string\_view} sem alocar --- e que, como todo \emph{view}, é
+invalidado assim que o \emph{stream} é modificado. Segundo, para converter texto
+em número, \emph{string streams} são a opção mais cara das cinco da
+\cref{tab:texto-numero}: cada conversão constrói um objeto de \emph{stream}
+inteiro, com \emph{locale} e \emph{flags}. Para dados, \cabecalho{charconv}.
+
+\subsubsection{\texttt{rdbuf}: o ponto de extensão que torna tudo componível}
+
+O método \texttt{rdbuf()} devolve --- e, com argumento, \textbf{troca} --- o
+\texttt{streambuf} de um \emph{stream}. É isso que permite redirecionar
+\texttt{std::cout} para um arquivo sem tocar em nenhuma das chamadas que
+escrevem nele, e capturar a saída de uma função em uma \emph{string} para
+testá-la.
+
+Restaurar o \emph{buffer} à mão é frágil --- uma exceção no meio deixa
+\texttt{cout} apontando para um arquivo já destruído --- e é exatamente o
+problema que \gls{raii} resolve:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Transcrição de \texttt{src/file\_io/demo\_logging.hpp}: o
+             redirecionamento que se desfaz sozinho.}]
+class RedirectGuard {
+public:
+    // Redireciona 'stream' para 'destino'
+    explicit RedirectGuard(std::ostream& stream, std::ostream& destino)
+        : stream_(stream), buf_original_(stream.rdbuf(destino.rdbuf())) {}
+
+    ~RedirectGuard() {
+        stream_.rdbuf(buf_original_);   // restaura automaticamente
+    }
+
+    RedirectGuard(const RedirectGuard&)            = delete;
+    RedirectGuard& operator=(const RedirectGuard&) = delete;
+
+private:
+    std::ostream&   stream_;
+    std::ofstream   arquivo_;        // vazio se redirecionou para outro stream
+    std::streambuf* buf_original_;
+};
+\end{lstlisting}
+
+E, uma vez que o \texttt{streambuf} é um ponto de extensão, escrever um novo dá
+capacidades que nenhuma \emph{flag} oferece. O \texttt{tee} do Unix, que envia a
+mesma saída ao terminal e a um arquivo, cabe em duas funções virtuais:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Transcrição de \texttt{src/file\_io/demo\_logging.hpp}: um
+             \texttt{streambuf} que escreve em dois destinos.}]
+class TeeBuf : public std::streambuf {
+public:
+    TeeBuf(std::streambuf* a, std::streambuf* b) : a_(a), b_(b) {}
+
+protected:
+    int overflow(int c) override {
+        if (c == EOF) return !EOF;
+        if (a_->sputc(static_cast<char>(c)) == EOF) return EOF;
+        if (b_->sputc(static_cast<char>(c)) == EOF) return EOF;
+        return c;
+    }
+
+    std::streamsize xsputn(const char* s, std::streamsize n) override {
+        a_->sputn(s, n);
+        b_->sputn(s, n);
+        return n;
+    }
+
+private:
+    std::streambuf* a_;
+    std::streambuf* b_;
+};
+\end{lstlisting}
+
+\texttt{overflow} é chamado quando o \emph{buffer} enche ou quando um caractere
+solto precisa ser entregue; \texttt{xsputn} é o caminho rápido para blocos.
+Sobrescrever os dois é o contrato mínimo de um \texttt{streambuf} de saída.
+
+\subsubsection{Um \emph{logger}, e o que ele reúne}
+
+O \texttt{Logger} do subprojeto junta quase tudo o que o capítulo tratou:
+carimbo de tempo do \cabecalho{chrono}, formatação, escrita simultânea em
+terminal e arquivo, e um \texttt{std::mutex} para que várias \emph{threads}
+possam registrar sem entrelaçar linhas (\cref{sec:concurrency}).
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/file\_io/}: níveis, carimbo e destino.}]
+[08:42:01.123] [TRACE] inicializando...
+[08:42:01.124] [DEBUG] variável x = 42
+[08:42:01.124] [INFO ] conexão estabelecida
+[08:42:01.125] [WARN ] buffer 80% cheio
+[08:42:01.125] [ERROR] falha ao abrir arquivo   ← vai para stderr
+[08:42:01.125] [FATAL] estado inválido          ← vai para stderr
+\end{lstlisting}
+
+Duas decisões de projeto merecem nota. A primeira é o roteamento por nível:
+\texttt{ERROR} e \texttt{FATAL} vão para \texttt{stderr}, o resto para
+\texttt{stdout}, de modo que \texttt{./prog > saida.txt} deixa os erros
+visíveis no terminal. A segunda é o \texttt{flush} explícito após cada linha
+gravada no arquivo: ele custa caro e é a única forma de garantir que a última
+mensagem antes de um \emph{crash} chegue ao disco --- a mesma troca de
+\texttt{cerr} contra \texttt{clog}, agora sob controle do programa.
+
+\begin{table}[htbp]
+\centering
+\caption{Redirecionamento no \emph{shell} --- a referência que acompanha o
+         subprojeto.}
+\label{tab:redirecionamento}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Comando} & \textbf{Efeito} \\
+\midrule
+\texttt{./prog > out.txt}            & \emph{stdout} para arquivo (trunca) \\
+\texttt{./prog >> out.txt}           & \emph{stdout} para arquivo (acrescenta) \\
+\texttt{./prog 2> err.txt}           & \emph{stderr} para arquivo \\
+\texttt{./prog > out.txt 2>\&1}      & \emph{stderr} segue \emph{stdout} \\
+\texttt{./prog 2>\&1 | tee log.txt}  & terminal e arquivo ao mesmo tempo \\
+\texttt{./prog > /dev/null 2>\&1}    & descarta tudo \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{armadilha}[a ordem do redirecionamento importa]
+\texttt{./prog > out.txt 2>\&1} e \texttt{./prog 2>\&1 > out.txt} não são a
+mesma coisa. O \texttt{2>\&1} copia o destino \emph{atual} do descritor 1; no
+segundo comando ele é executado \textbf{antes} de o descritor 1 ser
+redirecionado, então \emph{stderr} continua no terminal e só \emph{stdout} vai
+para o arquivo. Os descritores são 0 para \emph{stdin}, 1 para \emph{stdout} e 2
+para \emph{stderr}.
+\end{armadilha}
+
+\subsubsection{\classe{std::filesystem}, em uma linha por conceito}
+
+Para completar: \texttt{fs::path} compõe caminhos com \texttt{operator/} e os
+decompõe com \texttt{stem()}, \texttt{extension()}, \texttt{parent\_path()} e
+\texttt{filename()}, além de normalizar com \texttt{lexically\_normal()};
+\texttt{create\_directories} cria a hierarquia inteira;
+\texttt{directory\_iterator} e \texttt{recursive\_directory\_iterator}
+percorrem diretórios como
+\emph{ranges} (\cref{sec:ranges}); \texttt{file\_size},
+\texttt{last\_write\_time}, \texttt{status().permissions()} e \texttt{space}
+dão os metadados.
+
+E, como registrado na \cref{sec:file-io}, cada função tem duas assinaturas: uma
+que lança \texttt{fs::filesystem\_error} e outra que recebe um
+\texttt{std::error\_code\&} e nunca lança. O critério de escolha é a
+\emph{frequência esperada} do erro --- um arquivo de configuração que deveria
+existir e não existe é excepcional; um arquivo que some no meio de uma varredura
+de diretório não é.
+
+% =============================================================================
+\subsection{Síntese}
+% =============================================================================
+
+Há um padrão atravessando os quatro subprojetos deste capítulo, e vale nomeá-lo:
+\textbf{o custo está sempre onde a abstração é mais confortável}.
+\classe{std::string} é confortável porque possui os dados, e é por possuí-los
+que ela aloca; \classe{std::string\_view} custa zero porque não possui nada, e é
+por não possuir que ela pende. \texttt{std::regex} aceita qualquer padrão, e é
+por aceitar qualquer padrão que ela não pode ser rápida para um padrão fixo. Os
+campos de bits nativos escondem os deslocamentos, e é por escondê-los que
+deixam o layout com o compilador. Os \emph{iostreams} guardam estado de
+formatação, e é por guardá-lo que o \texttt{std::hex} esquecido contamina a
+saída inteira.
+
+Em todos os casos, o preço da propriedade desejada é a armadilha que vem junto.
+
+O segundo padrão é metodológico, e é o que este capítulo tem de mais
+transferível. Em quatro ocasiões a medição contrariou quem a fez, e nas quatro a
+lição estava no desacordo, não no número:
+
+\begin{itemize}
+\item o \emph{benchmark} de formatação \textbf{não} mostrou a \texttt{fmt}
+      ganhando --- porque o repositório linka a variante de depuração da
+      biblioteca, e nenhuma \emph{flag} no código do usuário conserta isso;
+\item a \texttt{regex} construída dentro do laço levou mais tempo fazendo
+      \textbf{dez vezes menos trabalho}, o que separa o custo de construir do
+      custo de casar;
+\item o \texttt{static\_assert} sobre o tamanho de um literal recusou 31 e
+      exigiu 33, aplicando ao autor a lição de que \texttt{size()} conta bytes;
+\item \texttt{high\_resolution\_clock}, cujo nome promete o melhor relógio para
+      medir, revelou-se o \textbf{não monotônico} nesta implementação.
+\end{itemize}
+
+\begin{regra}[o que sobra quando o número some]
+Quatro hábitos resumem todo o capítulo. Conte alocações em vez de cronometrar
+quando puder --- é determinístico. Cronometre com \texttt{steady\_clock},
+descartando a primeira execução, repetindo e tomando a mediana. Declare as
+\emph{flags} de compilação ao lado de qualquer número, incluindo as da
+biblioteca de terceiros. E, quando o resultado contrariar a expectativa,
+suspeite primeiro da medição --- e, se ela resistir, publique a surpresa: é ela
+que ensina.
+\end{regra}

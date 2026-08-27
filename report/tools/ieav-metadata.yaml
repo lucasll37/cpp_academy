@@ -1,0 +1,89 @@
+# =============================================================================
+#  Metadados pre-textuais da Publicacao Tecnico-Cientifica (PTC) do IEAv.
+#
+#  Este arquivo e a fonte da verdade de tudo que NAO vem dos capitulos LaTeX:
+#  capa, resumo, palavras-chave, abstract, listas de simbolos e siglas.
+#  E lido por tools/gen_frontmatter.py durante `make doc`.
+#
+#  Qualquer campo deixado como null aparece no documento final como
+#  [A PREENCHER: ...], de modo que a pendencia fique visivel na revisao.
+#  Rode `make doc-check` para listar o que ainda falta.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+#  Capa (a ordem dos campos segue o modelo estrutural do IEAv)
+# ---------------------------------------------------------------------------
+instituicao:
+  - MINISTÉRIO DA DEFESA
+  - COMANDO DA AERONÁUTICA
+  - DEPARTAMENTO DE CIÊNCIA E TECNOLOGIA AEROESPACIAL
+  - INSTITUTO DE ESTUDOS AVANÇADOS
+
+# Aparece em caixa alta na capa, logo abaixo do bloco institucional.
+publicacao: PUBLICAÇÃO TÉCNICO-CIENTÍFICA
+
+# Divisao do IEAv responsavel pelo trabalho (ex.: "DIVISÃO DE GUERRA ELETRÔNICA").
+divisao: null
+
+# Tipo de publicacao (ex.: "RELATÓRIO TÉCNICO", "NOTA TÉCNICA", "MANUAL").
+tipo_publicacao: null
+
+titulo: C++ Academy — Relatório de Tópicos de C++
+subtitulo: null
+
+ano: 2026
+
+# Nomes completos e por extenso, um por linha.
+autores:
+  - null
+
+# ---------------------------------------------------------------------------
+#  Resumo (obrigatorio, ABNT NBR 6028:2003, no maximo 500 palavras)
+# ---------------------------------------------------------------------------
+resumo: null
+
+# Separadas por ponto e virgula, finalizadas por ponto.
+palavras_chave: null
+
+# ---------------------------------------------------------------------------
+#  Abstract (versao em ingles do resumo)
+# ---------------------------------------------------------------------------
+abstract: null
+keywords: null
+
+# ---------------------------------------------------------------------------
+#  Listas opcionais (omitidas do documento quando vazias)
+#  Cada item e um par "simbolo: significado".
+# ---------------------------------------------------------------------------
+simbolos: {}
+#  Exemplo:
+#  simbolos:
+#    dt: Passo de integração do executive, em segundos.
+#    Δt: Intervalo entre dois quadros consecutivos.
+
+abreviaturas:
+  ABI: Application Binary Interface
+  CRTP: Curiously Recurring Template Pattern
+  ECS: Entity Component System
+  NRVO: Named Return Value Optimization
+  PMR: Polymorphic Memory Resources
+  RAII: Resource Acquisition Is Initialization
+  RTTI: Run-Time Type Information
+  RVO: Return Value Optimization
+  SFINAE: Substitution Failure Is Not An Error
+  SOLID: Single responsibility, Open-closed, Liskov, Interface segregation, Dependency inversion
+  STL: Standard Template Library
+  UB: Undefined Behavior (comportamento indefinido)
+
+# ---------------------------------------------------------------------------
+#  Opcoes de formatacao
+# ---------------------------------------------------------------------------
+# Ate que nivel de secao o Sumario lista (1 = so capitulos, 3 = ate subsubsection).
+# Com 4 o sumario passaria de 280 entradas, por causa dos 78 \paragraph.
+sumario_niveis: 3
+
+# Fonte e corpo do texto, conforme a secao FORMATACAO do modelo do IEAv.
+fonte: Arial
+corpo_pt: 12
+corpo_menor_pt: 10   # legendas, fontes de ilustracoes e tabelas
+corpo_codigo_pt: 9   # listagens de codigo

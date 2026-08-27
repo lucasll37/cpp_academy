@@ -1,0 +1,1786 @@
+% =============================================================================
+%  Ecossistema: rede, dados e mensageria
+%  Cobre a Etapa 6 da trilha: network, http-client, database, rabbitmq, aws.
+% =============================================================================
+
+% =============================================================================
+\section{Ecossistema: rede, dados e mensageria}
+\label{sec:rede}
+% =============================================================================
+
+A partir daqui a ordem é por interesse: todos os subprojetos deste capítulo
+dependem apenas do núcleo da linguagem (capítulos \ref{sec:fundamentos} a
+\ref{sec:concorrencia}) e nenhum depende dos outros. O que eles têm em comum é
+outra coisa --- são o ponto em que o C++ deixa de conversar apenas consigo mesmo
+e passa a conversar com o mundo: com um \emph{socket}, com um servidor HTTP, com
+um banco, com um \emph{broker} de mensagens, com a nuvem.
+
+E por isso trazem um assunto que os capítulos anteriores só tocaram de leve: a
+\textbf{falha externa}. Uma conversão de tipo errada é um bug do programa; uma
+conexão recusada não é. A \cref{sec:errors} apresentou as formas de reportar
+erro; aqui elas aparecem em uso, e as cinco bibliotecas fizeram cinco escolhas
+diferentes --- o que, por si só, já é uma lição.
+
+% =============================================================================
+\subsection{Antes de tudo: estes alvos são construídos}
+% =============================================================================
+
+Edições anteriores deste relatório abriam o capítulo avisando que os
+subprojetos aqui descritos vinham com a linha \texttt{subdir()} comentada em
+\texttt{src/meson.build} e precisavam ser habilitados à mão. \textbf{Isso não
+vale mais, e a mudança é o assunto mais importante da seção.}
+
+\begin{regra}[nenhum alvo deste repositório está comentado]
+Os 57 subprojetos de \texttt{src/} são construídos por padrão, inclusive os
+``pesados'' --- Qt, SFML, Bullet, ONNX, JSBSim, AWS, RabbitMQ, SOCI. O
+\texttt{make build} produz \textbf{98 binários} instalados em
+\texttt{dist/bin}, compilando com \textbf{zero avisos} sob
+\texttt{-Wall -Wextra -Wpedantic}. Vários programas deste capítulo ainda
+exigem um \emph{recurso externo em execução} --- conexão com a internet
+(\ref{sec:network}, \ref{sec:http-client}), um \emph{broker} RabbitMQ
+(\ref{sec:rabbitmq}) ou credenciais AWS (\ref{sec:aws}) --- mas isso é
+condição de \emph{execução}, nunca mais de \emph{compilação}.
+\end{regra}
+
+\begin{porque}[um alvo que não é construído é um alvo que apodrece]
+Comentar um \texttt{subdir()} parece inofensivo: o alvo continua no disco, o
+código continua lá, e o \emph{build} fica mais rápido. O que se perde é a
+única coisa que impedia o código de se degradar --- a passagem do compilador.
+Ao religar os alvos deste repositório, seis defeitos reais apareceram nos
+primeiros minutos. Nenhum deles era novo: todos estavam ali havia meses,
+esperando exatamente o comando que nunca era dado.
+\end{porque}
+
+O \cref{sec:design} lista os seis na \cref{tab:bugs-latentes}. Quatro são
+\texttt{\#include} faltando --- a classe de defeito mais banal que existe, e por
+isso mesmo a prova mais limpa do argumento: nem o mais trivial dos erros é pego
+por um alvo que ninguém compila. Dois são de \gls{abi}, e destes o de
+alinhamento merece um comentário, porque é a assinatura de uma família inteira
+de falhas. O System~V ABI de x86-64 exige \texttt{RSP} alinhado a 16 bytes
+\emph{no momento} do \texttt{CALL}. Um \texttt{subq \$8, \%rsp} a mais desalinha
+o ponteiro; a função chamada não percebe nada, e a seguinte também não --- até
+que alguém, quatro quadros acima, execute uma instrução SSE que exige operando
+alinhado. O \emph{crash} apareceu \emph{dentro do fmt}.
+
+\begin{armadilha}[o bug de alinhamento estoura em quem usa SSE, não em quem o quebrou]
+Essa é a marca registrada da falha de \gls{abi}: a distância entre a causa e o
+sintoma. Nenhuma pilha de chamadas aponta para o culpado, porque o culpado já
+retornou. Se um \emph{crash} aparece dentro de uma biblioteca madura e bem
+testada, a hipótese mais provável não é um bug dela --- é que alguém violou o
+contrato de chamada antes de chegar lá. O mesmo raciocínio vale para o outro:
+prometer ao compilador que um registrador é ``só entrada'' e então modificá-lo
+é mentir para o otimizador, e o otimizador \emph{acredita}.
+\end{armadilha}
+
+Os testes seguiram o mesmo destino do resto. O diretório \texttt{tests/} da
+raiz --- que estava 100\% comentado e nunca construiu nada --- foi
+\textbf{removido}, assim como o \texttt{sandbox/} da raiz. Os testes agora
+moram junto do que testam: \texttt{src/testing/} (5 alvos, 41 casos),
+\texttt{src/meson/} (1 alvo) e \texttt{src/cmake/} (CTest, 11 casos). O
+\texttt{meson test} executa 6 alvos, todos passando.
+
+\begin{regra}[um alvo que não compila é um problema do alvo]
+Se um subprojeto não pode ser construído, conserte-o ou apague-o. Não o
+esconda atrás de um \texttt{\#}. O único motivo legítimo para manter um alvo
+fora do \emph{build} padrão é a dependência ser genuinamente indisponível na
+máquina --- e mesmo aí a resposta certa é a detecção graciosa
+(\texttt{required: false} mais um \texttt{\#if}), como faz o backend
+PostgreSQL do \cref{sec:database}, não o comentário.
+\end{regra}
+
+% =============================================================================
+\subsection{Sockets com Asio}
+\label{sec:network}
+% =============================================================================
+
+O subprojeto \projeto{network} usa Asio~\cite{asio} --- a biblioteca que deu
+origem à proposta de rede do padrão --- para cobrir TCP síncrono, TCP
+assíncrono, UDP, temporizadores e HTTP construído à mão sobre TCP. São cinco
+demonstrações independentes, executadas em sequência pelo \texttt{main.cpp}, e
+é o melhor lugar para vir logo depois das co-rotinas
+(\cref{sec:coroutines}), porque é onde elas pagam.
+
+\subsubsection{O vocabulário mínimo, definido antes de ser usado}
+
+Rede tem um jargão pequeno e bem definido, e quase todo mal-entendido em
+código de \emph{socket} vem de um destes termos ter sido lido por alto.
+
+\begin{itemize}
+  \item \textbf{Socket} --- a ``tomada de rede''. É o descritor pelo qual dois
+        programas trocam bytes. Do lado do sistema operacional é um número
+        inteiro; no Asio é um objeto com \gls{raii}, que fecha o descritor no
+        destrutor.
+  \item \textbf{Porta} --- um número de 0 a 65535 que identifica \emph{qual}
+        serviço, dentro de uma máquina, deve receber os bytes. O endereço IP
+        escolhe a máquina; a porta escolhe o programa.
+  \item \textbf{Endpoint} --- o par (endereço, porta). É o que se passa a
+        \texttt{connect} ou a \texttt{bind}.
+  \item \textbf{Resolver} --- traduz um nome (\texttt{httpbin.org}) numa lista
+        de \emph{endpoints}. É o \texttt{getaddrinfo} do POSIX, embrulhado. A
+        lista tem mais de um elemento porque um nome pode ter IPv4 e IPv6, e
+        vários endereços em cada família.
+  \item \textbf{Acceptor} --- do lado do servidor, o objeto que fica ouvindo
+        numa porta. Equivale à sequência \texttt{socket} + \texttt{bind} +
+        \texttt{listen} do BSD, feita no construtor.
+  \item \textbf{Handler} --- em código assíncrono, a função chamada quando uma
+        operação termina. Recebe sempre um \texttt{error\_code} como primeiro
+        argumento, porque não há para onde propagar uma exceção.
+\end{itemize}
+
+\subsubsection{O \texttt{io\_context} é o \emph{event loop}}
+
+Toda a arquitetura do Asio gira em torno de um objeto: o \texttt{io\_context}.
+Ele é a fila de trabalho, o despachante e o dono das operações pendentes.
+\texttt{io.run()} processa os \emph{handlers} das operações concluídas e
+\textbf{retorna quando não há mais trabalho pendente} --- o que é a primeira
+surpresa de quem começa.
+
+Em código síncrono o \texttt{io\_context} é quase transparente: existe porque
+todo objeto de I/O precisa de um, mas nunca se chama \texttt{run()}. Em código
+assíncrono ele é o programa inteiro.
+
+\begin{armadilha}[\texttt{io.run()} retorna imediatamente se nada foi enfileirado antes]
+O \texttt{io\_context} não fica esperando: ele processa o que existe e sai. Um
+servidor que chame \texttt{run()} antes de registrar o primeiro \emph{accept}
+simplesmente encerra. Para manter o laço vivo enquanto operações ainda serão
+enfileiradas de outra \emph{thread}, existe o \texttt{work\_guard} --- e
+liberá-lo (\texttt{guard.reset()}) é o que permite ao \texttt{run()} terminar.
+\end{armadilha}
+
+O subprojeto mede exatamente isso. A demonstração 4.5 monta um \emph{pool} de
+três \emph{threads} rodando o mesmo \texttt{io\_context}, posta seis tarefas e
+só então libera o \emph{guard}:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{src/network/demo\_timer.hpp}: o \emph{guard} é o que
+             separa ``sem trabalho agora'' de ``sem trabalho nunca mais''.}]
+asio::io_context io;
+auto guard = asio::make_work_guard(io);   // io.run() nao vai retornar
+
+std::vector<std::thread> pool;
+for (int i = 0; i < 3; ++i)
+    pool.emplace_back([&io]() { io.run(); });
+
+for (int i = 0; i < 6; ++i)
+    asio::post(io, [i]() { fmt::print("  tarefa {} executada\n", i); });
+
+std::this_thread::sleep_for(50ms);
+guard.reset();                            // agora sim: run() pode retornar
+for (auto& t : pool) t.join();
+\end{lstlisting}
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída medida de \texttt{./dist/bin/network}, demo 4.5. As seis
+             tarefas foram distribuídas entre as três \emph{threads} do
+             \emph{pool}.}]
+-- 4.5 io_context multithreaded com work_guard --
+  tarefa 0 executada
+  tarefa 1 executada
+  tarefa 2 executada
+  tarefa 3 executada
+  tarefa 4 executada
+  tarefa 5 executada
+  6 tarefas executadas por 3 threads
+\end{lstlisting}
+
+\subsubsection{TCP síncrono: um servidor de eco em trinta linhas}
+
+A versão síncrona é a que se lê como um programa comum: aceitar, ler, escrever,
+fechar. Cada chamada bloqueia a \emph{thread} até completar. O subprojeto sobe
+um servidor de eco numa \emph{thread} e um cliente na principal, ambos na
+porta 12345.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{src/network/demo\_tcp\_sync.hpp}: o servidor inteiro.
+             \texttt{acceptor} no construtor faz \texttt{bind} e
+             \texttt{listen}; \texttt{accept} bloqueia.}]
+asio::io_context io;
+tcp::acceptor acceptor(io, tcp::endpoint(tcp::v4(), porta));
+
+tcp::socket socket(io);
+acceptor.accept(socket);                  // BLOQUEIA ate um cliente conectar
+
+while (true) {
+    asio::streambuf buf;
+    std::size_t n = asio::read_until(socket, buf, '\n');   // BLOQUEIA
+
+    std::string linha(asio::buffers_begin(buf.data()),
+                      asio::buffers_begin(buf.data())
+                          + static_cast<std::ptrdiff_t>(n));
+    buf.consume(n);
+
+    if (linha == "FIM\n") { asio::write(socket, asio::buffer("BYE\n", 4)); break; }
+    asio::write(socket, asio::buffer(linha));               // ecoa de volta
+}
+\end{lstlisting}
+
+Três detalhes carregam mais do que aparentam. O \texttt{streambuf} é um
+\emph{buffer} de crescimento automático, e \texttt{read\_until} pode ler
+\emph{mais} do que a linha pedida --- por isso o \texttt{n} devolvido delimita
+a linha e o \texttt{consume(n)} descarta só ela, deixando o resto para a
+próxima iteração. Quem trata o \texttt{streambuf} como se contivesse
+exatamente uma linha escreve um servidor que perde mensagens sob carga.
+
+\begin{armadilha}[\texttt{read\_until} não devolve o tamanho do que foi lido]
+Ele devolve a posição do delimitador. Os bytes que chegaram \emph{depois} do
+\texttt{\textbackslash n} continuam no \texttt{streambuf}, e é responsabilidade
+do chamador não perdê-los. TCP é um fluxo de bytes, não de mensagens: o
+protocolo não tem noção de ``mensagem'', e enquadrar o fluxo --- por
+delimitador, por prefixo de tamanho, por formato fixo --- é trabalho da
+aplicação.
+\end{armadilha}
+
+\subsubsection{As duas APIs de erro}
+
+Asio oferece, para cada operação, uma versão que lança
+\texttt{asio::system\_error} e outra que preenche um
+\texttt{asio::error\_code\&}. É exatamente a API dupla que a
+\cref{sec:file-io} descreveu para o \texttt{<filesystem>}, e pelo mesmo motivo:
+uma conexão recusada é rotina em um servidor e é excepcional em um cliente que
+roda uma vez.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{src/network/demo\_tcp\_sync.hpp}, demo 1.3: a mesma
+             chamada, sem exceção. O \texttt{error\_code} carrega categoria e
+             valor numérico, não só a mensagem.}]
+asio::error_code ec;
+asio::connect(socket, endpoints, ec);
+if (ec) {
+    fmt::print("  connect falhou: {}\n", ec.message());
+    fmt::print("  categoria: '{}', valor: {}\n", ec.category().name(), ec.value());
+}
+\end{lstlisting}
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída medida. O valor 111 é o \texttt{ECONNREFUSED} do Linux --- o
+             \texttt{error\_code} preserva o código do sistema, não só o texto.}]
+-- 1.3 Error handling: error_code (sem excecao) --
+  connect falhou (esperado - porta 9999 fechada): Connection refused
+  categoria: 'asio.system', valor: 111
+\end{lstlisting}
+
+\begin{regra}[\texttt{error\_code} nos \emph{handlers}, exceção nas chamadas de topo]
+Nas operações assíncronas a escolha nem existe: o \emph{handler} recebe um
+\texttt{error\_code} porque não há para onde propagar uma exceção --- ela
+escaparia do \texttt{io.run()} e derrubaria o laço de eventos. Reserve a versão
+que lança para o código síncrono de inicialização, onde falhar cedo e ruidoso é
+o comportamento desejado.
+\end{regra}
+
+Um caso especial merece nome próprio: \texttt{asio::error::eof} não é um erro,
+é o fim normal da conversa. O servidor fechou a conexão, e é assim que
+\texttt{Connection: close} do HTTP/1.0 sinaliza o fim do corpo. Tratar
+\texttt{eof} como falha produz um cliente que reporta erro em toda requisição
+bem-sucedida --- e o código do subprojeto o filtra explicitamente em três
+lugares diferentes.
+
+\subsubsection{TCP assíncrono e o problema do tempo de vida}
+
+A versão assíncrona tem exatamente a mesma lógica, escrita ao contrário: cada
+etapa vira um \emph{callback} aninhado dentro do anterior, e o fluxo do programa
+some dentro da indentação.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A mesma sequência --- resolver, conectar, escrever --- em três
+             níveis de aninhamento.}]
+resolver.async_resolve("httpbin.org", "80",
+    [&](asio::error_code ec, asio::ip::tcp::resolver::results_type endpoints) {
+        if (ec) return;
+        asio::async_connect(socket, endpoints,
+            [&](asio::error_code ec, asio::ip::tcp::endpoint) {
+                if (ec) return;
+                asio::async_write(socket, asio::buffer(*req),
+                    [&, req](asio::error_code ec, std::size_t) {
+                        if (ec) return;
+                        // e a leitura entra mais um nivel...
+                    });
+            });
+    });
+\end{lstlisting}
+
+\begin{porque}[por que trocar clareza por isso]
+Um servidor síncrono precisa de uma \emph{thread} por conexão. Mil conexões são
+mil \emph{threads}: mil pilhas de 8~MiB reservadas, mil entradas no escalonador,
+troca de contexto a cada I/O. Um servidor assíncrono atende as mesmas mil
+conexões com uma \emph{thread} e mil operações registradas, porque a \emph{thread}
+só é ocupada quando há bytes prontos. O custo é escrever o programa de dentro
+para fora.
+\end{porque}
+
+O ponto difícil do modelo assíncrono não é o aninhamento --- é o tempo de vida.
+Quando \texttt{async\_read} retorna, a operação ainda não aconteceu; tudo o que
+ela referencia precisa continuar vivo até o \emph{handler} rodar. O subprojeto
+resolve isso com o idioma canônico do Asio, que vale memorizar inteiro:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{src/network/demo\_tcp\_async.hpp}: a sessão se mantém viva
+             sozinha. Cada \emph{handler} carrega um \texttt{shared\_ptr} para
+             o próprio objeto.}]
+class Sessao : public std::enable_shared_from_this<Sessao> {
+    void ler() {
+        asio::async_read_until(socket_, buf_entrada_, '\n',
+            // a captura por copia do shared_ptr e o que mantem *this vivo
+            [self = shared_from_this()](asio::error_code ec, std::size_t bytes) {
+                self->ao_ler(ec, bytes);
+            });
+        // async_read_until retorna IMEDIATAMENTE aqui
+    }
+
+    void ao_ler(asio::error_code ec, std::size_t bytes) {
+        if (ec) return;         // nao re-registra: o ultimo shared_ptr morre
+                                // com o handler, e a Sessao e destruida
+        // ... processa ...
+        escrever();             // registra a proxima operacao: continua viva
+    }
+};
+\end{lstlisting}
+
+O mecanismo é elegante e não óbvio: enquanto houver uma operação pendente,
+existe um \texttt{shared\_ptr} vivo dentro do \emph{handler} registrado no
+\texttt{io\_context}. Quando um \emph{handler} decide não registrar mais nada,
+ele é o último dono --- e o objeto morre exatamente ali, sem que ninguém
+precise chamar \texttt{delete}. O contador de referências
+(\cref{sec:smart-pointers}) está sendo usado como \emph{máquina de estados}.
+
+\begin{armadilha}[o \emph{buffer} precisa sobreviver à operação assíncrona]
+Repare no \texttt{req} capturado por valor num \texttt{shared\_ptr} na listagem
+anterior: a chamada a \texttt{async\_write} \textbf{retorna imediatamente}, e o
+\emph{buffer} passado a ela precisa continuar vivo até o \emph{handler} rodar.
+Uma \texttt{std::string} local morreria antes disso, e o Asio escreveria memória
+liberada --- um \emph{use-after-free} que só se manifesta sob carga, quando a
+escrita não completa de imediato. É a mesma classe de erro que a
+\cref{sec:vocabulary} descreve para \texttt{span} e \texttt{string\_view}, e é o
+motivo de \texttt{asio::buffer} \emph{nunca} copiar: ele guarda ponteiro e
+tamanho, como um \classe{std::span}.
+\end{armadilha}
+
+O servidor assíncrono do subprojeto acrescenta o segundo idioma indispensável:
+o \emph{accept} que se re-registra.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{src/network/demo\_tcp\_async.hpp}: sem a última linha, o
+             servidor atende exatamente um cliente e encerra.}]
+void aceitar() {
+    acceptor_.async_accept(
+        [this](asio::error_code ec, tcp::socket socket) {
+            if (!ec)
+                std::make_shared<Sessao>(std::move(socket))->iniciar();
+            aceitar();      // re-registra para a proxima conexao
+        });
+}
+\end{lstlisting}
+
+Uma \emph{thread}, três clientes simultâneos, e o registro de cada sessão
+intercalado na saída --- que é a evidência de que nada está bloqueando:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída medida, demo 2.1. As sessões 1, 2 e 3 progridem
+             intercaladas numa única \emph{thread}.}]
+-- 2.1 Servidor assincrono (multiplas conexoes, 1 thread) --
+  [server async] ouvindo na porta 12346
+  [sessao 1] cliente conectado de 127.0.0.1:32794
+  [sessao 1] recebido: 'hello do cliente 1'
+  [sessao 2] cliente conectado de 127.0.0.1:32810
+  [cli 1] 'hello do cliente 1' -> 'ECHO: hello do cliente 1'
+  [sessao 2] recebido: 'hello do cliente 2'
+  [sessao 1] recebido: 'FIM'
+  [cli 2] 'hello do cliente 2' -> 'ECHO: hello do cliente 2'
+  [cli 1] 'FIM' -> 'BYE'
+  [sessao 3] cliente conectado de 127.0.0.1:32816
+\end{lstlisting}
+
+\subsubsection{\texttt{post} e \texttt{strand}: concorrência sem \emph{mutex}}
+
+Duas peças menores do Asio resolvem problemas que a \cref{sec:concurrency}
+resolveu com \emph{mutex}, e vale ver a alternativa.
+
+\texttt{asio::post(io, f)} enfileira \texttt{f} para executar no
+\texttt{io\_context}. É seguro chamá-lo de qualquer \emph{thread}, e é a forma
+canônica de mandar trabalho para o laço de eventos sem compartilhar estado --- o
+padrão de passagem de mensagem em vez de memória compartilhada.
+
+\texttt{strand} vai além: é um executor que garante que \emph{seus} handlers
+nunca rodam em paralelo, mesmo que várias \emph{threads} chamem
+\texttt{io.run()} sobre o mesmo contexto. O subprojeto demonstra o resultado
+com um contador não atômico:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{src/network/demo\_tcp\_async.hpp}, demo 2.3:
+             \texttt{contador} é um \texttt{int} comum, e mesmo assim não há
+             corrida.}]
+asio::io_context io;
+asio::io_context::strand strand(io);
+int contador = 0;                 // sem atomic, sem mutex
+
+for (int i = 0; i < 5; ++i)
+    asio::post(strand, [i, &contador]() { ++contador; /* ... */ });
+
+std::thread t1([&io]() { io.run(); });   // duas threads no mesmo io_context
+std::thread t2([&io]() { io.run(); });
+t1.join(); t2.join();
+// resultado final = 5 (esperado 5, sem race condition)
+\end{lstlisting}
+
+\begin{regra}[\emph{strand} substitui o \emph{mutex}, não a disciplina]
+O \emph{strand} serializa apenas os \emph{handlers} postados \emph{nele}. Uma
+variável tocada por um \emph{handler} do \emph{strand} e por código fora dele
+continua sujeita a \gls{datarace}. A vantagem sobre o \emph{mutex} é que não há
+bloqueio: a \emph{thread} nunca espera, ela simplesmente executa outro
+\emph{handler} enquanto o \emph{strand} está ocupado. É a diferença entre
+serializar por exclusão e serializar por agendamento.
+\end{regra}
+
+\subsubsection{TCP e UDP}
+
+O subprojeto cobre os dois porque a escolha entre eles é de arquitetura, não de
+API (\cref{tab:tcp-udp}). UDP não tem \emph{handshake}, não retransmite e não
+garante ordem --- e é por isso que DNS, jogos e vídeo ao vivo o preferem: para
+esses, uma resposta atrasada é pior que uma resposta perdida.
+
+\begin{table}[htbp]
+\centering
+\caption{As garantias que o TCP dá e o UDP não.}
+\label{tab:tcp-udp}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Característica} & \textbf{TCP} & \textbf{UDP} \\
+\midrule
+conexão        & sim (\emph{handshake})   & não \\
+confiabilidade & sim (retransmissão)      & não \\
+ordem          & sim                      & não garantida \\
+unidade        & fluxo de bytes           & datagrama \\
+\emph{overhead}& maior                    & menor \\
+casos de uso   & HTTP, banco de dados     & DNS, jogos, vídeo ao vivo \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A diferença de \emph{unidade} é a que mais confunde. Em TCP não existe
+``mensagem'': dois \texttt{write} de 10 bytes podem chegar como um
+\texttt{read} de 20, ou como três de 7, 7 e 6. Em UDP existe: um
+\texttt{send\_to} de 10 bytes chega como um \texttt{receive\_from} de 10 bytes
+--- ou não chega. Isso simplifica o enquadramento e complica tudo o mais.
+
+Há um terceiro modo, que o subprojeto demonstra e quase ninguém conhece: o
+\emph{socket} UDP \emph{conectado}.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{src/network/demo\_udp.hpp}, demo 3.3:
+             \texttt{connect} em UDP não faz \emph{handshake} nenhum.}]
+udp::socket sock(io, udp::endpoint(udp::v4(), 0));   // porta 0 = SO escolhe
+
+// Nao ha handshake: connect() so registra o endpoint remoto padrao
+sock.connect(udp::endpoint(asio::ip::make_address("127.0.0.1"), PORTA));
+
+sock.send(asio::buffer(std::string("ping")));   // send(), nao send_to()
+std::array<char, 64> buf{};
+std::size_t n = sock.receive(asio::buffer(buf));
+\end{lstlisting}
+
+\begin{porque}[para que serve conectar um socket sem conexão]
+Duas coisas concretas. Primeiro, o \emph{kernel} passa a descartar datagramas
+vindos de qualquer outro \emph{endpoint} --- um filtro de graça, feito no
+sistema em vez de no seu \texttt{if}. Segundo, erros ICMP (``porta
+inalcançável'') passam a ser reportados ao \emph{socket}, o que num UDP não
+conectado é impossível: sem destino fixo, o sistema não sabe a qual envio o
+erro pertence. O nome ``conectado'' é infeliz; ``endereço remoto padrão'' seria
+melhor.
+\end{porque}
+
+\subsubsection{Temporizadores}
+
+O \texttt{steady\_timer} é a peça que substitui \texttt{sleep} em código
+assíncrono: em vez de bloquear a \emph{thread}, ele agenda um \emph{handler}. O
+padrão do temporizador periódico --- reagendar dentro do próprio \emph{handler}
+--- é o esqueleto de qualquer \emph{heartbeat}, \emph{keep-alive} ou tentativa
+com \emph{backoff}.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{src/network/demo\_timer.hpp}, demo 4.4: o \texttt{std::function}
+             é necessário porque o \emph{lambda} precisa se referenciar.}]
+std::function<void(asio::error_code)> tick;
+tick = [&](asio::error_code ec) {
+    if (ec) return;                       // cancelado: nao reagenda
+    fmt::print("  tick #{}\n", ++ticks);
+    if (ticks < MAX) {
+        timer.expires_after(15ms);        // reconfigura
+        timer.async_wait(tick);           // re-registra
+    }
+    // quando ticks == MAX: nao re-registra -> io.run() retorna sozinho
+};
+timer.expires_after(15ms);
+timer.async_wait(tick);
+io.run();
+\end{lstlisting}
+
+\begin{porque}[por que \texttt{steady\_clock} e não \texttt{system\_clock}]
+O relógio do sistema pode ser ajustado --- por NTP, pelo administrador, pelo
+horário de verão --- e pode andar para trás. Um \emph{timeout} de cinco segundos
+medido contra ele pode virar cinco horas ou disparar imediatamente. O
+\texttt{steady\_clock} é monotônico: só anda para a frente, e a taxa não muda. É
+a escolha certa para \emph{qualquer} medida de duração, dentro ou fora do Asio.
+\end{porque}
+
+O cancelamento tem uma sutileza que aparece na demonstração 4.3:
+\texttt{timer.cancel()} não impede o \emph{handler} de rodar --- ele roda, com
+\texttt{ec == asio::error::operation\_aborted}.
+
+\begin{armadilha}[cancelar não é desregistrar]
+Todo \emph{handler} registrado no Asio \emph{será} chamado, exatamente uma vez.
+Cancelar apenas troca o \texttt{error\_code} com que ele é chamado. Um
+\emph{handler} que ignore o \texttt{ec} e execute a ação mesmo assim faz o
+programa se comportar como se o cancelamento não tivesse existido --- e essa é
+a origem clássica do ``fechei a conexão mas o \emph{timeout} disparou de todo
+jeito''. A primeira linha de todo \emph{handler} é o teste do \texttt{ec}.
+\end{armadilha}
+
+\subsubsection{HTTP cru: o protocolo é texto}
+
+A quinta demonstração constrói uma requisição HTTP/1.1 à mão sobre TCP, e o
+objetivo é desmistificar: HTTP/1.1 é uma conversa de \emph{strings} com formato
+fixo, e nada mais.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{src/network/demo\_http\_raw.hpp}: a requisição inteira. A
+             linha vazia final é obrigatória --- é ela que marca o fim dos
+             cabeçalhos.}]
+std::string req =
+    "GET /get HTTP/1.1\r\n"
+    "Host: httpbin.org\r\n"
+    "User-Agent: cpp_academy/1.0\r\n"
+    "Accept: application/json\r\n"
+    "Connection: close\r\n"
+    "\r\n";
+asio::write(socket, asio::buffer(req));
+\end{lstlisting}
+
+\begin{armadilha}[o terminador de linha do HTTP é \texttt{\textbackslash r\textbackslash n}, não \texttt{\textbackslash n}]
+E o cabeçalho \texttt{Host} não é opcional no HTTP/1.1: sem ele, um servidor
+que hospede vários domínios no mesmo IP não tem como saber qual site você quer,
+e responde \texttt{400 Bad Request}. Os dois erros produzem falhas que parecem
+de rede e são de formatação.
+\end{armadilha}
+
+O \texttt{Connection: close} escolhe deliberadamente a estratégia mais simples
+de saber onde o corpo termina: o servidor fecha o \emph{socket}. É por isso que
+o código lê com \texttt{asio::transfer\_all()} e trata \texttt{eof} como
+sucesso. Um cliente de produção não pode fazer isso --- perderia a reutilização
+de conexão --- e precisa interpretar \texttt{Content-Length} ou o
+\emph{chunked transfer encoding}.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída medida das demos 5.1 e 5.2, com conectividade. Os dois
+             caminhos --- síncrono e assíncrono --- produzem o mesmo resultado.}]
+-- 5.1 HTTP GET sincrono (httpbin.org) --
+  status: 200 OK
+  body (200 chars):
+    {
+  "args": {},
+  "headers": {
+    "Accept": "application/json",
+    "Host": "httpbin.org",
+    "User-Agent": "cpp_academy/1.0",
+
+-- 5.2 HTTP GET assincrono --
+  [async] 200 OK - body: { "uuid": "2c6523ea-c322-42ca-990a-17e1564e6102" }
+\end{lstlisting}
+
+A demonstração termina com uma lista honesta do que \emph{falta} para isso
+virar um cliente de verdade: TLS, redirecionamentos, \emph{chunked encoding},
+\emph{keep-alive}, compressão, \emph{cookies}, autenticação, HTTP/2,
+\emph{timeouts} e \emph{retry}. Todos os dez itens estão implementados na
+libcurl, e é exatamente essa lista que justifica a existência da próxima seção.
+
+\begin{regra}[implemente o protocolo para entendê-lo, use a biblioteca para produção]
+Escrever HTTP cru uma vez ensina mais sobre depurar HTTP do que qualquer
+documentação. Manter HTTP cru em produção significa reimplementar, com menos
+testes, a lista acima. As duas afirmações são compatíveis, e o repositório
+mantém os dois subprojetos lado a lado justamente para não deixar dúvida sobre
+qual usar quando.
+\end{regra}
+
+\subsubsection{A armadilha do macro que o Conan já definiu}
+
+Um detalhe de compilação, pequeno e instrutivo, aparece no topo dos cinco
+cabeçalhos do subprojeto:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{src/network/demo\_tcp\_sync.hpp}: o guarda não é zelo
+             excessivo.}]
+#ifndef ASIO_STANDALONE
+#  define ASIO_STANDALONE
+#endif
+#include <asio.hpp>
+\end{lstlisting}
+
+\begin{armadilha}[redefinir um macro com valor diferente é violação de ODR silenciosa]
+O pacote Asio do \gls{conan} já define \texttt{ASIO\_STANDALONE} na linha de
+compilação. Redefini-lo no cabeçalho \emph{com o mesmo valor} ainda dispara
+\texttt{warning: "ASIO\_STANDALONE" redefined} --- e este repositório compila
+com zero avisos. Redefini-lo com valor \emph{diferente} seria pior: duas
+unidades de tradução enxergariam declarações incompatíveis da mesma
+biblioteca, e o \emph{linker} escolheria uma delas em silêncio. O guarda
+mantém o cabeçalho correto sozinho \emph{e} sob o Conan.
+\end{armadilha}
+
+\subsubsection{As co-rotinas, que é onde tudo isso converge}
+
+A resposta do C++20 ao aninhamento é escrever a mesma coisa como
+\gls{corotina}: o fluxo volta a ser linear, e cada \texttt{co\_await} é um
+ponto de suspensão em vez de um \emph{callback}.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A versão com co-rotinas: a indentação some, a lógica fica. O
+             tempo de vida dos \emph{buffers} também deixa de ser problema ---
+             eles são variáveis locais do quadro da co-rotina.}]
+asio::co_spawn(io, [&]() -> asio::awaitable<void> {
+    auto [ec, endpoints] = co_await resolver.async_resolve("httpbin.org", "80",
+                               asio::as_tuple(asio::use_awaitable));
+    co_await asio::async_connect(socket, endpoints, asio::use_awaitable);
+    co_await asio::async_write(socket, asio::buffer(request), asio::use_awaitable);
+    // ...
+}, asio::detached);
+\end{lstlisting}
+
+Vale notar o ganho secundário, que quase nunca é mencionado: o problema de
+tempo de vida da listagem anterior \emph{desaparece}. Variáveis locais de uma
+co-rotina vivem no quadro alocado dela, e o quadro sobrevive à suspensão. O
+\texttt{shared\_ptr} em volta do \emph{buffer} deixa de ser necessário porque a
+linguagem passou a gerenciar exatamente o que o programador gerenciava à mão.
+
+% =============================================================================
+\subsection{Cliente HTTP e JSON}
+\label{sec:http-client}
+% =============================================================================
+
+O subprojeto \projeto{http-client} é a camada de aplicação sobre o que o
+anterior mostrou em \emph{sockets}: libcurl para o transporte, nlohmann/json
+para os dados. E o que ele ensina de mais transferível não é HTTP --- é como se
+envolve uma biblioteca C em uma interface C++.
+
+\subsubsection{A interface, e o que ela decide}
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{src/http-client/http\_client.hpp}: a superfície pública
+             inteira, com um valor padrão que dispensa a segunda sobrecarga.}]
+namespace http {
+
+using Headers = std::map<std::string, std::string>;
+
+struct Response {
+    long        status_code;
+    std::string body;
+    Headers     headers;
+};
+
+struct HttpError : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
+// GET sincrono. Lanca HttpError em caso de falha de TRANSPORTE.
+// Erros HTTP (4xx, 5xx) sao retornados normalmente no status_code.
+Response get(const std::string& url, const Headers& request_headers = {});
+
+} // namespace http
+\end{lstlisting}
+
+Três decisões estão embutidas aí. A primeira é que \texttt{HttpError} deriva de
+\texttt{std::runtime\_error} e herda o construtor com \texttt{using} --- o
+idioma da \cref{sec:errors} para dar ao domínio uma raiz própria sem escrever
+um construtor. A segunda é que \texttt{Headers} é um \classe{std::map}, e não
+um \classe{std::unordered\_map}: cabeçalhos HTTP são poucos (dezenas), a
+ordenação torna a saída determinística, e a diferença de desempenho é
+irrelevante diante de uma ida à rede. A terceira é a mais importante:
+
+\begin{regra}[status HTTP não é erro de transporte]
+\texttt{http::get} lança \texttt{HttpError} apenas em falhas de
+\textbf{transporte}: sem conexão, certificado inválido, \emph{timeout}. Um
+\texttt{404} chega normalmente, com \texttt{status\_code == 404} --- porque o
+servidor \emph{respondeu}, e a resposta é a informação. Confundir as duas
+categorias é o erro de projeto mais comum em invólucro de HTTP: transformar
+\texttt{404} em exceção obriga o chamador a usar \texttt{try/catch} para o
+controle de fluxo normal.
+\end{regra}
+
+A demonstração 4 do subprojeto existe só para provar isso, e o resultado
+medido é o esperado --- nenhuma exceção, corpo vazio, status 404:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída medida de \texttt{./dist/bin/http\_client}. O \texttt{404}
+             percorreu o caminho normal.}]
+-- GET /todos/9999 (404) --
+status: 404
+body  : {}
+\end{lstlisting}
+
+\subsubsection{Envolver uma API C, com RAII em vez de disciplina}
+
+A libcurl tem a forma típica de uma biblioteca C: um \emph{handle} opaco criado
+por \texttt{curl\_easy\_init()}, configurado por dezenas de chamadas a
+\texttt{curl\_easy\_setopt}, executado por \texttt{curl\_easy\_perform} e
+liberado por \texttt{curl\_easy\_cleanup}. A lista de cabeçalhos é uma lista
+encadeada própria, \texttt{curl\_slist}, com o seu próprio
+\texttt{curl\_slist\_free\_all}.
+
+A tradução ingênua --- a que aparece no README do subprojeto, e em quase todo
+tutorial de libcurl --- libera os dois recursos no fim da função. É código que
+vaza silenciosamente:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A versão ingênua. Se \texttt{curl\_easy\_perform} falhar, o
+             \texttt{throw} pula as duas liberações.}]
+CURL* curl = curl_easy_init();
+curl_slist* slist = nullptr;
+// ... setopt ...
+CURLcode res = curl_easy_perform(curl);
+if (res != CURLE_OK)
+    throw HttpError(curl_easy_strerror(res));   // vaza curl E slist
+
+curl_slist_free_all(slist);
+curl_easy_cleanup(curl);
+\end{lstlisting}
+
+\begin{armadilha}[o vazamento está exatamente no caminho de erro]
+E o caminho de erro de um cliente HTTP não é raro: é a rede caindo. Um servidor
+que faça mil requisições por minuto e falhe em 1\% delas vaza dez \emph{handles}
+por minuto --- cada um com \emph{socket}, contexto TLS e \emph{buffers}. O
+sintoma aparece horas depois, como esgotamento de descritores, longe da causa.
+\end{armadilha}
+
+A implementação real do subprojeto não faz isso. Ela embrulha cada recurso num
+tipo com destrutor, e o problema deixa de existir:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{src/http-client/http\_client.cpp}: dois envelopes de
+             quatro linhas resolvem a categoria inteira.}]
+struct CurlHandle {
+    CURL* h;
+    CurlHandle() : h(curl_easy_init()) { if (!h) throw HttpError("curl_easy_init failed"); }
+    ~CurlHandle() { curl_easy_cleanup(h); }
+
+    CurlHandle(const CurlHandle&)            = delete;   // nao copiavel:
+    CurlHandle& operator=(const CurlHandle&) = delete;   // dois cleanup = UB
+};
+
+struct CurlSlist {
+    curl_slist* list = nullptr;
+    void append(const std::string& h) { list = curl_slist_append(list, h.c_str()); }
+    ~CurlSlist() { if (list) curl_slist_free_all(list); }
+};
+\end{lstlisting}
+
+\begin{regra}[todo recurso de biblioteca C ganha um envelope antes de ser usado]
+A regra é mecânica: para cada par \texttt{criar}/\texttt{destruir} de uma API C,
+escreva um tipo cujo construtor cria e cujo destrutor destrói, e desabilite a
+cópia. São quatro linhas, e elas eliminam de uma vez todos os caminhos de saída
+--- \texttt{return} antecipado, exceção, \texttt{break} --- que a disciplina
+manual precisa cobrir um a um. Onde o recurso é um ponteiro simples, um
+\texttt{unique\_ptr} com \emph{deleter} customizado (\cref{sec:smart-pointers})
+faz o mesmo sem escrever a classe.
+\end{regra}
+
+Vale registrar o que o subprojeto configura, porque cada opção é uma decisão de
+segurança ou de robustez, e nenhuma delas é o padrão da libcurl por acaso:
+
+\begin{table}[htbp]
+\centering
+\caption{As opções que \texttt{http::get} define, e o que cada uma evita.
+         Valores extraídos de \texttt{src/http-client/http\_client.cpp}.}
+\label{tab:curl-opts}
+\footnotesize
+\begin{tabular}{@{}llp{0.42\textwidth}@{}}
+\toprule
+\textbf{Opção} & \textbf{Valor} & \textbf{O que evita} \\
+\midrule
+\texttt{FOLLOWLOCATION}  & 1  & tratar um \texttt{301} como resposta final \\
+\texttt{MAXREDIRS}       & 5  & laço infinito de redirecionamento \\
+\texttt{CONNECTTIMEOUT}  & 10 s & travar num servidor que não responde ao SYN \\
+\texttt{TIMEOUT}         & 30 s & travar num servidor que responde devagar para sempre \\
+\texttt{SSL\_VERIFYPEER} & 1  & aceitar certificado de qualquer um \\
+\texttt{SSL\_VERIFYHOST} & 2  & aceitar certificado válido \emph{de outro domínio} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{armadilha}[desligar a verificação de TLS é o atalho que vira brecha]
+\texttt{SSL\_VERIFYPEER = 0} é a primeira resposta que qualquer busca oferece
+para ``certificate verify failed''. Ela transforma HTTPS em HTTP com passos
+extras: a conexão continua cifrada, mas contra ninguém --- qualquer
+interceptador apresenta o próprio certificado e é aceito. A correção certa é
+apontar o \emph{bundle} de certificados (\texttt{CURLOPT\_CAINFO}), nunca
+desligar a verificação.
+\end{armadilha}
+
+O \emph{callback} de cabeçalhos é a outra metade do invólucro, e faz uma coisa
+que a especificação exige e quase todo cliente esquece: normaliza a chave para
+minúsculas, porque nomes de cabeçalho HTTP são \emph{case-insensitive}. Sem
+isso, \texttt{headers.at("content-type")} funciona com um servidor e falha com
+o próximo.
+
+\subsubsection{Dois bugs num separador de tela}
+
+A função que imprime os separadores do \texttt{main.cpp} tinha \emph{dois}
+defeitos, e os dois eram silenciosos. São material de primeira porque nenhum
+tem a ver com HTTP: são sobre o que um \texttt{char} é e sobre o que
+\texttt{size()} devolve.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A versão com os dois bugs. Uma linha, dois defeitos de categorias
+             diferentes.}]
+void print_separator(const std::string& title) {
+    fmt::print(fmt::emphasis::bold, "\n-- {} ", title);
+    std::string linha(40 - title.size(), '─');   // (a) e (b)
+    fmt::print("{}\n", linha);
+}
+\end{lstlisting}
+
+O defeito \textbf{(a)} está no literal \texttt{'─'}. Esse caractere é
+U+2500 \textsc{box drawings light horizontal}, e em UTF-8 ele ocupa
+\textbf{três bytes}. Entre aspas simples ele não é um \texttt{char}: é uma
+\emph{multi-character constant}, um \texttt{int} de valor definido pela
+implementação, que ao ser convertido para \texttt{char} é truncado. O GCC diz
+exatamente isso, com \texttt{-Wmultichar} e \texttt{-Woverflow}:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={O aviso do GCC. Note o valor: 14849152 é o inteiro de três bytes
+             que o literal produziu.}]
+warning: multi-character character constant [-Wmultichar]
+warning: overflow in conversion from 'int' to 'char'
+         changes value from '14849152' to '-128' [-Woverflow]
+\end{lstlisting}
+
+\begin{regra}[um \texttt{char} guarda um byte, não um caractere]
+Todo caractere fora do ASCII precisa de uma \emph{string}, não de um literal de
+caractere. \texttt{"─"} é um \texttt{const char[4]} (três bytes mais o
+terminador) e funciona; \texttt{'─'} não. A correção do subprojeto é
+concatenar a \emph{string} num laço, reservando três bytes por repetição ---
+e a reserva explícita documenta, no próprio código, que um símbolo desenhado
+não custa um byte.
+\end{regra}
+
+O defeito \textbf{(b)} é aritmético e mais perigoso. \texttt{title.size()}
+devolve \texttt{std::size\_t}, que é \emph{sem sinal}. A expressão
+\texttt{40 - title.size()} com um título de 41 caracteres não vale $-1$: vale
+$2^{64}-1 = 18\,446\,744\,073\,709\,551\,615$. O construtor de
+\classe{std::string} tentaria alocar dezesseis exabytes e lançaria
+\texttt{std::length\_error} --- se tivesse sorte.
+
+\begin{armadilha}[subtrair de um \texttt{size\_t} é a conversão implícita mais cara do C++]
+O \texttt{40} literal é \texttt{int}; \texttt{title.size()} é
+\texttt{std::size\_t}. Nas conversões aritméticas usuais, o operando com sinal
+é convertido para \emph{sem} sinal, não o contrário. O resultado nunca é
+negativo --- ele dá a volta. E a expressão não gera aviso nenhum por padrão,
+porque a linguagem considera isso perfeitamente definido. A correção é testar
+antes de subtrair, que é o que o código faz hoje:
+\texttt{title.size() < 40 ? 40 - title.size() : 0}.
+\end{armadilha}
+
+\subsubsection{Mapeamento automático entre JSON e \emph{structs}}
+
+O que torna nlohmann/json produtivo é uma macro que gera as duas conversões a
+partir da lista de campos, sem tocar na \emph{struct}:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{src/http-client/main.cpp}: uma linha substitui duas
+             funções escritas à mão.}]
+struct Todo {
+    int         id;
+    int         userId;
+    std::string title;
+    bool        completed;
+};
+
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Todo, id, userId, title, completed)
+\end{lstlisting}
+
+Feito isso, \texttt{json::parse(body).get<Todo>()} funciona, e
+\texttt{get<std::vector<Todo>>()} também --- a biblioteca compõe as conversões
+recursivamente. O mecanismo por baixo é a especialização de um \emph{template}
+\texttt{adl\_serializer} encontrada por ADL (\cref{sec:syntax}), o que explica
+por que a macro precisa estar no mesmo \emph{namespace} da \emph{struct}.
+
+\begin{armadilha}[a versão \emph{non-intrusive} exige que todos os campos existam no JSON]
+\texttt{NLOHMANN\_DEFINE\_TYPE\_NON\_INTRUSIVE} lança
+\texttt{json::out\_of\_range} se um campo declarado faltar no objeto recebido.
+Para APIs em que campos são opcionais, existe a variante
+\texttt{\_WITH\_DEFAULT}, que usa o valor de um objeto construído por padrão.
+Escolher a variante errada produz um cliente que quebra quando o servidor
+acrescenta ou remove um campo --- que é justamente o que servidores fazem.
+\end{armadilha}
+
+A execução completa contra \texttt{jsonplaceholder.typicode.com} mede o
+caminho inteiro: transporte, \emph{parse}, conversão para \emph{struct} e
+filtragem em memória.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída medida de \texttt{./dist/bin/http\_client}, demos 1 e 2.
+             Vinte tarefas do usuário 1, onze concluídas.}]
+-- GET /todos/1 --
+status       : 200
+content-type : application/json; charset=utf-8
+  [  1] delectus aut autem
+
+-- GET /todos?userId=1 --
+status: 200
+
+Total    : 20
+Concluidas: 11
+\end{lstlisting}
+
+% =============================================================================
+\subsection{Banco de dados e o padrão \emph{Repository}}
+\label{sec:database}
+% =============================================================================
+
+O subprojeto \projeto{database} usa SOCI para falar com SQLite e PostgreSQL, mas
+o assunto real é arquitetural: é o \cref{sec:solid} aplicado a persistência.
+
+\subsubsection{O que o SOCI é, e o vocabulário que ele traz}
+
+SOCI é uma camada C++ sobre os clientes nativos de vários bancos. Ela não é um
+ORM --- não gera SQL, não mapeia classes para tabelas. Ela padroniza o
+\emph{acesso}: a mesma sintaxe de sessão, \emph{binding} e iteração para SQLite,
+PostgreSQL, MySQL, Oracle e ODBC.
+
+\begin{itemize}
+  \item \textbf{Backend} --- o adaptador para um banco concreto. É um objeto
+        (\texttt{soci::sqlite3}, \texttt{soci::postgresql}) escolhido em tempo
+        de execução, não de compilação.
+  \item \textbf{Session} --- a conexão. Construída com um \emph{backend} e uma
+        \emph{string} de conexão.
+  \item \textbf{DSN} (\emph{Data Source Name}) --- a \emph{string} que descreve
+        onde está o banco. Neste subprojeto ela leva um prefixo de esquema
+        (\texttt{sqlite3://}, \texttt{postgresql://}) que decide o
+        \emph{backend}.
+  \item \textbf{Statement} --- uma consulta preparada, com espaços para
+        parâmetros.
+  \item \textbf{Rowset} --- o resultado de um \texttt{SELECT}, iterável com
+        \texttt{for} de intervalo.
+  \item \textbf{Indicator} --- o marcador que diz se um valor é nulo. Bancos
+        têm \texttt{NULL}; C++ não, e o \emph{indicator} é a ponte.
+\end{itemize}
+
+\subsubsection{A pilha de abstração}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=6mm and 8mm]
+  \node[caixaforte] (main) {\texttt{main.cpp}};
+  \node[caixa, below=of main] (repo) {\texttt{ProductRepository}\\\scriptsize só conhece a interface};
+  \node[folha, below=of repo] (iface) {\texttt{db::Connection}\\\scriptsize interface abstrata};
+  \node[caixa, below=of iface] (soci) {\texttt{SociConnection}};
+  \node[caixafraca, below left=8mm and 2mm of soci]  (lite) {SQLite};
+  \node[caixafraca, below right=8mm and 2mm of soci] (pg)   {PostgreSQL};
+  \draw[seta] (main) -- (repo);
+  \draw[seta] (repo) -- (iface);
+  \draw[seta] (soci) -- node[rotulo,right] {implementa} (iface);
+  \draw[aresta] (soci) -- (lite);
+  \draw[aresta] (soci) -- (pg);
+\end{tikzpicture}
+\caption{A seta de \texttt{SociConnection} aponta \emph{para cima}: é a
+         inversão de dependência da \cref{sec:solid}. Trocar de banco não muda
+         uma linha de \texttt{ProductRepository} nem de \texttt{main.cpp} ---
+         muda só o DSN passado a \texttt{db::connect()}.}
+\label{fig:database}
+\end{figure}
+
+O \texttt{ProductRepository} concentra \emph{todo} o SQL da aplicação, e é essa
+concentração que dá as duas propriedades desejadas: o resto do programa não
+conhece SQL, e trocar uma \emph{query} não exige procurar por
+\emph{strings} espalhadas.
+
+A interface \texttt{db::Connection} tem exatamente quatro métodos, e a
+economia é deliberada: \texttt{execute} para DDL e DML sem retorno,
+\texttt{query} com \emph{callback} por linha, \texttt{transaction} recebendo
+uma função, e \texttt{execute\_prepared} com \emph{binding} posicional. Nada
+mais atravessa a fronteira --- nem \texttt{soci::session}, nem
+\texttt{soci::row}, nem o tipo de exceção da biblioteca.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{src/database/db.cpp}: o único lugar do arquivo que conhece
+             \emph{backends} concretos. Todo o resto fala com
+             \texttt{soci::session}.}]
+static soci::backend_factory const& pick_backend(const std::string& dsn) {
+    if (dsn.rfind("sqlite3://", 0) == 0) return soci::sqlite3;
+
+#if defined(TEM_POSTGRESQL) && TEM_POSTGRESQL
+    if (dsn.rfind("postgresql://", 0) == 0) return soci::postgresql;
+    ...
+#else
+    if (dsn.rfind("postgresql://", 0) == 0)
+        throw DbError("DSN PostgreSQL pedido, mas este binario foi compilado "
+                      "SEM o backend PostgreSQL (falta libpq-dev).");
+#endif
+    throw DbError("DSN nao reconhecido. Use sqlite3://");
+}
+\end{lstlisting}
+
+\begin{regra}[a mensagem de erro deve dizer o que fazer]
+Repare no texto lançado: ele não diz ``\emph{backend} indisponível''. Diz qual
+\emph{backend} foi pedido, por que não existe neste binário, e qual pacote
+instalar. Uma mensagem de erro é documentação entregue no pior momento
+possível --- é quando ela precisa ser mais específica, não menos.
+\end{regra}
+
+\subsubsection{Por que o backend PostgreSQL é opcional}
+
+Este é o exemplo concreto da detecção graciosa prometida na abertura do
+capítulo, e a razão é dupla e verificável.
+
+Primeiro, o arquivo \texttt{.pc} que o \gls{conan} gera para
+\texttt{soci-soci\_postgresql} traz um \texttt{Requires: soci-soci\_core none}
+malformado --- o \texttt{none} é um defeito do gerador --- e o
+\texttt{pkg-config} rejeita o pacote inteiro por causa dele. Segundo, mesmo
+quando o pacote é encontrado, o cabeçalho \texttt{soci-postgresql.h} inclui
+\texttt{libpq-fe.h}, o cabeçalho do cliente do PostgreSQL, que exige
+\texttt{libpq-dev} instalado no sistema. Sem ele:
+\texttt{fatal error: libpq-fe.h: No such file or directory}.
+
+\begin{lstlisting}[style=bt, language=Meson,
+    caption={\texttt{src/database/meson.build}: perguntar ao compilador em vez
+             de presumir.}]
+cc_db = meson.get_compiler('cpp')
+tem_pg = soci_pg_dep.found() and cc_db.has_header('libpq-fe.h')
+
+if tem_pg
+    message('database: backend PostgreSQL HABILITADO')
+else
+    message('database: so SQLite (falta libpq-dev ou o .pc do backend)')
+endif
+
+executable('database',
+    files('main.cpp', 'db.cpp'),
+    dependencies: [fmt_dep, soci_dep, soci_sqlite_dep] +
+                  (tem_pg ? [soci_pg_dep] : []),
+    cpp_args: tem_pg ? ['-DTEM_POSTGRESQL=1'] : ['-DTEM_POSTGRESQL=0'],
+    install: true)
+\end{lstlisting}
+
+\begin{porque}[por que isso não é o mesmo que comentar o alvo]
+A diferença é que o alvo \emph{continua sendo construído}. O que varia é uma
+funcionalidade opcional, decidida por uma pergunta ao ambiente
+(\texttt{has\_header}), registrada numa macro e refletida numa mensagem de
+erro útil em tempo de execução. O código do caminho SQLite --- que é 100\% do
+que o subprojeto ensina --- passa pelo compilador em toda máquina, sempre. Um
+subprojeto \emph{didático} não deve exigir um servidor de banco de dados para
+compilar: o SQLite é embutido, é um arquivo, sem processo e sem rede, e ensina
+exatamente as mesmas coisas --- sessão, \emph{prepared statement}, transação,
+\emph{binding} e mapeamento de tipos.
+\end{porque}
+
+\subsubsection{\emph{Prepared statements} não são otimização}
+
+A razão principal de usar parâmetros em vez de concatenar \emph{strings} é
+segurança, e o subprojeto mostra o ataque:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A concatenação, e o que o atacante escreve no campo de texto.}]
+std::string name = get_user_input();               // "' OR '1'='1"
+conn_.execute("SELECT * FROM products WHERE name = '" + name + "'");
+// Query resultante: SELECT * FROM products WHERE name = '' OR '1'='1'
+// -> retorna TODOS os produtos
+\end{lstlisting}
+
+Com \texttt{execute\_prepared}, o valor nunca é interpretado como SQL: ele chega
+ao banco como \emph{dado}, por um canal separado do texto da consulta. Não é
+questão de escapar caracteres corretamente --- é questão de a consulta e os
+dados não compartilharem o mesmo canal.
+
+\begin{regra}[nenhuma \emph{string} vinda de fora entra no texto de uma consulta]
+A regra é sintática e verificável: se aparece \texttt{+} concatenando algo numa
+\emph{string} de SQL, é bug de segurança. Vale inclusive para valores que ``não
+podem'' vir do usuário --- eles acabam vindo. O benefício secundário é real mas
+menor: o banco reaproveita o plano de execução entre chamadas com o mesmo texto.
+\end{regra}
+
+Do lado da implementação, o \emph{binding} do SOCI é mais explícito do que o de
+outras bibliotecas, e vale ver a sequência inteira:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{src/database/db.cpp}: preparar, ligar, executar. Os cinco
+             passos são obrigatórios e nesta ordem.}]
+soci::statement st(session_);
+st.alloc();
+st.prepare(sql);
+
+std::vector<soci::indicator> inds(params.size(), soci::i_ok);
+for (std::size_t i = 0; i < params.size(); ++i)
+    st.exchange(soci::use(params[i], inds[i]));   // liga POR REFERENCIA
+
+st.define_and_bind();
+st.execute(true);
+return static_cast<int>(st.get_affected_rows());
+\end{lstlisting}
+
+\begin{armadilha}[\texttt{soci::use} liga por referência, não por valor]
+O valor não é copiado no momento do \texttt{exchange}: o SOCI guarda o endereço
+e lê de lá no \texttt{execute}. Isso significa que \texttt{params} e
+\texttt{inds} precisam continuar vivos e \emph{no mesmo endereço} até a
+execução terminar. Um \classe{std::vector} que sofra \texttt{push\_back} entre
+o \emph{bind} e o \texttt{execute} realoca, invalida todos os endereços e leva
+o banco a ler memória liberada. O código acima é correto por construção: o
+vetor é dimensionado uma vez e nunca cresce. É a mesma disciplina de
+invalidação de iteradores da \cref{sec:stl}, aplicada a ponteiros que
+atravessaram uma fronteira de biblioteca.
+\end{armadilha}
+
+Há um segundo detalhe instrutivo na adaptação de tipos. \texttt{SociRow::get\_int}
+tenta \texttt{int} e, se falhar, tenta \texttt{long long}:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{src/database/db.cpp}: a mesma coluna tem tipo diferente
+             conforme o backend.}]
+int get_int(const std::string& col) const override {
+    try {
+        return row_.get<int>(col);
+    } catch (...) {
+        return static_cast<int>(row_.get<long long>(col));
+    }
+}
+\end{lstlisting}
+
+O SQLite não tem tipos de coluna rígidos --- ele tem \emph{affinity} --- e um
+\texttt{INTEGER} pode chegar como \texttt{int} ou como \texttt{long long}
+dependendo do valor e do \emph{backend}. Absorver essa diferença é precisamente
+o trabalho da camada de adaptação: se ela vazasse para o
+\texttt{ProductRepository}, a promessa de portabilidade seria falsa.
+
+\subsubsection{Transações como RAII de negócio}
+
+A interface expõe a transação como uma função que recebe outra função:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{src/database/main.cpp}: atomicidade sem \emph{commit} nem
+             \emph{rollback} escritos à mão pelo chamador.}]
+    conn_.transaction([&]() {
+        for (auto& [id, qty] : items) {
+            conn_.execute_prepared(
+                "UPDATE products SET stock = stock - :1 "
+                "WHERE id = :2 AND stock >= :1",
+                {std::to_string(qty), std::to_string(id)}
+            );
+        }
+    });
+    // excecao -> rollback automatico; fim normal -> commit automatico
+\end{lstlisting}
+
+É a garantia forte da \cref{sec:errors} realizada pelo banco em vez de pelo
+programa: ou todas as operações valem, ou nenhuma vale. Do lado da
+implementação, o mecanismo é o \emph{scope guard} explícito:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{src/database/db.cpp}: o \texttt{catch(...)} relança depois
+             de desfazer --- desfazer não é tratar.}]
+void transaction(std::function<void()> fn) override {
+    soci::transaction tx(session_);
+    try {
+        fn();
+        tx.commit();
+    } catch (...) {
+        tx.rollback();
+        throw;              // o chamador PRECISA saber que falhou
+    }
+}
+\end{lstlisting}
+
+\begin{regra}[engolir a exceção depois do \emph{rollback} é pior que não ter transação]
+Sem o \texttt{throw} final, o chamador veria a função retornar normalmente e
+concluiria que a operação teve sucesso --- quando o banco desfez tudo. O
+programa passaria a operar sobre um estado que ele acha que existe. Desfazer é
+a metade fácil; comunicar é a que importa.
+\end{regra}
+
+\begin{armadilha}[a condição de estoque está na consulta, não no C++]
+A cláusula \texttt{AND stock >= :1} não é decoração: verificar o estoque em C++
+antes do \texttt{UPDATE} abriria uma janela entre a leitura e a escrita em que
+outra transação poderia consumir o mesmo estoque. Colocar a condição \emph{na}
+consulta faz o banco decidir atomicamente. É o análogo, em nível de banco, da
+diferença entre \texttt{if (contador == 0) contador = 1} e um
+\texttt{compare\_exchange} (\cref{sec:concurrency}).
+\end{armadilha}
+
+\subsubsection{Um exemplo que só funciona na primeira execução é um exemplo quebrado}
+
+O demo tinha um defeito que nada tem a ver com C++ e tudo a ver com escrever
+material didático. \texttt{create\_table} usava
+\texttt{CREATE TABLE IF NOT EXISTS}, o que preserva as linhas da execução
+anterior. Na segunda vez que alguém rodava o programa, o primeiro
+\texttt{INSERT} batia na restrição de unicidade:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={O erro na segunda execução. O demo saía com código 1 e parecia
+             quebrado.}]
+DbError: UNIQUE constraint failed: products.name
+\end{lstlisting}
+
+A correção foi acrescentar um \texttt{DROP TABLE IF EXISTS} antes do
+\texttt{CREATE}, tornando o programa \textbf{idempotente} --- executável
+quantas vezes se queira, sempre com o mesmo resultado.
+
+\begin{armadilha}[o \texttt{DROP} é certo aqui e catastrófico em produção]
+Apagar a tabela apaga os dados. Num demo isso é a coisa certa; num sistema
+real é perda irreversível. O instrumento correto em produção é a
+\textbf{migração}: uma sequência versionada de \emph{scripts}
+\texttt{ALTER TABLE}, cada um aplicado uma única vez e registrado numa tabela
+de controle, de modo que o banco saiba em que versão do esquema está.
+Ferramentas: Flyway, Liquibase, Alembic. A distinção entre ``recriar'' e
+``evoluir'' o esquema é a primeira coisa que separa um exemplo de um sistema.
+\end{armadilha}
+
+O caminho do arquivo de banco também é derivado, não escrito à mão --- e o
+idioma vale registrar, porque resolve o problema de ``o programa só funciona se
+eu o executar do diretório certo'':
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{src/database/main.cpp}: o caminho é relativo ao
+             \emph{executável}, não ao diretório de trabalho.}]
+auto db_dir = fs::canonical(fs::read_symlink("/proc/self/exe"))
+                  .parent_path()   // dist/bin/
+                  .parent_path()   // dist/
+                  .parent_path()   // raiz do projeto
+              / "tmp" / "sqlite";
+fs::create_directories(db_dir);    // idempotente: cria toda a arvore
+const std::string dsn = "sqlite3://" + (db_dir / "academy.db").string();
+\end{lstlisting}
+
+\begin{armadilha}[\texttt{/proc/self/exe} é específico do Linux]
+É o idioma mais direto para descobrir o caminho do próprio binário, e não é
+portável: no macOS a função é \texttt{\_NSGetExecutablePath}, no Windows é
+\texttt{GetModuleFileNameW}. O \classe{std::filesystem} padroniza a
+manipulação de caminhos, não a descoberta do executável --- essa continua
+sendo território do sistema operacional.
+\end{armadilha}
+
+A execução completa cobre o CRUD inteiro mais a transação, e o resultado
+medido mostra o débito atômico funcionando: o teclado saiu de 15 para 13, o
+mouse de 30 para 25, os dois na mesma transação.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída medida de \texttt{./dist/bin/database} (cores removidas).
+             O banco resultante ocupa 16\,KiB em \texttt{tmp/sqlite/academy.db}.}]
+-- CREATE TABLE --
+  tabela 'products' criada
+-- INSERT --
+  5 produtos inseridos
+-- TRANSACTION debit_stock --
+  debitando: Teclado x2, Mouse x5
+  ID   Nome                    Preco  Estoque
+  1    Teclado Mecanico     R$ 349.90      13
+  2    Mouse Gamer          R$ 189.99      25
+  3    Monitor 27"          R$1699.00       8
+  4    Headset USB          R$ 249.00       0
+  5    Webcam 1080p         R$ 159.50      12
+\end{lstlisting}
+
+% =============================================================================
+\subsection{Mensageria com AMQP}
+\label{sec:rabbitmq}
+% =============================================================================
+
+O subprojeto \projeto{rabbitmq} combina o Asio da \cref{sec:network} com o
+protocolo AMQP: dois executáveis --- \texttt{rabbitMQ\_producer} e
+\texttt{rabbitMQ\_consumer} --- que não se conhecem e nunca conversam
+diretamente.
+
+\begin{porque}[o que um \emph{broker} compra]
+Produtor e consumidor deixam de precisar estar vivos ao mesmo tempo, de conhecer
+o endereço um do outro, e de rodar na mesma velocidade. O \emph{broker} absorve
+picos, distribui trabalho entre vários consumidores e reentrega o que não foi
+confirmado. O preço é uma peça de infraestrutura a mais para operar --- e uma
+classe nova de problemas: mensagem duplicada, mensagem fora de ordem, fila que
+cresce sem limite.
+\end{porque}
+
+\subsubsection{O vocabulário do AMQP}
+
+\begin{itemize}
+  \item \textbf{Broker} --- o servidor. Aqui, o RabbitMQ.
+  \item \textbf{Connection} --- uma conexão TCP com o \emph{broker}. É cara:
+        \emph{handshake} TCP mais \emph{handshake} AMQP mais autenticação.
+  \item \textbf{Channel} --- uma conexão \emph{lógica} multiplexada dentro da
+        conexão TCP. É barata, e é onde todas as operações acontecem. O padrão
+        é uma conexão por processo e um canal por \emph{thread}.
+  \item \textbf{Exchange} --- o ponto onde o produtor publica. Não armazena
+        nada; apenas roteia.
+  \item \textbf{Queue} --- a fila que armazena mensagens até alguém consumir.
+  \item \textbf{Binding} --- a regra que liga uma \emph{exchange} a uma fila.
+  \item \textbf{Routing key} --- a etiqueta que a mensagem carrega, e que a
+        \emph{exchange} compara com os \emph{bindings}.
+  \item \textbf{Delivery tag} --- um identificador de entrega, por canal, que o
+        consumidor usa para confirmar aquela mensagem específica.
+  \item \textbf{Vhost} --- um espaço de nomes isolado dentro do \emph{broker};
+        o padrão é \texttt{/}.
+\end{itemize}
+
+\begin{regra}[canal é barato, conexão é cara]
+Abrir uma conexão TCP por operação é o erro de desempenho número um em código
+de AMQP. Abra a conexão uma vez, no início do processo, e crie canais. E não
+compartilhe um canal entre \emph{threads}: o protocolo multiplexa quadros de
+canais diferentes na mesma conexão, e dois emissores no mesmo canal produzem
+quadros intercalados que o \emph{broker} rejeita.
+\end{regra}
+
+\subsubsection{Exchange, \emph{binding} e fila}
+
+O produtor \textbf{não conhece a fila}: ele publica em uma \emph{exchange}, que
+roteia segundo os \emph{bindings} declarados. É essa indireção que permite
+acrescentar consumidores sem tocar no produtor --- o mesmo desacoplamento do
+padrão \emph{Observer} (\cref{sec:patterns}), agora entre processos.
+
+\begin{table}[htbp]
+\centering
+\caption{Os quatro tipos de \emph{exchange} e como cada um roteia.}
+\label{tab:exchanges}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Tipo} & \textbf{Roteia} \\
+\midrule
+\texttt{direct}  & para a fila cuja \emph{routing key} é igual à da mensagem \\
+\texttt{fanout}  & para \textbf{todas} as filas vinculadas \\
+\texttt{topic}   & por padrão, com curingas \texttt{*} e \texttt{\#} \\
+\texttt{headers} & pelos cabeçalhos da mensagem \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+No exemplo, \texttt{channel.publish("", nome, corpo)} usa a \emph{exchange}
+padrão --- \emph{direct} com nome vazio --- em que a \emph{routing key} é o
+próprio nome da fila. É o atalho que faz o exemplo caber em uma linha, e também
+o que o torna enganoso: em um sistema real, publicar direto numa fila acopla o
+produtor à topologia, e é justamente o acoplamento que o \emph{broker} deveria
+ter eliminado.
+
+\begin{armadilha}[os três argumentos de \texttt{publish} são exchange, routing key, corpo]
+Não são fila, chave e corpo. A leitura errada funciona por acidente com a
+\emph{exchange} padrão --- porque ali a \emph{routing key} coincide com o nome
+da fila --- e falha silenciosamente no dia em que alguém declara uma
+\emph{exchange} de verdade. A mensagem não dá erro: ela é publicada numa
+\emph{exchange} sem \emph{binding} correspondente e é descartada. ``Publiquei e
+a mensagem sumiu'' quase sempre é isto.
+\end{armadilha}
+
+\subsubsection{Duas famílias de \emph{callback}, e o erro de compilação que as separa}
+
+A primeira versão deste subprojeto não compilava, e o motivo é uma lição de
+projeto de API. O código escrito era o que todo tutorial mostra:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A versão que não compila.}]
+AMQP::TcpConnection connection(&handler, address);
+connection.onConnected([]{ /* ... */ });               // nao existe
+connection.onError([](const char* m){ /* ... */ });
+\end{lstlisting}
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={A mensagem do compilador --- confusa, porque o método \emph{existe},
+             só que com outra assinatura e outro papel.}]
+error: cannot convert 'main()::<lambda()>' to 'AMQP::TcpState*'
+\end{lstlisting}
+
+A API do AMQP-CPP mudou: os eventos de \textbf{ciclo de vida da conexão}
+pertencem ao \emph{handler}, e a forma de reagir a eles é \textbf{herdar e
+sobrescrever métodos virtuais}. O \texttt{TcpConnection} tem métodos de nome
+parecido, mas eles são parte da máquina de estados interna --- daí a mensagem
+falando de \texttt{TcpState}.
+
+\begin{regra}[um conjunto fixo de eventos correlacionados pede herança; eventos avulsos pedem \emph{lambda}]
+Esta biblioteca usa os dois estilos, e a escolha não é arbitrária. Os seis
+eventos de ciclo de vida da conexão são \emph{fixos}, \emph{conhecidos} e
+compartilham estado --- viram métodos virtuais de um objeto. Os retornos de
+cada operação de canal (\texttt{declareQueue}, \texttt{consume}) são
+\emph{independentes}: cada chamada tem o seu próprio sucesso e o seu próprio
+erro, e viram \emph{lambdas} encadeadas no valor de retorno.
+\end{regra}
+
+\subsubsection{O ciclo de vida em seis estágios}
+
+\begin{table}[htbp]
+\centering
+\caption{Os seis estágios do \emph{handler}, na ordem. Publicar antes de
+         \texttt{onReady} é a origem da maioria dos ``publiquei e sumiu''.}
+\label{tab:amqp-lifecycle}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Método} & \textbf{Significado} \\
+\midrule
+\texttt{onAttached}  & objeto de conexão construído --- ainda não há \emph{socket} \\
+\texttt{onConnected} & TCP estabelecido --- ainda \textbf{não} há login AMQP \\
+\texttt{onReady}     & \emph{handshake} AMQP concluído --- só aqui dá para publicar \\
+\texttt{onError}     & erro fatal; a conexão vai fechar \\
+\texttt{onClosed}    & fechamento limpo \\
+\texttt{onDetached}  & seguro destruir o objeto \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{src/rabbitmq/handler.hpp}: herdar do \emph{handler} do
+             Boost.Asio e sobrescrever só o que interessa.}]
+class Handler : public AMQP::LibBoostAsioHandler {
+public:
+    Handler(boost::asio::io_context& io, std::string rotulo)
+        : AMQP::LibBoostAsioHandler{io}, rotulo_{std::move(rotulo)} {}
+
+    void onReady(AMQP::TcpConnection* c) override {
+        AMQP::LibBoostAsioHandler::onReady(c);   // a base faz trabalho REAL
+        pronto_ = true;
+        fmt::print("[{}] onReady - handshake AMQP concluido\n", rotulo_);
+    }
+    // ... onAttached, onConnected, onError, onClosed, onDetached ...
+};
+\end{lstlisting}
+
+\begin{armadilha}[esquecer a chamada à implementação da base produz um programa que compila, conecta e nunca recebe nada]
+A \texttt{LibBoostAsioHandler} faz trabalho real nesses métodos: registra o
+\emph{socket} no \texttt{io\_context} e monitora leitura e escrita. Se o
+\emph{override} não chamar \texttt{AMQP::LibBoostAsioHandler::onX(...)}, esse
+registro nunca acontece. E o compilador não avisa, porque tecnicamente o
+método \emph{foi} implementado --- é a armadilha clássica de sobrescrever um
+virtual que não é puro. Quando a base tem comportamento obrigatório, o padrão
+NVI (\cref{sec:solid}) é a defesa: a base expõe um método não virtual que faz
+o trabalho e chama um \emph{hook} protegido.
+\end{armadilha}
+
+A evidência do ciclo de vida vem de graça quando não há \emph{broker}. Rodar o
+produtor sem servidor produz uma sequência que \emph{prova} a tabela: o objeto
+é criado, o TCP falha, e o programa vai direto de \texttt{onAttached} para
+\texttt{onError} --- \texttt{onConnected} e \texttt{onReady} nunca acontecem.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída medida de \texttt{./dist/bin/rabbitMQ\_producer} sem
+             \emph{broker} rodando. Saída de processo: 1.}]
+[PRODUCER] conectando em amqp://guest:guest@localhost:5672/
+[PRODUCER] onAttached - objeto de conexao criado
+[PRODUCER] ! erro de canal: Connection refused
+[PRODUCER] ! onError - Connection refused
+[PRODUCER] onDetached - seguro destruir
+[PRODUCER] fim
+\end{lstlisting}
+
+\begin{regra}[um cliente de rede sem servidor deve falhar rápido, dizer por quê e sair com código diferente de zero]
+O \texttt{main} termina com \texttt{return handler.erro() ? 1 : 0}, e o
+temporizador de 15 segundos garante que o processo não fica preso para sempre.
+Essas duas linhas transformam um demo em um teste de fumaça utilizável por um
+\emph{script}: a saída diz o que houve, e o código de saída diz se funcionou.
+Compare com o \cref{sec:aws}, que faz o contrário.
+\end{regra}
+
+\subsubsection{Tudo é \emph{callback}}
+
+A API do AMQP-CPP é inteiramente assíncrona, sobre o \texttt{io\_context} do
+Boost.Asio. Nada acontece na ordem em que está escrito: \texttt{onReady}
+dispara quando o \emph{handshake} AMQP termina, e é só ali que declarar a fila
+e publicar fazem sentido.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{src/rabbitmq/producer.cpp}: declarar e publicar, cada um
+             dentro do \emph{callback} certo.}]
+channel.onReady([&channel, &connection, quantas] {
+    channel.declareQueue("hello")          // idempotente: cria se nao existir
+        .onSuccess([&](const std::string& nome, uint32_t, uint32_t) {
+            for (int i = 1; i <= quantas; ++i)
+                channel.publish("", nome, fmt::format("mensagem {} de {}", i, quantas));
+            connection.close();
+        })
+        .onError([](const char* m) { fmt::print("erro ao declarar: {}\n", m); });
+});
+
+io.run();   // so aqui algo de fato acontece
+\end{lstlisting}
+
+Que \texttt{declareQueue} seja \textbf{idempotente} é o que permite os dois
+lados declararem a mesma fila sem coordenação: nenhum dos dois precisa saber
+quem subiu primeiro. Se a fila já existe com os mesmos parâmetros, a chamada
+não faz nada.
+
+\begin{armadilha}[\texttt{publish} não confirma nada]
+Por padrão, \texttt{publish} apenas escreve no \emph{socket}. Se o
+\emph{broker} rejeitar a mensagem --- \emph{exchange} inexistente, fila cheia,
+disco cheio --- o produtor não fica sabendo. Para garantia de entrega existe o
+\emph{publisher confirm} (\texttt{channel.confirmSelect()}), que faz cada
+publicação devolver um \emph{deferred} confirmado pelo servidor. É o mesmo
+compromisso entre \texttt{send} e \texttt{send + ack} de qualquer protocolo, e
+custa uma ida e volta por mensagem.
+\end{armadilha}
+
+\subsubsection{ACK: a diferença entre entregue e processado}
+
+O ponto conceitual do subprojeto é o reconhecimento. O \emph{broker} só remove a
+mensagem da fila quando o consumidor confirma:
+
+\begin{table}[htbp]
+\centering
+\caption{As três respostas possíveis a uma mensagem recebida.}
+\label{tab:ack}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Chamada} & \textbf{Efeito no \emph{broker}} \\
+\midrule
+\texttt{ack(tag)}              & remove a mensagem: processada com sucesso \\
+\texttt{nack(tag)}             & reencaminha a outro consumidor ou manda à \emph{dead-letter} \\
+\texttt{nack(tag, false, true)}& devolve à frente da fila (\emph{requeue}) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{src/rabbitmq/consumer.cpp}: o \texttt{ack} vem
+             \textbf{depois} de processar, e o \emph{flag} de redespacho é
+             informação útil.}]
+channel.consume(nome)
+    .onReceived([&channel](const AMQP::Message& msg,
+                           uint64_t etiqueta, bool redespachada) {
+        const std::string corpo{msg.body(), msg.bodySize()};
+        fmt::print("[CONSUMER] recebido: \"{}\"{}\n", corpo,
+                   redespachada ? "  (REDESPACHADA)" : "");
+        channel.ack(etiqueta);          // depois de processar, nunca antes
+    })
+    .onError([](const char* m) { fmt::print("erro no consume: {}\n", m); });
+\end{lstlisting}
+
+\begin{armadilha}[confirmar antes de processar transforma falha em perda]
+Se o consumidor chamar \texttt{ack} logo ao receber e morrer no meio do
+processamento, a mensagem já saiu da fila e ninguém mais a verá. Confirmar
+\emph{depois} do processamento inverte a garantia: se ele morrer antes do
+\texttt{ack}, o \emph{broker} reentrega --- e a mensagem pode ser processada
+duas vezes. Não há terceira opção; a escolha é entre \emph{at-most-once} e
+\emph{at-least-once}, e a segunda exige que o processamento seja
+\textbf{idempotente}.
+\end{armadilha}
+
+O \emph{flag} \texttt{redespachada} é a ferramenta que o protocolo dá para
+lidar com isso: ele avisa que esta mensagem já foi entregue antes. Um
+consumidor sério o usa para decidir entre reprocessar e mandar para a
+\emph{dead-letter queue}, evitando o ``veneno'' --- a mensagem que sempre falha
+e volta para a fila indefinidamente, consumindo o \emph{broker} inteiro.
+
+\subsubsection{A porta, que quase nunca é a que se espera}
+
+O subprojeto traz um \texttt{docker-compose.yml}, e ele contém uma pegadinha
+digna de registro: as portas publicadas não são as padrão.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Resumo de \texttt{src/rabbitmq/docker-compose.yml}: o mapeamento é
+             \texttt{host:container}, e o host usa portas deslocadas.}]
+ports:
+  - "4672:5672"     # AMQP - a porta do HOST e 4672
+  - "14672:15672"   # painel web - a porta do HOST e 14672
+\end{lstlisting}
+
+\begin{armadilha}[o binário assume 5672 e o \emph{compose} publica 4672]
+O padrão do AMQP é 5672, e é isso que o produtor e o consumidor usam quando
+nenhum argumento é passado. Com este \texttt{docker-compose.yml}, o servidor
+responde em 4672 no host, e a conexão é recusada com a mensagem mais genérica
+possível. Por isso os dois programas aceitam a URL como primeiro argumento:
+\texttt{./dist/bin/rabbitMQ\_consumer amqp://guest:guest@localhost:4672/}.
+Endereço de servidor é configuração, e configuração não pertence ao código
+compilado.
+\end{armadilha}
+
+% =============================================================================
+\subsection{Nuvem: AWS SDK e o modelo \texttt{Outcome}}
+\label{sec:aws}
+% =============================================================================
+
+O subprojeto \projeto{aws} é o menor do capítulo e faz uma coisa só --- listar
+os \emph{buckets} de um S3 --- mas as vinte linhas contêm três lições que
+transferem para qualquer SDK grande. Um \emph{bucket}, para quem nunca usou o
+S3, é o contêiner de nível mais alto do serviço: um espaço de nomes global onde
+objetos são guardados por chave.
+
+\subsubsection{O bug que provou o argumento do capítulo}
+
+Este arquivo é um dos seis itens da \cref{tab:bugs-latentes}, e o defeito era
+este:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{src/aws/s3/main.cpp}: o comentário que hoje encabeça o
+             arquivo.}]
+// O arquivo usava `fmt::print` e nao incluia <fmt/core.h>. O alvo estava
+// desabilitado no meson.build da raiz, entao o erro nunca apareceu.
+#include <fmt/core.h>
+\end{lstlisting}
+
+Um arquivo de vinte linhas, com um \texttt{\#include} faltando, dentro de um
+repositório que compila com zero avisos. A única razão de ele ter sobrevivido é
+que ninguém o compilava. Não há moral mais direta para a regra da abertura.
+
+\subsubsection{O ciclo de vida global, e o bloco que parece decorativo}
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A ordem que não pode ser trocada.}]
+Aws::SDKOptions options;
+Aws::InitAPI(options);   // (1) SEMPRE primeiro
+{
+    Aws::S3::S3Client client;              // (2) credenciais automaticas
+    auto outcome = client.ListBuckets();   // (3) chamada HTTP
+
+    if (outcome.IsSuccess()) {             // (4) testa ANTES de pegar
+        for (auto& bucket : outcome.GetResult().GetBuckets())
+            fmt::print("bucket: {}\n", bucket.GetName().c_str());
+    } else {
+        fmt::print("erro: {}\n", outcome.GetError().GetMessage().c_str());
+    }
+}                                          // (5) client destruido AQUI
+Aws::ShutdownAPI(options);                 // (6) SEMPRE por ultimo
+\end{lstlisting}
+
+\begin{armadilha}[as chaves ao redor do \texttt{client} não são estilo]
+O SDK mantém recursos globais --- \emph{thread pool}, cliente HTTP, sistema de
+\emph{log} --- e \texttt{ShutdownAPI} os destrói. Se o \texttt{S3Client} for
+destruído \emph{depois} disso, o destrutor dele acessa memória já liberada, e o
+programa termina com um \emph{crash} no encerramento, longe da causa. O bloco
+força a ordem correta pela regra de escopo --- e é um exemplo raro de
+\gls{raii} sendo usado para ordenar destruições \emph{entre} objetos, não para
+liberar um recurso próprio.
+\end{armadilha}
+
+\subsubsection{\texttt{Outcome<R, E>}: erro como valor, de novo}
+
+O SDK da AWS não usa exceções. Toda operação devolve um
+\texttt{Aws::Utils::Outcome<ResultType, ErrorType>}, e o chamador pergunta
+\texttt{IsSuccess()} antes de pegar o resultado.
+
+\begin{table}[htbp]
+\centering
+\caption{O mesmo conceito, três nomes --- e o que cada um oferece além do teste.}
+\label{tab:outcome}
+\footnotesize
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Origem} & \textbf{Tipo} & \textbf{Teste de sucesso} & \textbf{Composição} \\
+\midrule
+AWS SDK for C++ & \texttt{Outcome<R,E>}   & \texttt{outcome.IsSuccess()} & nenhuma \\
+C++23           & \texttt{expected<T,E>}  & \texttt{if (r)}              & \texttt{and\_then}, \texttt{transform} \\
+Rust            & \texttt{Result<T,E>}    & \texttt{r.is\_ok()}          & \texttt{?}, \texttt{map}, \texttt{and\_then} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A coluna da direita é a diferença prática, e não é pequena. Com
+\classe{std::expected} escreve-se
+\texttt{buscar(id).and\_then(validar).transform(formatar)}, e o primeiro erro
+curto-circuita a cadeia inteira sem um único \texttt{if}. Com
+\texttt{Outcome} não há nada disso: cada chamada exige o seu
+\texttt{IsSuccess()}, e uma sequência de cinco operações vira cinco blocos
+aninhados. O \texttt{Outcome} é anterior ao \classe{std::expected} e resolve o
+mesmo problema com metade da ergonomia.
+
+O contraste com a \cref{sec:errors} é o ponto didático: o SDK escolheu erro como
+valor porque atravessa fronteiras de \gls{abi}, precisa funcionar com exceções
+desligadas (\texttt{-fno-exceptions}) e porque, em uma chamada de rede, falhar
+não é excepcional --- é rotina. É a mesma análise de \emph{frequência} que
+decide entre exceção e valor em código próprio.
+
+\begin{armadilha}[\texttt{Outcome} não é \texttt{[[nodiscard]]}]
+Como \classe{std::expected} (\cref{sec:errors}), ignorar o retorno compila em
+silêncio --- e o erro desaparece por completo. A diferença é que aqui não há
+como marcar a função: ela é do SDK. Resta a disciplina de nunca chamar uma
+operação da AWS sem guardar e testar o \texttt{Outcome}.
+\end{armadilha}
+
+\subsubsection{A medição que contrariou a expectativa}
+
+Executar o binário sem credenciais válidas era o teste esperado: uma mensagem
+clara de autenticação. O que saiu foi outra coisa:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída medida de \texttt{./dist/bin/aws-s3} sem credenciais
+             configuradas. Código de saída do processo: \textbf{0}.}]
+erro: XML_ERROR_PARSING_ATTRIBUTE
+\end{lstlisting}
+
+Duas coisas erradas de uma vez, e as duas ensinam.
+
+A primeira é a mensagem. \texttt{XML\_ERROR\_PARSING\_ATTRIBUTE} descreve o
+sintoma no nível mais baixo possível --- o \emph{parser} de XML do SDK não
+conseguiu ler a resposta --- e esconde a causa, que é a requisição ter sido
+rejeitada e a resposta não ser o XML que o cliente esperava. É o inverso
+exato da regra enunciada no \cref{sec:database}: em vez de dizer o que fazer,
+a mensagem obriga o leitor a adivinhar em que camada procurar.
+
+\begin{armadilha}[o programa reportou o erro e mesmo assim saiu com código zero]
+O \texttt{main} imprime a mensagem e cai no fim da função, e o fim de
+\texttt{main} devolve 0. Para qualquer \emph{script}, CI ou orquestrador, esse
+processo \emph{teve sucesso}. Compare com o produtor do \cref{sec:rabbitmq},
+que termina com \texttt{return handler.erro() ? 1 : 0} e sai com 1 na mesma
+situação. Reportar o erro na saída padrão não é reportar o erro: código de
+saída é a única coisa que o resto do sistema lê.
+\end{armadilha}
+
+\begin{regra}[todo caminho de falha termina em código de saída diferente de zero]
+Vale para os cinco subprojetos deste capítulo, e é a regra mais barata de
+seguir do livro inteiro: um \texttt{return 1} no ramo de erro. Um programa que
+reporta falha em texto e sucesso em código de saída é pior do que um que não
+reporta nada, porque parece confiável.
+\end{regra}
+
+O SDK autentica sozinho, nesta ordem: variáveis de ambiente
+(\texttt{AWS\_ACCESS\_KEY\_ID}, \texttt{AWS\_SECRET\_ACCESS\_KEY}), depois
+\texttt{\textasciitilde/.aws/credentials}, depois o perfil da instância EC2 ou o
+\emph{task role} do ECS. É a cadeia que permite ao mesmo binário rodar na
+máquina do desenvolvedor e na nuvem sem nenhuma credencial no código --- e é a
+razão de o \texttt{S3Client} ser construído sem argumento nenhum.
+
+\begin{regra}[credencial não entra no binário, nem no repositório]
+A cadeia de provedores existe exatamente para tornar desnecessário escrever
+chave no código. Uma chave literal num \texttt{.cpp} sobrevive no histórico do
+Git mesmo depois de removida, e é o vazamento mais comum de todos. A alternativa
+custa uma linha de \texttt{export}.
+\end{regra}
+
+% =============================================================================
+\subsection{Síntese: cinco bibliotecas, cinco convenções de erro}
+% =============================================================================
+
+O capítulo tem um achado que vale mais que qualquer das APIs individuais: as
+cinco bibliotecas resolveram o mesmo problema --- como reportar que algo deu
+errado --- de cinco maneiras diferentes (\cref{tab:erros-ecossistema}). Um
+programa que use três delas conviverá com três convenções ao mesmo tempo.
+
+\begin{table}[htbp]
+\centering
+\caption{Como cada biblioteca deste capítulo reporta falha, e onde o erro é
+         observado.}
+\label{tab:erros-ecossistema}
+\footnotesize
+\begin{tabular}{@{}lllp{0.22\textwidth}@{}}
+\toprule
+\textbf{Biblioteca} & \textbf{Convenção} & \textbf{Seção} & \textbf{Onde se observa} \\
+\midrule
+Asio            & exceção \emph{ou} \texttt{error\_code\&} & \ref{sec:network} & na chamada, ou no \emph{handler} \\
+libcurl (envolvida) & exceção no transporte, campo no status & \ref{sec:http-client} & no \texttt{catch} e no \texttt{if} \\
+SOCI            & exceção, com \emph{rollback} pelo destrutor & \ref{sec:database} & no \texttt{catch} do chamador \\
+AMQP-CPP        & \emph{callback} \texttt{onError}         & \ref{sec:rabbitmq} & depois, no laço de eventos \\
+AWS SDK         & \texttt{Outcome<R,E>}, sem exceções      & \ref{sec:aws} & no retorno, se alguém olhar \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A quarta coluna é a que dói. Em Asio síncrono e em SOCI, o erro chega no ponto
+da chamada e é impossível ignorá-lo por acidente. Em AMQP-CPP ele chega
+\emph{noutro momento}, dentro do laço de eventos, e a única forma de não
+perdê-lo é ter registrado o \emph{callback} antes. No AWS SDK ele chega no
+valor de retorno e some se ninguém o testar. Três modelos temporais diferentes
+de ``quando eu fico sabendo'', num só programa.
+
+\begin{regra}[traduza na fronteira, não no meio do código]
+A saída não é adotar a convenção de nenhuma delas, e sim envolver cada
+biblioteca numa camada fina que traduza para a convenção \emph{do seu programa}
+--- exatamente o que \texttt{http::get} faz com libcurl e o que
+\texttt{db::Connection} faz com SOCI. É a mesma inversão de dependência da
+\cref{sec:solid}, aplicada ao vocabulário de erro: a política decide como erros
+são representados, e os adaptadores se ajustam.
+\end{regra}
+
+E resta a lição que abriu o capítulo e que os cinco subprojetos comprovaram, um
+a um: o \texttt{\#include} que faltava no AWS, o \emph{literal} UTF-8 dentro de
+aspas simples no cliente HTTP, o demo de banco que quebrava na segunda
+execução, a API do AMQP que tinha mudado sem ninguém notar. Nenhum desses
+defeitos exigia perspicácia para ser encontrado --- exigia apenas que alguém
+mandasse o compilador olhar. \textbf{Um alvo que não é construído é um alvo que
+apodrece}, e o custo de descobrir isso é sempre pago mais tarde, com juros.

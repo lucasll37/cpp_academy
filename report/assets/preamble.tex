@@ -1,0 +1,374 @@
+% =============================================================================
+%  Preambulo: pacotes, estilos e configuracoes globais.
+%  As variaveis \mytitle / \myauthors / \mydate sao definidas em report.tex
+%  ANTES deste arquivo ser carregado.
+% =============================================================================
+
+\input{assets/MASAfrontmatter.tex}
+
+% Paleta usada pelo estilo de listagem `bt`.
+\definecolor{codekw}{RGB}{0,39,76}        % palavras-chave  (MASA-Blue)
+\definecolor{codecomment}{RGB}{14,120,0}  % comentarios e strings
+\definecolor{codegray}{RGB}{245,245,245}  % fundo (opcional)
+
+% Sub-figuras (\subcaption dentro de minipages).
+\usepackage{subcaption}
+
+% =============================================================================
+%  Linguagens que o pacote listings nao conhece de fabrica.
+%  Sem estas definicoes, `language=Meson` e `language=GAS` abortam a
+%  compilacao com "Couldn't load requested language".
+% =============================================================================
+
+% Meson -- a DSL do sistema de build usado por todo o repositorio. O listings
+% nao a conhece; sem esta definicao, `language=Meson` aborta a compilacao com
+% "Couldn't load requested language". As palavras destacadas sao as funcoes
+% embutidas do Meson e as palavras-chave da linguagem, de modo que o nome de um
+% alvo do repositorio apareca em texto normal -- a distincao que mais importa
+% ao ler um meson.build.
+\lstdefinelanguage{Meson}{
+    morekeywords={project,executable,library,static_library,shared_library,
+                  dependency,declare_dependency,subdir,subproject,
+                  include_directories,files,find_program,import,
+                  configure_file,custom_target,run_command,run_target,
+                  test,benchmark,install_data,install_headers,install_subdir,
+                  get_option,add_project_arguments,add_global_arguments,
+                  message,warning,error,assert,summary,
+                  if,elif,else,endif,foreach,endforeach,and,or,not,in,
+                  true,false,continue,break},
+    sensitive=true,
+    morecomment=[l]{\#},
+    morestring=[b]',
+    morestring=[b]",
+    alsoletter={_},
+}
+
+% Assembly GNU/AT&T (usado nos capitulos de baixo nivel). O dialeto embutido do
+% listings e o da Intel/MASM; aqui interessam as diretivas do GAS e o
+% mnemonico com sufixo de tamanho (movq, addl), que o dialeto padrao nao cobre.
+\lstdefinelanguage{GAS}{
+    morekeywords={mov,movq,movl,movb,movw,lea,leaq,add,addq,addl,sub,subq,
+                  imul,imulq,idiv,cmp,cmpq,cmpl,test,testq,jmp,je,jne,jl,jle,
+                  jg,jge,ja,jb,call,ret,push,pushq,pop,popq,xor,xorq,and,or,
+                  shl,shr,sar,cmove,cmovg,cmovl,rep,movsb,syscall,cpuid,rdtsc,
+                  nop,endbr64,vaddps,vmulps,vmovups},
+    morekeywords=[2]{.text,.data,.bss,.globl,.global,.type,.size,.section,
+                     .align,.quad,.long,.byte,.asciz,.string,.intel_syntax,
+                     .att_syntax,.cfi_startproc,.cfi_endproc},
+    sensitive=true,
+    morecomment=[l]{\#},
+    morecomment=[l]{//},
+    morestring=[b]",
+    alsoletter={.\_},
+}
+
+% -----------------------------------------------------------------------------
+%  Caracteres nao-ASCII dentro de lstlisting
+%
+%  O listings processa o codigo byte a byte. Num arquivo UTF-8 uma letra
+%  acentuada ocupa dois bytes, e sem tratamento eles sao compostos fora de
+%  ordem: "integracao" acentuado sai como "cãintegrao". A tabela `literate`
+%  abaixo mapeia cada caractere para o comando LaTeX equivalente, contando
+%  como uma unica coluna para nao quebrar o alinhamento do codigo.
+%  Ao usar um caractere novo dentro de um bloco de codigo, acrescente-o aqui.
+% -----------------------------------------------------------------------------
+\lstdefinestyle{btchars}{
+    extendedchars = true,
+    literate      =
+      % acentuacao portuguesa
+      {á}{{\'a}}1 {à}{{\`a}}1 {â}{{\^a}}1 {ã}{{\~a}}1 {ä}{{\"a}}1
+      {é}{{\'e}}1 {è}{{\`e}}1 {ê}{{\^e}}1 {ë}{{\"e}}1
+      {í}{{\'i}}1 {ì}{{\`i}}1 {î}{{\^i}}1 {ï}{{\"i}}1
+      {ó}{{\'o}}1 {ò}{{\`o}}1 {ô}{{\^o}}1 {õ}{{\~o}}1 {ö}{{\"o}}1
+      {ú}{{\'u}}1 {ù}{{\`u}}1 {û}{{\^u}}1 {ü}{{\"u}}1
+      {ç}{{\c c}}1 {ñ}{{\~n}}1
+      {Á}{{\'A}}1 {À}{{\`A}}1 {Â}{{\^A}}1 {Ã}{{\~A}}1 {Ä}{{\"A}}1
+      {É}{{\'E}}1 {Ê}{{\^E}}1 {Í}{{\'I}}1
+      {Ó}{{\'O}}1 {Ô}{{\^O}}1 {Õ}{{\~O}}1
+      {Ú}{{\'U}}1 {Ü}{{\"U}}1 {Ç}{{\c C}}1
+      {º}{{\textordmasculine}}1 {ª}{{\textordfeminine}}1
+      % simbolos matematicos e gregos
+      {→}{{$\rightarrow$}}1 {←}{{$\leftarrow$}}1
+      {≈}{{$\approx$}}1 {≤}{{$\leq$}}1 {≥}{{$\geq$}}1 {≠}{{$\neq$}}1
+      {×}{{$\times$}}1 {−}{{$-$}}1 {·}{{$\cdot$}}1 {…}{{$\dots$}}1
+      {°}{{$^\circ$}}1 {²}{{$^2$}}1 {³}{{$^3$}}1
+      {µ}{{$\mu$}}1 {§}{{\S}}1
+      {α}{{$\alpha$}}1 {β}{{$\beta$}}1 {Δ}{{$\Delta$}}1 {θ}{{$\theta$}}1
+      {λ}{{$\lambda$}}1 {μ}{{$\mu$}}1 {π}{{$\pi$}}1 {σ}{{$\sigma$}}1
+      {τ}{{$\tau$}}1 {φ}{{$\varphi$}}1 {ω}{{$\omega$}}1
+      % O basicstyle das listagens nao e monoespacado, entao "--" viraria uma
+      % ligadura de meia-risca: `conan install --build` sairia como `-build`.
+      % Esta regra mantem os dois hifens separados.
+      {--}{{-{}-}}2
+      % travessoes e desenho de caixa (separadores em ASCII-art)
+      {—}{{---}}1 {–}{{--}}1
+      {─}{{\rule[0.35ex]{0.5em}{0.4pt}}}1
+      {│}{{\rule[-0.3ex]{0.4pt}{1.4ex}}}1
+      {└}{{`}}1 {├}{{|}}1
+      % vereditos (sim/nao/atencao) -- herdados das tabelas dos README
+      {✓}{{\ding{51}}}1 {✗}{{\ding{55}}}1 {⚠}{{\textbf{!}}}1
+      {↔}{{$\leftrightarrow$}}1 {∞}{{$\infty$}}1 {∈}{{$\in$}}1
+      % numeros circulados usados para enumerar passos no codigo
+      {①}{{\circnum{1}}}1 {②}{{\circnum{2}}}1 {③}{{\circnum{3}}}1
+      {④}{{\circnum{4}}}1 {⑤}{{\circnum{5}}}1 {⑥}{{\circnum{6}}}1
+      {⑦}{{\circnum{7}}}1 {⑧}{{\circnum{8}}}1 {⑨}{{\circnum{9}}}1
+}
+
+\lstdefinestyle{bt}{
+    style=btchars,
+    keywordstyle=\color{codekw}\bfseries,
+    commentstyle=\color{codecomment}\itshape,
+    stringstyle=\color{codecomment},
+    breaklines=true, frame=single, framesep=4pt,
+    showstringspaces=false, captionpos=b, tabsize=2,
+    xleftmargin=0.075\textwidth,
+    xrightmargin=0.075\textwidth
+}
+
+\tolerance=3000
+\emergencystretch=3em
+
+% =============================================================================
+%  Caracteres UTF-8 fora do repertorio T1
+%  O pdflatex nao conhece estes caracteres nativamente; sem os mapeamentos
+%  abaixo cada ocorrencia vira um erro ("Unicode character not set up") e o
+%  latexmk aborta antes de resolver sumario e referencias cruzadas.
+%  Eles aparecem sobretudo em comentarios dentro de blocos lstlisting.
+%  Para usar um caractere novo, acrescente uma linha aqui.
+% =============================================================================
+\usepackage{newunicodechar}
+\usepackage{textcomp}
+% Alguns destes caracteres ja tem um significado padrao valido apenas em modo
+% texto; redefini-los e intencional, entao o aviso correspondente e silenciado.
+\WarningFilter{newunicodechar}{Redefining Unicode character}
+
+% Numeros circulados usados para enumerar passos dentro do codigo
+\newcommand{\circnum}[1]{\raisebox{0.15ex}{\textcircled{\scriptsize #1}}}
+\newunicodechar{①}{\circnum{1}}
+\newunicodechar{②}{\circnum{2}}
+\newunicodechar{③}{\circnum{3}}
+\newunicodechar{④}{\circnum{4}}
+\newunicodechar{⑤}{\circnum{5}}
+\newunicodechar{⑥}{\circnum{6}}
+\newunicodechar{⑦}{\circnum{7}}
+\newunicodechar{⑧}{\circnum{8}}
+\newunicodechar{⑨}{\circnum{9}}
+
+% Desenho de caixa (separadores em ASCII-art dentro das listagens)
+\newunicodechar{─}{\rule[0.35ex]{0.5em}{0.4pt}}
+\newunicodechar{│}{\rule[-0.3ex]{0.4pt}{1.4ex}}
+\newunicodechar{└}{\textnormal{`}}
+\newunicodechar{├}{\textnormal{|}}
+
+% Vereditos (sim/nao/atencao). O pifont da os dois primeiros; o terceiro nao
+% tem glifo no repertorio T1 e vira uma exclamacao em negrito.
+\usepackage{pifont}
+\newunicodechar{✓}{\ding{51}}
+\newunicodechar{✗}{\ding{55}}
+\newunicodechar{⚠}{\textbf{!}}
+
+% Simbolos matematicos e gregos
+\newunicodechar{→}{\ensuremath{\rightarrow}}
+\newunicodechar{↔}{\ensuremath{\leftrightarrow}}
+\newunicodechar{∞}{\ensuremath{\infty}}
+\newunicodechar{∈}{\ensuremath{\in}}
+\newunicodechar{←}{\ensuremath{\leftarrow}}
+\newunicodechar{≈}{\ensuremath{\approx}}
+\newunicodechar{≤}{\ensuremath{\leq}}
+\newunicodechar{≥}{\ensuremath{\geq}}
+\newunicodechar{≠}{\ensuremath{\neq}}
+\newunicodechar{×}{\ensuremath{\times}}
+\newunicodechar{−}{\ensuremath{-}}
+\newunicodechar{·}{\ensuremath{\cdot}}
+% Grau e expoentes: \ensuremath para funcionarem tambem dentro de $...$
+% (o significado padrao, \textdegree, e invalido em modo matematico)
+\newunicodechar{°}{\ensuremath{^\circ}}
+\newunicodechar{²}{\ensuremath{^2}}
+\newunicodechar{³}{\ensuremath{^3}}
+\newunicodechar{…}{\ensuremath{\dots}}
+\newunicodechar{α}{\ensuremath{\alpha}}
+\newunicodechar{β}{\ensuremath{\beta}}
+\newunicodechar{Δ}{\ensuremath{\Delta}}
+\newunicodechar{θ}{\ensuremath{\theta}}
+\newunicodechar{λ}{\ensuremath{\lambda}}
+\newunicodechar{μ}{\ensuremath{\mu}}
+% U+00B5 MICRO SIGN -- visualmente identico ao mu grego, e o que os
+% programas do repositorio imprimem ao escrever microssegundos.
+\newunicodechar{µ}{\ensuremath{\mu}}
+\newunicodechar{§}{\S}
+\newunicodechar{π}{\ensuremath{\pi}}
+\newunicodechar{σ}{\ensuremath{\sigma}}
+\newunicodechar{τ}{\ensuremath{\tau}}
+\newunicodechar{φ}{\ensuremath{\varphi}}
+\newunicodechar{ω}{\ensuremath{\omega}}
+
+% =============================================================================
+%  Caixas de destaque (tcolorbox)
+%
+%  Quatro ambientes, cada um com um papel fixo. A regra de uso e estrita:
+%
+%    regra{titulo}      -- uma norma de escrita de C++ que o desenvolvedor
+%                          deve seguir
+%    armadilha{titulo}  -- um comportamento real da linguagem ou da biblioteca
+%                          que contraria a expectativa razoavel e que o
+%                          compilador nao denuncia (conversao silenciosa, move
+%                          suprimido, UB, default surpreendente)
+%    porque{titulo}     -- a motivacao de uma decisao de projeto
+%    aviso              -- declaracao preliminar sobre a producao do documento;
+%                          titulo fixo, sem argumento, de uso unico (abre a
+%                          pagina 1, no topo de chapters/01-introducao.tex)
+%
+%  Fora o aviso unico, nada que nao se encaixe num daqueles tres papeis deve
+%  virar caixa -- e `aviso` nao deve ser reaproveitado. Transcricoes
+%  literais do fonte continuam sendo lstlisting; o que as identifica e a
+%  legenda, que traz o caminho do arquivo dentro de src/ (convencao descrita
+%  na Secao das convencoes e conferida por scripts/check-fontes.py).
+% =============================================================================
+\usepackage[most]{tcolorbox}
+
+\definecolor{boxregra}{RGB}{0,39,76}       % MASA-Blue
+\definecolor{boxarmadilha}{RGB}{150,40,20}
+\definecolor{boxporque}{RGB}{14,90,60}
+\definecolor{boxfonte}{RGB}{90,90,90}
+
+\newtcolorbox{regra}[1][]{
+    enhanced, breakable, colback=boxregra!4, colframe=boxregra,
+    coltitle=white, fonttitle=\bfseries\small, title={Regra --- #1},
+    boxrule=0.6pt, left=6pt, right=6pt, top=5pt, bottom=5pt,
+    toprule=2pt, sharp corners=downhill}
+
+\newtcolorbox{armadilha}[1][]{
+    enhanced, breakable, colback=boxarmadilha!4, colframe=boxarmadilha,
+    coltitle=white, fonttitle=\bfseries\small, title={Armadilha --- #1},
+    boxrule=0.6pt, left=6pt, right=6pt, top=5pt, bottom=5pt,
+    toprule=2pt, sharp corners=downhill}
+
+\newtcolorbox{porque}[1][]{
+    enhanced, breakable, colback=boxporque!4, colframe=boxporque,
+    coltitle=white, fonttitle=\bfseries\small, title={Por que --- #1},
+    boxrule=0.6pt, left=6pt, right=6pt, top=5pt, bottom=5pt,
+    toprule=2pt, sharp corners=downhill}
+
+\newtcolorbox{aviso}{
+    enhanced, breakable, colback=boxfonte!4, colframe=boxfonte,
+    coltitle=white, fonttitle=\bfseries\small, title={Aviso},
+    boxrule=0.6pt, left=6pt, right=6pt, top=5pt, bottom=5pt,
+    toprule=2pt, sharp corners=downhill}
+
+% =============================================================================
+%  Glossario
+%
+%  Usa \makenoidxglossaries (resolucao em LaTeX puro), e nao o programa externo
+%  `makeglossaries`: assim o `make` continua sendo um latexmk e nada mais.
+% =============================================================================
+\usepackage[nopostdot,nonumberlist,toc,acronym]{glossaries}
+\makenoidxglossaries
+\input{assets/glossario.tex}
+
+% =============================================================================
+%  Indice remissivo de classes e portas
+%
+%  \classe{std::vector}     imprime \texttt{std::vector} e indexa
+%  \cabecalho{memory}       imprime \texttt{<memory>} e indexa sob "cabecalhos"
+%  \projeto{value_semantics} imprime \texttt{src/value\_semantics/} e indexa
+%                            sob "subprojetos"
+%  Os tres sao apenas atalhos: nada impede escrever \texttt{} direto quando a
+%  ocorrencia nao merece entrada no indice.
+% =============================================================================
+% Regras horizontais de qualidade tipografica para as tabelas de referencia
+\usepackage{booktabs}
+
+\usepackage{makeidx}
+\makeindex
+
+\newcommand{\classe}[1]{\texttt{#1}\index{#1@\texttt{#1}}}
+\newcommand{\cabecalho}[1]{\texttt{<#1>}\index{cabeçalhos!#1@\texttt{<#1>}}}
+\newcommand{\projeto}[1]{\texttt{src/#1/}\index{subprojetos!#1@\texttt{#1}}}
+
+% =============================================================================
+%  Diagramas em TikZ
+%
+%  Todas as figuras deste manual sao TikZ escrito a mao dentro do proprio
+%  capitulo: nao ha PNG, nao ha pipeline de renderizacao externa e nao ha
+%  dependencia de navegador para regerar uma figura. Editar o desenho e editar
+%  o .tex ao lado do texto que ele ilustra.
+% =============================================================================
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,backgrounds,calc,shapes.geometric,
+                shapes.multipart,decorations.pathreplacing,matrix}
+
+% Estilos comuns aos diagramas do manual.
+\tikzset{
+    caixa/.style     = {draw=boxregra, fill=boxregra!6, rounded corners=2pt,
+                        align=center, inner sep=4pt, font=\footnotesize},
+    caixaforte/.style= {draw=boxregra, fill=boxregra!18, rounded corners=2pt,
+                        align=center, inner sep=4pt, font=\footnotesize\bfseries},
+    caixafraca/.style= {draw=gray!60, fill=gray!8, rounded corners=2pt,
+                        align=center, inner sep=4pt, font=\footnotesize},
+    caixaok/.style   = {draw=boxporque, fill=boxporque!8, rounded corners=2pt,
+                        align=center, inner sep=4pt, font=\footnotesize},
+    caixarisco/.style= {draw=boxarmadilha, fill=boxarmadilha!8, rounded corners=2pt,
+                        align=center, inner sep=4pt, font=\footnotesize},
+    folha/.style     = {draw=boxregra, fill=white, rounded corners=6pt,
+                        align=center, inner sep=4pt, font=\footnotesize},
+    seta/.style      = {-{Stealth[length=2mm]}, draw=boxregra!80},
+    setafraca/.style = {-{Stealth[length=2mm]}, draw=gray!70, dashed},
+    setaok/.style    = {-{Stealth[length=2mm]}, draw=boxporque!85},
+    setarisco/.style = {-{Stealth[length=2mm]}, draw=boxarmadilha!85},
+    rotulo/.style    = {font=\scriptsize\itshape, inner sep=1pt},
+    aresta/.style    = {draw=boxregra!70},
+}
+
+% =============================================================================
+%  hyperref -- SEMPRE por ultimo (redefine comandos de referencia).
+%  Da sumario clicavel e painel de marcadores no visualizador, o que torna a
+%  pre-visualizacao local navegavel. `hidelinks` mantem a aparencia impressa
+%  (sem molduras nem cores); troque por colorlinks=true se preferir links
+%  coloridos na tela.
+% =============================================================================
+\usepackage{hyperref}
+\hypersetup{
+    hidelinks,
+    bookmarksnumbered = true,
+    bookmarksopen     = true,
+    pdftitle          = {\mytitle},
+    pdfauthor         = {\myauthors},
+}
+
+% cleveref DEPOIS de hyperref: referencias que ja trazem o nome do objeto,
+% de modo que \cref{sec:modelo-de-nos} imprime "Secao III" sem repeticao
+% manual do rotulo em cada chamada.
+% Sem opcao de idioma: o documento nao carrega babel, entao os nomes vem das
+% declaracoes \crefname abaixo.
+\usepackage{cleveref}
+
+% O documento nao carrega babel, entao os rotulos automaticos vem em ingles
+% ("Figure 5", "Table 2", "Contents"). Traduzi-los na mao e a unica opcao --
+% carregar babel[brazil] aqui quebraria o template MASA, que fixa fontes e
+% espacamentos supondo o padrao.
+\renewcommand{\figurename}{Figura}
+\renewcommand{\tablename}{Tabela}
+\renewcommand{\contentsname}{Sumário}
+\renewcommand{\listfigurename}{Lista de figuras}
+\renewcommand{\listtablename}{Lista de tabelas}
+\renewcommand{\lstlistingname}{Listagem}
+\renewcommand{\lstlistlistingname}{Lista de listagens}
+
+\crefname{section}{Seção}{Seções}
+\Crefname{section}{Seção}{Seções}
+\crefname{figure}{Figura}{Figuras}
+\Crefname{figure}{Figura}{Figuras}
+\crefname{table}{Tabela}{Tabelas}
+\Crefname{table}{Tabela}{Tabelas}
+\crefname{equation}{Equação}{Equações}
+\Crefname{equation}{Equação}{Equações}
+\crefname{lstlisting}{Listagem}{Listagens}
+\Crefname{lstlisting}{Listagem}{Listagens}
+
+% Diretorio de busca de imagens. O manual nao usa \includegraphics no corpo
+% (as figuras sao TikZ), mas a capa do template MASA carrega os PDF de
+% assets/, entao o caminho precisa continuar resolvendo.
+\graphicspath{%
+  {figures/}%
+  {assets/}%
+}

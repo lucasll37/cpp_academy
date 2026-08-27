@@ -1,0 +1,12 @@
+# =============================================================================
+#  src/modules/.gitignore — artefatos gerados pelo Makefile deste subprojeto
+#
+#  ⚠ Padrões num .gitignore são relativos AO DIRETÓRIO DO PRÓPRIO .gitignore.
+#    Uma versão anterior deste arquivo escrevia `src/modules/modules_demo`, o
+#    que casava com `src/modules/src/modules/modules_demo` — caminho que não
+#    existe. Resultado: o binário de 41 KB ficou versionado no Git.
+#    Confira qualquer padrão com:  git check-ignore -v <arquivo>
+# =============================================================================
+gcm.cache/
+*.o
+modules_demo

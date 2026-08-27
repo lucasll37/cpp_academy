@@ -1,0 +1,1180 @@
+% =============================================================================
+%  Apêndice: trilhas por objetivo e estado de cobertura
+% =============================================================================
+
+% =============================================================================
+\section{Apêndice: trilhas, cobertura e o que falta}
+\label{sec:trilhas}
+% =============================================================================
+
+Os onze capítulos anteriores seguem uma ordem única, a da trilha completa. Este
+apêndice serve a quem não vai percorrê-la inteira: reúne as trilhas curtas por
+objetivo, o mapa de pré-requisitos que permite montar a sua, e o estado de
+cobertura da linguagem --- o que já existe, o que ficou de fora e por quê.
+
+Ele termina, porém, com a parte que mais rendeu conhecimento e que não estava
+prevista quando o relatório começou: o que aconteceu quando todos os alvos do
+repositório passaram a ser construídos ao mesmo tempo. A resposta ocupa a
+\cref{sec:apodrece}, e é, de longe, o material mais didático deste apêndice.
+
+\begin{aviso}
+Os números deste apêndice são os do estado atual do repositório, e mudaram desde
+a primeira redação: são \textbf{57 subprojetos} declarados em
+\texttt{src/meson.build} (mais dois com sistema de \emph{build} próprio),
+\textbf{98 binários} instalados em \texttt{dist/bin}, \textbf{6 alvos de teste}
+registrados no \texttt{meson test} e \textbf{zero avisos} sob
+\texttt{-Wall -Wextra -Wpedantic}. Onde este texto diverge de uma edição
+anterior, vale este.
+\end{aviso}
+
+% =============================================================================
+\subsection{Atalhos por objetivo}
+\label{sec:atalhos}
+% =============================================================================
+
+Quem já sabe C++ e quer algo específico não precisa passar por tudo. As trilhas
+da \cref{tab:atalhos} são as do \texttt{README.md} da raiz, traduzidas para as
+seções deste relatório e ampliadas com os subprojetos acrescentados depois da
+primeira redação.
+
+\begin{table}[htbp]
+\centering
+\caption{Sete trilhas mínimas, por objetivo. Entre parênteses, a seção
+         correspondente deste relatório; os subprojetos marcados com $\dagger$
+         entraram no repositório depois dos capítulos e ainda não têm seção
+         própria --- o material deles está no \texttt{README.md} de cada um e,
+         resumido, na \cref{sec:medicoes-novas}.}
+\label{tab:atalhos}
+\footnotesize
+\begin{tabular}{@{}lp{0.58\textwidth}@{}}
+\toprule
+\textbf{Objetivo} & \textbf{Trilha mínima} \\
+\midrule
+passar em entrevista de C++ &
+    \texttt{casts} $\rightarrow$ \texttt{value\_semantics} $\rightarrow$
+    \texttt{smart-pointers} $\rightarrow$ \texttt{oop} $\rightarrow$
+    \texttt{errors} $\rightarrow$ \texttt{stl} $\rightarrow$
+    \texttt{templates} $\rightarrow$ \texttt{concurrency} $\rightarrow$
+    \texttt{layout}$\dagger$ $\rightarrow$ \texttt{linkage}$\dagger$
+    (\ref{sec:casts}, \ref{sec:value-semantics}, \ref{sec:smart-pointers},
+     \ref{sec:oop}, \ref{sec:errors}, \ref{sec:stl}, \ref{sec:templates},
+     \ref{sec:concurrency}) \\[4pt]
+escrever \emph{backend} ou serviço &
+    \texttt{casts} $\rightarrow$ \texttt{smart-pointers} $\rightarrow$
+    \texttt{errors} $\rightarrow$ \texttt{stl} $\rightarrow$ \texttt{solid}
+    $\rightarrow$ \texttt{concurrency} $\rightarrow$ \texttt{coroutines}
+    $\rightarrow$ \texttt{network} $\rightarrow$ \texttt{http-client}
+    $\rightarrow$ \texttt{database} $\rightarrow$ \texttt{testing}$\dagger$
+    (\ref{sec:casts}, \ref{sec:smart-pointers}, \ref{sec:errors},
+     \ref{sec:stl}, \ref{sec:solid}, \ref{sec:concurrency},
+     \ref{sec:coroutines}, \ref{sec:network}, \ref{sec:http-client},
+     \ref{sec:database}) \\[4pt]
+jogos e simulação &
+    \texttt{value\_semantics} $\rightarrow$ \texttt{stl} $\rightarrow$
+    \texttt{memory} $\rightarrow$ \texttt{layout}$\dagger$ $\rightarrow$
+    \texttt{performance}$\dagger$ $\rightarrow$ \texttt{ecs} $\rightarrow$
+    \texttt{collision} $\rightarrow$ \texttt{sfml\_bullet} $\rightarrow$
+    \texttt{sfml\_bullet2}
+    (\ref{sec:value-semantics}, \ref{sec:stl}, \ref{sec:memory},
+     \ref{sec:ecs}, \ref{sec:collision}, \ref{sec:sfml-bullet},
+     \ref{sec:sfml-bullet2}) \\[4pt]
+desempenho e otimização &
+    \texttt{value\_semantics} $\rightarrow$ \texttt{stl} $\rightarrow$
+    \texttt{memory} $\rightarrow$ \texttt{performance}$\dagger$ $\rightarrow$
+    \texttt{layout}$\dagger$ $\rightarrow$ \texttt{type\_erasure}$\dagger$
+    $\rightarrow$ \texttt{concurrency} $\rightarrow$
+    \texttt{concurrency2}$\dagger$ $\rightarrow$ \texttt{inline\_asm}
+    $\rightarrow$ \texttt{outline\_asm} $\rightarrow$ \texttt{asm\_course}
+    (\ref{sec:value-semantics}, \ref{sec:stl}, \ref{sec:memory},
+     \ref{sec:concurrency}, \ref{sec:inline-asm}, \ref{sec:outline-asm},
+     \ref{sec:asm-course}) \\[4pt]
+arquitetura e \emph{code review} &
+    \texttt{oop} $\rightarrow$ \texttt{solid} $\rightarrow$
+    \texttt{design-of-pattern} $\rightarrow$ \texttt{type\_erasure}$\dagger$
+    $\rightarrow$ \texttt{ecs} $\rightarrow$ \texttt{plugin\_registry}
+    (\ref{sec:oop}, \ref{sec:solid}, \ref{sec:patterns}, \ref{sec:ecs},
+     \ref{sec:plugin-registry}) \\[4pt]
+só o C++20/23 que falta &
+    \texttt{ranges} $\rightarrow$ \texttt{concepts} $\rightarrow$
+    \texttt{coroutines} $\rightarrow$ \texttt{vocabulary\_types} $\rightarrow$
+    \texttt{compile\_time} $\rightarrow$ \texttt{operators} $\rightarrow$
+    \texttt{lambdas} $\rightarrow$ \texttt{strings}$\dagger$ $\rightarrow$
+    \texttt{chrono}$\dagger$ $\rightarrow$ \texttt{bits}$\dagger$
+    $\rightarrow$ \texttt{cpp23}$\dagger$ $\rightarrow$
+    \texttt{modules}$\dagger$
+    (\ref{sec:ranges}, \ref{sec:concepts}, \ref{sec:coroutines},
+     \ref{sec:vocabulary}, \ref{sec:compile-time}, \ref{sec:operators},
+     \ref{sec:lambdas}) \\[4pt]
+\emph{build}, testes e qualidade &
+    \texttt{meson} $\rightarrow$ \texttt{cmake}$\dagger$ $\rightarrow$
+    \texttt{testing}$\dagger$ $\rightarrow$
+    \texttt{undefined\_behavior}$\dagger$ $\rightarrow$
+    \texttt{linkage}$\dagger$ $\rightarrow$ \texttt{doxygen}
+    (\ref{sec:meson}, \ref{sec:doxygen}) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{regra}[nenhuma trilha curta dispensa \texttt{value\_semantics}]
+Quatro das sete trilhas começam por ele, e as demais o supõem. A razão é a da
+\cref{fig:dependencias}: saber quando o compilador copia e quando move é
+pré-requisito para entender o custo de um container, o comportamento de um
+\emph{sink parameter}, a diferença entre \texttt{emplace} e \texttt{push}, e por
+que um destrutor vazio deixa o programa mais lento. É o único subprojeto que
+não dá para pular.
+\end{regra}
+
+% =============================================================================
+\subsection{Onde cada conceito aparece}
+\label{sec:mapa-conceitos}
+% =============================================================================
+
+Vários conceitos reaparecem em capítulos distantes uns dos outros, e o índice
+remissivo os localiza por nome. A \cref{tab:recorrentes} faz o inverso: agrupa
+os que reaparecem \emph{com papéis diferentes}, porque é aí que a leitura salteada
+perde o fio.
+
+\begin{table}[htbp]
+\centering
+\caption{Sete ideias que atravessam o relatório.}
+\label{tab:recorrentes}
+\footnotesize
+\begin{tabular}{@{}lp{0.60\textwidth}@{}}
+\toprule
+\textbf{Ideia} & \textbf{Onde aparece, e em que papel} \\
+\midrule
+\gls{raii} &
+    \S\ref{sec:smart-pointers} como idioma; \S\ref{sec:errors} como o que torna
+    exceções seguras; \S\ref{sec:file-io} no \texttt{RedirectGuard};
+    \S\ref{sec:lambdas} como \emph{scope guard}; \S\ref{sec:concurrency} no
+    \texttt{ThreadGuard}; \S\ref{sec:plugin-registry} no \emph{deleter} do
+    \texttt{.so}; \S\ref{sec:aws} para ordenar destruições;
+    \S\ref{sec:embed-python} no \texttt{PythonGuard}; e, fora do relatório, no
+    \texttt{jthread} de \texttt{concurrency2} \\[3pt]
+\gls{typeerasure} &
+    \S\ref{sec:vocabulary} em \texttt{std::any}; \S\ref{sec:lambdas} em
+    \texttt{std::function}; \S\ref{sec:ecs} no \texttt{ComponentStore}; e
+    reconstruído do zero, com o \emph{small buffer} medido, em
+    \texttt{type\_erasure} \\[3pt]
+invólucro sobre API estrangeira &
+    \S\ref{sec:http-client} (libcurl); \S\ref{sec:database} (SOCI);
+    \S\ref{sec:sfml-bullet} (Bullet); \S\ref{sec:flight-simulator} (JSBSim);
+    \S\ref{sec:yolo} (ONNX Runtime); \S\ref{sec:rabbitmq} (AMQP-CPP) \\[3pt]
+erro como valor &
+    \S\ref{sec:errors} em \texttt{expected} e \texttt{error\_code};
+    \S\ref{sec:file-io} na API dupla do \texttt{<filesystem>};
+    \S\ref{sec:network} na de Asio; \S\ref{sec:aws} em \texttt{Outcome} \\[3pt]
+\emph{fold expression} &
+    \S\ref{sec:templates} como forma; \S\ref{sec:vocabulary} para percorrer
+    \texttt{tuple}; \S\ref{sec:ecs} na \emph{query} \\[3pt]
+\gls{crtp} &
+    \S\ref{sec:oop} como \emph{mixin} sem \emph{vtable};
+    \S\ref{sec:templates} por extenso; \S\ref{sec:ranges} em
+    \texttt{view\_interface}; e como linha de base do \emph{benchmark} de
+    despacho em \texttt{type\_erasure} \\[3pt]
+inversão de dependência &
+    \S\ref{sec:solid} como princípio; \S\ref{sec:database} em persistência;
+    \S\ref{sec:plugin-registry} até o \texttt{dlopen};
+    \S\ref{sec:meson} em \texttt{declare\_dependency} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =============================================================================
+\subsection{Estado de cobertura da linguagem}
+\label{sec:cobertura}
+% =============================================================================
+
+O \texttt{src/ROADMAP.md} rastreia o que a linguagem oferece contra o que o
+repositório já ensina. O repositório nasceu forte em ecossistema --- SFML,
+Bullet, Qt, ONNX, JSBSim, AWS, Asio --- e fraco em linguagem, e o
+\texttt{ROADMAP} existiu para fechar essa assimetria. \textbf{Ele está
+fechado}: os cinco \emph{tiers} foram concluídos, e as tabelas a seguir
+registram o estado final.
+
+\begin{table}[htbp]
+\centering
+\caption{Tier~1 --- fundamentos da linguagem. Todos concluídos.}
+\label{tab:tier1}
+\footnotesize
+\begin{tabular}{@{}llc@{}}
+\toprule
+\textbf{Subprojeto} & \textbf{Seção} & \textbf{Estado} \\
+\midrule
+\texttt{syntax}          & \ref{sec:syntax}           & pronto \\
+\texttt{casts}           & \ref{sec:casts}            & pronto \\
+\texttt{smart-pointers}  & \ref{sec:smart-pointers}   & pronto \\
+\texttt{templates}       & \ref{sec:templates}        & pronto \\
+\texttt{concepts}        & \ref{sec:concepts}         & pronto \\
+\texttt{memory}          & \ref{sec:memory}           & pronto \\
+\texttt{value\_semantics}& \ref{sec:value-semantics}  & pronto \\
+\texttt{oop}             & \ref{sec:oop}              & pronto \\
+\texttt{errors}          & \ref{sec:errors}           & pronto \\
+\texttt{stl}             & \ref{sec:stl}              & pronto \\
+\texttt{ranges}          & \ref{sec:ranges}           & pronto \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Tier~2 --- C++ moderno. Os cinco subprojetos que a edição anterior
+         listava como ``planejados'' foram concluídos, e um sexto
+         (\texttt{file\_io}) migrou para cá.}
+\label{tab:tier2}
+\footnotesize
+\begin{tabular}{@{}llc@{}}
+\toprule
+\textbf{Subprojeto} & \textbf{Tópicos} & \textbf{Estado} \\
+\midrule
+\texttt{coroutines}        & \emph{generator}, \emph{task}, internos, Asio & pronto (\ref{sec:coroutines}) \\
+\texttt{vocabulary\_types} & \texttt{optional}, \texttt{variant}, \texttt{any}, \texttt{tuple}, \texttt{span} & pronto (\ref{sec:vocabulary}) \\
+\texttt{compile\_time}     & \texttt{constexpr}, \texttt{consteval}, NTTP & pronto (\ref{sec:compile-time}) \\
+\texttt{operators}         & sobrecarga, \texttt{<=>}, conversão, UDL & pronto (\ref{sec:operators}) \\
+\texttt{lambdas}           & capturas, genéricas, \texttt{std::function} & pronto (\ref{sec:lambdas}) \\
+\texttt{file\_io}          & \emph{streams}, \texttt{sstream}, \texttt{<filesystem>} & pronto (\ref{sec:file-io}) \\
+\texttt{strings}           & SSO medido, \texttt{string\_view}, \texttt{format}, \texttt{<charconv>}, \texttt{regex} & pronto \\
+\texttt{chrono}            & durações, relógios, calendário, como cronometrar & pronto \\
+\texttt{bits}              & operadores e UB, \texttt{<bit>}, \texttt{bitset}, \emph{endianness} & pronto \\
+\texttt{cpp23}             & inventário \emph{medido} por \emph{feature-test macros} & pronto \\
+\texttt{modules}           & módulos nomeados e 2 \emph{bugs} do GCC 13 & pronto (fora do Meson) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Tiers 3 a 5 --- concorrência, modelo de objeto e arquitetura. Nenhuma
+         linha continua ``planejada''.}
+\label{tab:tier345}
+\footnotesize
+\begin{tabular}{@{}llc@{}}
+\toprule
+\textbf{Subprojeto} & \textbf{Tópicos} & \textbf{Estado} \\
+\midrule
+\texttt{concurrency}       & \emph{threads}, \emph{mutex}, \emph{future}, atômicos & pronto (\ref{sec:concurrency}) \\
+\texttt{mandelbrot}\,/\,\texttt{\_openmp} & paralelismo por \emph{tiles}, OpenMP & pronto (\ref{sec:mandelbrot}) \\
+\texttt{concurrency2}      & \texttt{jthread}, \texttt{latch}, \texttt{barrier}, modelo de memória, \emph{lock-free} & pronto \\
+\midrule
+\texttt{type\_erasure}     & \texttt{std::function} por dentro, virtual \emph{vs} CRTP \emph{vs} \texttt{variant} & pronto \\
+\texttt{layout}            & alinhamento, \emph{padding}, categorias de tipo, \texttt{[[no\_unique\_address]]} & pronto \\
+\texttt{linkage}           & ODR medida com 2 TUs, \texttt{extern "C"}, \gls{abi}, pimpl & pronto \\
+\texttt{testing}           & GoogleTest, \emph{fixtures}, \texttt{TEST\_P}, \emph{gmock}, \emph{death tests} & pronto \\
+\texttt{undefined\_behavior}& ASan/UBSan/TSan medidos, \emph{strict aliasing}, \emph{dangling} & pronto \\
+\texttt{performance}       & localidade de cache, \emph{false sharing}, AoS \emph{vs} SoA & pronto \\
+\texttt{meson}             & o sistema de \emph{build} do repositório & pronto (\ref{sec:meson}) \\
+\texttt{cmake}             & CMake moderno, Protobuf, OpenMP, CTest & pronto (\emph{build} próprio) \\
+\midrule
+\texttt{solid}             & os cinco princípios & pronto (\ref{sec:solid}) \\
+\texttt{design-of-pattern} & os 23 padrões GoF mais \emph{null object} & pronto (\ref{sec:patterns}) \\
+\texttt{ecs}, \texttt{plugin\_registry} & composição e \emph{plugins} & pronto (\ref{sec:ecs}, \ref{sec:plugin-registry}) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Os padrões GoF: o catálogo fechou}
+
+A edição anterior deste apêndice registrava onze padrões implementados e doze
+pendentes. Os doze foram escritos. O catálogo do \emph{Gang of Four} está
+completo --- 23 padrões --- mais o \emph{null object}, que não é do livro
+original mas resolve o mesmo tipo de problema.
+
+\begin{table}[htbp]
+\centering
+\caption{Os 24 padrões implementados em \texttt{src/design-of-pattern/}, um
+         diretório e um binário cada. Os treze acrescentados na última fase
+         estão em \textbf{negrito}.}
+\label{tab:gof-pendentes}
+\footnotesize
+\begin{tabular}{@{}lp{0.62\textwidth}@{}}
+\toprule
+\textbf{Categoria} & \textbf{Padrões} \\
+\midrule
+criacionais     & \emph{factory}, \emph{singleton}, \textbf{\emph{abstract factory}},
+                  \textbf{\emph{builder}}, \textbf{\emph{prototype}} \\
+estruturais     & \emph{decorator}, \textbf{\emph{adapter}}, \textbf{\emph{bridge}},
+                  \textbf{\emph{composite}}, \textbf{\emph{facade}},
+                  \textbf{\emph{flyweight}}, \textbf{\emph{proxy}} \\
+comportamentais & \emph{chain}, \emph{command}, \emph{interpreter}, \emph{iterator},
+                  \emph{observer}, \emph{state}, \emph{strategy},
+                  \textbf{\emph{mediator}}, \textbf{\emph{memento}},
+                  \textbf{\emph{template method}}, \textbf{\emph{visitor}} \\
+fora do GoF     & \emph{null object} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{regra}[todo padrão novo traz uma seção ``versão moderna'']
+É exigência do \texttt{ROADMAP}, e a razão está na
+\cref{tab:padroes-modernos}: vários padrões do GoF descrevem soluções para
+limitações de linguagens dos anos 1990, e em C++20 têm realização mais simples.
+O \emph{visitor} --- que era o mais evidente dos pendentes --- foi escrito
+exatamente assim: a hierarquia clássica com \texttt{accept()} de um lado, e do
+outro \texttt{std::visit} sobre \texttt{std::variant}
+(\cref{sec:vocabulary}), sem hierarquia, sem \texttt{accept()} e com
+exaustividade verificada pelo compilador. A seção também diz \emph{quando não
+substitui}: \texttt{variant} fecha o conjunto de tipos, e um sistema de
+\emph{plugins} precisa que ele fique aberto.
+\end{regra}
+
+% =============================================================================
+\subsection{Os limites do \emph{toolchain}}
+\label{sec:limites}
+% =============================================================================
+
+Parte do que não foi escrito não é falta de tempo: é falta de compilador. O
+GCC 13.3 implementa quase todo o C++20 e boa parte do C++23, e a
+\cref{tab:toolchain} do \cref{sec:ambiente} registra o que falta. Dois casos têm
+consequência direta sobre o conteúdo deste relatório:
+
+\begin{itemize}
+    \item \textbf{\emph{Deducing this}} (P0847, GCC 14) --- é a forma limpa de
+          escrever \emph{lambda} recursiva e de deduplicar \emph{overloads}
+          \texttt{const}/não-\texttt{const}. Na sua ausência, o
+          \cref{sec:lambdas} recomenda o \emph{y-combinator}.
+    \item \textbf{Módulos} --- o subprojeto \texttt{modules} foi escrito, e o
+          objetivo declarado incluía documentar \emph{as limitações}: o suporte
+          do GCC 13 a \texttt{-fmodules-ts} é parcial, \texttt{import std;} não
+          existe, e a ordem de compilação passa a ser obrigatória. É por causa
+          dessa última que \texttt{modules} tem \texttt{Makefile} próprio e não
+          entra no Meson --- e isso é conteúdo, não preguiça.
+\end{itemize}
+
+\subsubsection{Dívida estrutural: as quatro pendências foram quitadas}
+
+O \texttt{ROADMAP} mantinha uma lista de dívidas do próprio repositório. A
+edição anterior deste apêndice registrava duas ainda abertas. Nenhuma continua.
+
+\begin{table}[htbp]
+\centering
+\caption{As quatro dívidas estruturais e como cada uma foi encerrada. Duas
+         delas mudaram de estado \emph{depois} da primeira redação deste
+         relatório.}
+\label{tab:dividas}
+\footnotesize
+\begin{tabular}{@{}p{0.34\textwidth}p{0.58\textwidth}@{}}
+\toprule
+\textbf{Dívida} & \textbf{Desfecho} \\
+\midrule
+\texttt{src/meson.build} com quase tudo comentado &
+    \textbf{quitada por inteiro.} Não há mais nenhum \texttt{subdir()}
+    comentado. Os 57 subprojetos são construídos, inclusive os ``pesados''
+    (Qt, SFML, Bullet, ONNX, JSBSim, AWS, RabbitMQ, SOCI) \\[3pt]
+\texttt{solid/\{dip,isp,lsp,ocp\}/meson.build} com 0 bytes &
+    quitada: os quatro princípios foram implementados e habilitados \\[3pt]
+\texttt{srp/demo\_pipeline.hpp} não compilava &
+    quitada: faltava \texttt{\#include <algorithm>}; ver \cref{sec:apodrece} \\[3pt]
+\texttt{tests/meson.build} 100\% comentado &
+    \textbf{quitada por remoção.} O \texttt{tests/} da raiz nunca construiu
+    nada e foi apagado, junto com o \texttt{sandbox/} da raiz. Os testes
+    passaram a morar onde são \emph{ensinados} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A última linha merece explicação, porque a decisão é contraintuitiva: a dívida
+``os testes não rodam'' foi resolvida \emph{apagando} o diretório de testes.
+
+\begin{porque}[por que apagar o \texttt{tests/} foi melhor do que consertá-lo]
+Um diretório \texttt{tests/} na raiz, inteiramente comentado, não é uma dívida
+de código: é uma \emph{mentira de estrutura}. Ele anuncia ao leitor que existe
+uma suíte de testes, e não existe nenhuma. Pior: ele cria um lugar plausível
+para o teste seguinte, longe do código que o teste exercita.
+
+Reativá-lo custaria escrever testes genéricos sobre subprojetos didáticos que
+não têm invariantes interessantes. Apagá-lo custou nada, e liberou a pergunta
+certa --- \emph{onde} deveriam morar os testes. A resposta é: junto do assunto.
+Os testes de verdade estão hoje em \projeto{testing} (5 alvos, 41 casos), em
+\projeto{meson} (1 alvo, para ensinar a função \texttt{test()} do Meson) e em
+\projeto{cmake} (CTest, 11 casos, para ensinar o equivalente do outro lado).
+São 6 alvos no \texttt{meson test}, todos passando.
+\end{porque}
+
+\begin{lstlisting}[style=bt, language=bash, caption={Os seis alvos registrados,
+    obtidos com \texttt{meson test -C build --list}. Os cinco primeiros vêm de
+    \texttt{src/testing/}; o sexto é o exemplo mínimo de
+    \texttt{src/meson/}, que existe para ensinar a própria função
+    \texttt{test()}.}]
+academy / testing_basico
+academy / testing_fixture
+academy / testing_parametrizado
+academy / testing_death
+academy / testing_mock
+academy:guia / saudacao
+\end{lstlisting}
+
+% =============================================================================
+\subsection{Um alvo que não é construído é um alvo que apodrece}
+\label{sec:apodrece}
+% =============================================================================
+
+Esta é a seção mais importante do apêndice, e ela existe porque o repositório
+mudou de política no meio do caminho.
+
+\begin{porque}[o problema, antes da solução]
+Um \textbf{alvo} (\emph{target}), no vocabulário de um sistema de \emph{build},
+é uma unidade que o sistema sabe produzir: um executável, uma biblioteca, um
+arquivo gerado. Em Meson, cada \texttt{executable()} é um alvo, e cada linha
+\texttt{subdir('x')} manda o Meson ler o \texttt{meson.build} de \texttt{x/} e
+registrar os alvos que ele declara.
+
+Comentar uma linha \texttt{subdir()} é, portanto, uma operação inocente na
+aparência: nada é apagado, o código continua no repositório, e o \emph{build}
+fica mais rápido. Era exatamente esse o raciocínio da edição anterior deste
+relatório, que defendia manter comentados os alvos com dependências pesadas ---
+um \texttt{make configure} que baixe e compile o AWS SDK inteiro afastaria quem
+só quer estudar semântica de valor.
+
+O raciocínio parece sólido. O problema é que ele ignora uma assimetria: o custo
+de manter o alvo comentado é pago mais tarde, por outra pessoa, e cresce com o
+tempo. Enquanto isso, \textbf{o compilador é a única coisa que lê o código
+inteiro, todo dia, sem se cansar}. Retirar um arquivo do alcance dele é retirar
+a única verificação automática que aquele arquivo tinha.
+\end{porque}
+
+A política mudou para a oposta: \emph{todos} os 57 subprojetos são construídos,
+sem exceção, e não há nenhum \texttt{subdir()} comentado em
+\texttt{src/meson.build}. Não é uma questão de gosto. Habilitar os alvos que
+estavam desligados revelou \textbf{nove defeitos reais}, e nenhum deles foi
+encontrado por leitura --- todos apareceram no minuto seguinte a ligar o alvo.
+
+\begin{table}[htbp]
+\centering
+\caption{Os nove defeitos que estavam latentes em alvos desabilitados. Seis
+         apareceram na compilação; três só na execução --- e são os três mais
+         instrutivos.}
+\label{tab:seis-bugs}
+\footnotesize
+\begin{tabular}{@{}p{0.30\textwidth}p{0.24\textwidth}p{0.36\textwidth}@{}}
+\toprule
+\textbf{Onde} & \textbf{Quando apareceu} & \textbf{O que era} \\
+\midrule
+\texttt{solid/srp/demo\_pipeline.hpp} & compilação & faltava \texttt{\#include <algorithm>} \\
+\texttt{concepts/demo\_constraints.hpp} & compilação & faltava \texttt{\#include <array>} \\
+\texttt{file\_io/demo\_sstream.hpp} & compilação & faltava \texttt{\#include <cmath>} \\
+\texttt{aws/s3/main.cpp} & compilação & faltava \texttt{\#include <fmt/core.h>} \\
+\midrule
+\texttt{asm\_course/07\_calling\_asm.s} & \textbf{execução} & \gls{abi}: alinhamento de 16 bytes quebrado antes do \texttt{call} \\
+\texttt{asm\_course/10\_string\_ops.cpp} & \textbf{execução} & \emph{asm} \emph{inline}: operandos de entrada que a instrução modifica \\
+\midrule
+\texttt{http-client/main.cpp} & compilação & \emph{multi-character constant} de 3 bytes, e subtração sem sinal \\
+\texttt{rabbitmq/} & compilação & a API do AMQP-CPP mudou de forma \\
+\texttt{database/main.cpp} & 2ª execução & o demo não era idempotente \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Os quatro cabeçalhos que não se bastavam}
+
+Quatro dos nove problemas são o mesmo problema, e é o mais barato de evitar: um
+cabeçalho que usa \texttt{std::sort} sem incluir \texttt{<algorithm>}.
+
+A pergunta natural é: como isso compilava antes? Compilava porque \emph{outro}
+cabeçalho, incluído antes, arrastava \texttt{<algorithm>} junto. A inclusão em
+C++ é textual --- o pré-processador cola o conteúdo do arquivo no ponto do
+\texttt{\#include} --- e por isso um cabeçalho herda tudo o que os anteriores
+trouxeram. O \projeto{linkage} mede esse arrasto (\cref{tab:include-custo}): um
+\texttt{\#include <ranges>} traz 44 mil linhas.
+
+\begin{armadilha}[um cabeçalho que compila hoje pode não compilar amanhã]
+A regra é a da \textbf{autossuficiência}: todo cabeçalho deve compilar sozinho,
+sem depender da ordem em que foi incluído. Se ele usa \texttt{std::sort},
+inclui \texttt{<algorithm>}; se usa \texttt{std::array}, inclui
+\texttt{<array>}. Não importa que ``já venha junto'': a próxima versão da
+libstdc++ pode reorganizar os cabeçalhos internos e cortar o arrasto, e o
+código quebra sem que ninguém tenha tocado nele.
+
+A verificação é mecânica: crie um \texttt{.cpp} que só faz
+\texttt{\#include "seu\_cabecalho.hpp"} e compile. É o que o alvo desabilitado
+deixava de fazer.
+\end{armadilha}
+
+O caso do \texttt{aws/s3/main.cpp} é o mais eloquente, porque não é um
+cabeçalho interno: é o \texttt{main} de um programa. Ele chamava
+\texttt{fmt::print} e não incluía \texttt{<fmt/core.h>}. Esse arquivo não
+compilava desde que foi escrito, e ninguém sabia --- porque nunca foi
+compilado.
+
+\subsubsection{O alinhamento de 16 bytes, e o crash que aparece no lugar errado}
+
+Este é o mais didático de todos, e precisa de contexto.
+
+\begin{porque}[o que é uma ABI, e por que ela exige alinhamento]
+Uma \gls{abi} é o contrato binário entre funções compiladas separadamente:
+em que registrador vai cada argumento, onde volta o resultado, quem preserva o
+quê. Em Linux x86-64 esse contrato é a \emph{System V AMD64 ABI}
+(\cref{tab:sysv}).
+
+Uma das cláusulas dela parece arbitrária e não é: \textbf{no instante em que a
+instrução \texttt{call} é executada, o registrador \texttt{RSP} (o topo da
+pilha) precisa ser múltiplo de 16}. A razão é o SSE. As instruções de carga
+alinhada --- \texttt{movaps}, \texttt{movdqa} --- exigem endereço múltiplo de
+16 e disparam falha de proteção se receberem outro. O compilador emite essas
+instruções à vontade em \texttt{-O2}, colocando variáveis locais em posições
+calculadas \emph{a partir de} \texttt{RSP}. Se \texttt{RSP} entrou torto, todo
+esse cálculo sai torto.
+
+Como o \texttt{call} empilha 8 bytes (o endereço de retorno), a consequência
+aritmética é a que confunde todo mundo: ao \emph{entrar} numa função,
+\texttt{RSP} $\equiv$ 8 (mod 16), não 0.
+\end{porque}
+
+A função \texttt{asm\_apply} do \texttt{asm\_course} fazia a conta ao
+contrário. O comentário original dizia ``após \texttt{push rbp}, \texttt{rsp}
+está desalinhado por 8'' --- e ele estava, na verdade, alinhado.
+
+\begin{lstlisting}[style=bt, language=bash, caption={A aritmética do
+    alinhamento, resumo de
+    \texttt{src/asm\_course/07\_calling\_asm.s}. Cada linha mostra o resto de
+    \texttt{RSP} módulo 16 depois da instrução.}]
+entrada de asm_apply ....... RSP = 8   (mod 16)
+pushq %rbp ................. RSP = 0   <- JA ALINHADO
+subq  $8, %rsp ............. RSP = 8   <- e aqui QUEBRAMOS
+call  *%rax ................ o destino recebe RSP = 0   x ERRADO
+\end{lstlisting}
+
+A correção foi apagar uma linha: o \texttt{pushq \%rbp} já tinha alinhado, e o
+\texttt{subq \$8, \%rsp} desalinhava de novo.
+
+O que torna o caso valioso não é o erro --- é o \emph{sintoma}. O programa não
+estourava em \texttt{asm\_apply}. Estourava dentro do \texttt{fmt}, quatro
+quadros de pilha acima, numa função de formatação que estava perfeita.
+
+\begin{lstlisting}[style=bt, language=bash, caption={A pilha do \texttt{SIGSEGV},
+    como o depurador a mostrava. O culpado é o quadro \texttt{\#5}; o crash
+    acontece no \texttt{\#0}.}]
+#0  fmt::v10::detail::vformat_to<char>
+#4  cpp_callback  (07_calling_conv.cpp:52)
+#5  asm_apply     (07_calling_asm.s:124)   <- o culpado
+\end{lstlisting}
+
+\begin{armadilha}[o bug de alinhamento estoura em quem \emph{usa} SSE, nunca em quem o quebrou]
+Quem desalinha a pilha não sofre nada: ele não faz cargas alinhadas. Quem sofre
+é a primeira função, na cadeia abaixo dele, que o compilador tenha otimizado
+com SSE --- tipicamente uma biblioteca de terceiros, madura e testada, que
+parece a última suspeita possível.
+
+O reflexo correto ao ver um \texttt{SIGSEGV} dentro de biblioteca conhecida, num
+programa que tem \emph{assembly} escrito à mão ou \texttt{alignas} customizado,
+é subir a pilha até o primeiro quadro que \emph{você} escreveu e conferir o
+\texttt{RSP}. É a marca registrada desta classe de erro.
+\end{armadilha}
+
+\subsubsection{A promessa que o \texttt{rep movsb} não cumpre}
+
+O segundo \emph{bug} de execução está em \texttt{10\_string\_ops.cpp}, e ensina
+a parte do \emph{asm} \emph{inline} do GCC que mais gera erro silencioso.
+
+\begin{porque}[por que \emph{asm inline} tem uma lista de operandos]
+O GCC não entende o \emph{assembly} que você escreve entre aspas. Ele o trata
+como texto opaco e o cola na saída. Para que o resto da função continue
+correto, você precisa \emph{declarar} o que aquele texto faz: quais
+registradores lê (entradas), quais escreve (saídas) e quais destrói sem que o
+resultado interesse (\emph{clobbers}).
+
+Essa declaração é uma promessa. Um operando listado como \emph{entrada} promete
+que o bloco \textbf{não altera} aquele registrador --- e o GCC acredita: ele
+pode manter outro valor vivo ali e reutilizá-lo depois do bloco.
+\end{porque}
+
+A instrução \texttt{rep movsb} copia \texttt{RCX} bytes de \texttt{[RSI]} para
+\texttt{[RDI]}. Ao fazê-lo, ela \emph{modifica os três}: incrementa
+\texttt{RDI} e \texttt{RSI} a cada byte e zera \texttt{RCX}. A versão antiga
+declarava os três como entrada pura.
+
+\begin{lstlisting}[style=bt, language=C++, caption={A versão errada e a
+    correta, de \texttt{src/asm\_course/10\_string\_ops.cpp}. A diferença é o
+    \texttt{+} --- que promove os operandos a leitura-e-escrita.}]
+// ERRADO: promete que o bloco nao altera RDI/RSI/RCX -- e ele altera.
+asm volatile (
+    "std\n\t"
+    "rep movsb\n\t"
+    "cld"
+    :                                          // sem saidas
+    : "D"(&rev[7]), "S"(&arr[7]), "c"((size_t)8)
+    : "memory"
+);
+
+// CORRETO: "+" declara leitura-e-escrita, e exige variaveis de apoio.
+void*       d = &rev[7];
+const void* o = &arr[7];
+std::size_t n = 8;
+
+asm volatile (
+    "std\n\t"                 // DF=1: decrementar apos cada byte
+    "rep movsb\n\t"
+    "cld"                     // OBRIGATORIO: restaura DF=0 antes de retornar
+    : "+D"(d), "+S"(o), "+c"(n)   // <- o bloco os ALTERA
+    :
+    : "memory"
+);
+\end{lstlisting}
+
+O sintoma, de novo, apareceu no lugar errado: o \texttt{SIGSEGV} caía no laço
+de verificação \emph{seguinte} ao bloco de \emph{assembly}, porque era ali que
+o ponteiro corrompido era finalmente desreferenciado.
+
+\begin{armadilha}[não se pode ``resolver'' listando o registrador no \emph{clobber}]
+A tentação é declarar \texttt{RDI}, \texttt{RSI} e \texttt{RCX} na lista de
+\emph{clobbers}. O GCC recusa: um registrador não pode ser simultaneamente
+operando e \emph{clobber}. A saída é a do exemplo (\texttt{"+D"}, \texttt{"+S"},
+\texttt{"+c"}) ou a forma equivalente com operandos amarrados,
+\texttt{"=D"(d), "=S"(s), "=c"(c)} nas saídas e \texttt{"0"}, \texttt{"1"},
+\texttt{"2"} nas entradas.
+
+Repare também no \texttt{cld} final: o \texttt{std} anterior ligou o sinalizador
+de direção, e a ABI exige que ele volte desligado antes do \texttt{ret}. Deixar
+\texttt{DF=1} corrompe a próxima função da biblioteca padrão que usar
+\texttt{rep}.
+\end{armadilha}
+
+\subsubsection{Três bytes que não cabem num \texttt{char}}
+
+O \texttt{http-client} guardava dois erros na mesma função de dez linhas, e os
+dois são erros de C++ puro --- nada a ver com \emph{assembly} ou com libcurl.
+
+\begin{lstlisting}[style=bt, language=C++, caption={Os dois \emph{bugs} de
+    \texttt{print\_separator}, em \texttt{src/http-client/main.cpp}, e a
+    correção.}]
+// ERRADO, duas vezes:
+std::string linha(40 - title.size(), '-');   // com U+2500 no lugar do '-'
+
+//  (a) '─' ocupa TRES bytes em UTF-8. Entre aspas SIMPLES vira uma
+//      "multi-character constant": um int de valor definido pela
+//      implementacao, truncado para char. O GCC avisa com -Wmultichar e
+//      -Woverflow: "changes value from 14849152 to -128".
+//  (b) title.size() e std::size_t, SEM sinal. Com um titulo de 41 caracteres,
+//      40 - 41 nao e -1: e 18446744073709551615.
+
+// CORRETO:
+const std::size_t largura = title.size() < 40 ? 40 - title.size() : 0;
+std::string linha;
+linha.reserve(largura * 3);                       // 3 bytes por caractere
+for (std::size_t i = 0; i < largura; ++i) linha += "─";  // string, nao char
+\end{lstlisting}
+
+Vale destrinchar os dois, porque cada um é uma família inteira de erros.
+
+\textbf{(a) Um \texttt{char} guarda um byte.} A codificação UTF-8 representa
+caracteres fora do ASCII em dois a quatro bytes. O traço horizontal U+2500 usa
+três. Entre aspas simples, o compilador não vê ``um caractere'': vê uma
+sequência de três bytes numa constante de caractere, o que o padrão chama de
+\emph{multi-character constant} --- de tipo \texttt{int} e valor definido pela
+implementação. Convertida para \texttt{char}, ela é truncada. O construtor
+\classe{std::string} recebia então um byte inválido, repetido 40 vezes.
+
+\textbf{(b) \texttt{size()} não tem sinal.} \texttt{std::size\_t} é um inteiro
+sem sinal, e a subtração de inteiros sem sinal não produz negativo: produz o
+resultado módulo $2^{64}$. Com um título de 41 caracteres, \texttt{40 - 41} vale
+$1{,}8 \times 10^{19}$, e o \classe{std::string} tentaria alocar 16 exabytes. O
+\projeto{bits} desenvolve a família toda --- promoção inteira, conversão e as
+comparações mistas.
+
+\begin{armadilha}[a aritmética sem sinal dá a volta em silêncio]
+Nem \texttt{-Wall} nem \texttt{-Wextra} avisam sobre \texttt{a - b} quando os
+dois são \texttt{unsigned}: a operação é perfeitamente definida, e é justamente
+por isso que é perigosa. O compilador só avisa quando há \emph{mistura} de sinal
+numa comparação (\texttt{-Wsign-compare}).
+
+A defesa é estrutural: teste antes de subtrair, como na correção acima, ou
+converta explicitamente para um tipo com sinal largo o bastante. Nunca escreva
+\texttt{tamanho - 1} sem ter certeza de que \texttt{tamanho > 0}.
+\end{armadilha}
+
+\subsubsection{A API que mudou de forma embaixo do código}
+
+O \texttt{rabbitmq} não compilava porque a biblioteca AMQP-CPP mudou onde moram
+os eventos de ciclo de vida da conexão. A versão antiga do código fazia:
+
+\begin{lstlisting}[style=bt, language=C++, caption={A forma que não existe mais,
+    e a mensagem de erro que ela produz --- resumo de
+    \texttt{src/rabbitmq/handler.hpp}.}]
+AMQP::TcpConnection connection(&handler, address);
+connection.onConnected([]{ /* ... */ });          // nao existe
+connection.onError([](const char* m){ /* ... */ });
+
+// error: cannot convert 'main()::<lambda()>' to 'AMQP::TcpState*'
+\end{lstlisting}
+
+A mensagem é enganosa porque \texttt{TcpConnection} \emph{tem} métodos com esses
+nomes --- só que são outra coisa, parte da máquina de estados interna. Os
+eventos do ciclo de vida pertencem ao \textbf{handler}, e a forma de reagir a
+eles é herdar e sobrescrever métodos virtuais.
+
+\begin{porque}[dois estilos de \emph{callback}, e como escolher]
+A confusão vale por si, porque a escolha entre os dois estilos aparece em toda
+API assíncrona:
+
+\begin{itemize}
+    \item \textbf{Lambda por evento} --- um \emph{callback} independente por
+          chamada. É o certo quando cada operação tem o seu próprio retorno:
+          \texttt{declareQueue()} devolve um objeto ao qual se encadeia
+          \texttt{.onSuccess(...)} e \texttt{.onError(...)}, e duas chamadas
+          simultâneas têm dois retornos distintos.
+    \item \textbf{Herança com métodos virtuais} --- um conjunto \emph{fixo e
+          conhecido} de eventos, todos pertencentes ao mesmo objeto e
+          compartilhando estado. É o certo para o ciclo de vida da conexão: os
+          seis estágios são sempre os mesmos, e o \emph{handler} precisa
+          lembrar entre eles se já houve erro.
+\end{itemize}
+
+O \cref{sec:oop} descreve o mecanismo da \gls{vtable}; o \projeto{type\_erasure}
+descreve quando \classe{std::function} substitui a herança --- e quando não
+substitui. Este é um caso de ``não substitui''.
+\end{porque}
+
+O conserto trouxe de brinde a documentação dos seis estágios, que é a origem da
+maioria dos relatos de ``publiquei e a mensagem sumiu'':
+
+\begin{lstlisting}[style=bt, language=bash, caption={Os seis estágios do ciclo
+    de vida de uma conexão AMQP, resumo de
+    \texttt{src/rabbitmq/handler.hpp}. Publicar antes do \texttt{onReady} é
+    cedo demais.}]
+onAttached    objeto construido -- ainda nao ha socket
+onConnected   TCP estabelecido -- ainda NAO ha login AMQP
+onReady       handshake AMQP concluido   <- so AQUI da para publicar
+onError       erro fatal; a conexao vai fechar
+onClosed      fechamento limpo
+onDetached    pode destruir o objeto
+\end{lstlisting}
+
+\subsubsection{O demo que só funcionava na primeira execução}
+
+O último deles não é um erro de linguagem: é um erro de exemplo. O
+\texttt{database} criava a tabela com \texttt{CREATE TABLE IF NOT EXISTS} e
+inseria produtos. A coluna \texttt{name} tem restrição \texttt{UNIQUE}. Na
+segunda execução, as linhas da primeira ainda estavam lá, e o primeiro
+\texttt{INSERT} batia na restrição:
+
+\begin{lstlisting}[style=bt, language=bash, caption={O erro da segunda execução
+    de \texttt{./dist/bin/database}, antes da correção. O programa saía com
+    código~1.}]
+DbError: UNIQUE constraint failed: products.name
+\end{lstlisting}
+
+A correção foi acrescentar \texttt{DROP TABLE IF EXISTS products} antes do
+\texttt{CREATE}, tornando o demo \textbf{idempotente} --- rodável quantas vezes
+se queira, sempre com o mesmo resultado.
+
+\begin{armadilha}[o \texttt{DROP} é correto no demo e desastroso em produção]
+Apagar a tabela apaga os dados. Em um sistema real, o instrumento equivalente é
+a \textbf{migração}: uma sequência versionada de scripts \texttt{ALTER TABLE},
+cada um aplicado uma única vez e registrado numa tabela de controle
+(\emph{Flyway}, \emph{Liquibase}, \emph{Alembic} fazem isso).
+
+A distinção é a mesma de um teste: um demo, como um teste, precisa criar o
+próprio estado inicial e não depender do que a execução anterior deixou. Um
+exemplo didático que só funciona na primeira execução é um exemplo quebrado.
+\end{armadilha}
+
+\subsubsection{A lição, enunciada}
+
+\begin{regra}[um alvo que não é construído é um alvo que apodrece]
+Quatro \texttt{\#include} ausentes, dois \emph{bugs} de \gls{abi}, dois erros
+de C++ puro na mesma função de dez linhas, uma API obsoleta e um demo não
+idempotente --- nove defeitos, todos residindo
+exatamente nos alvos que ninguém compilava. Nenhum deles foi encontrado por
+revisão de código; todos apareceram no minuto seguinte a habilitar o alvo.
+
+O critério para desabilitar um alvo, portanto, nunca pode ser ``ele dá
+trabalho''. Se um subprojeto não pode ser construído, o problema é dele:
+conserte-o ou apague-o. Não o esconda atrás de um \texttt{\#}.
+
+E se o custo do \emph{build} completo é mesmo alto, a solução é
+\textbf{opcional, não comentada}: uma \texttt{option()} do Meson com valor
+padrão, um \emph{job} de CI que constrói tudo, uma etapa noturna. O que não
+pode existir é código que \emph{nenhuma} configuração compila.
+\end{regra}
+
+\begin{aviso}
+Dois subprojetos continuam fora do \texttt{src/meson.build}, e por razão
+oposta: \projeto{modules} usa \texttt{Makefile} próprio porque módulos do C++20
+no GCC 13 exigem \texttt{-fmodules-ts} e ordem manual de compilação, e
+\projeto{cmake} usa CMake porque o assunto \emph{é} o CMake. Os dois documentam
+a escolha no próprio \texttt{README.md}, e os dois \emph{são} construídos ---
+por outro sistema. A regra não é ``tudo no Meson''; é ``tudo em algum
+\emph{build} que alguém roda''.
+\end{aviso}
+
+% =============================================================================
+\subsection{O que os subprojetos novos mediram}
+\label{sec:medicoes-novas}
+% =============================================================================
+
+Os treze subprojetos acrescentados depois dos capítulos deste relatório
+compartilham um método: \textbf{toda alegação de custo ou de comportamento sai
+de um contador ou de um \texttt{<chrono>} no próprio demo}. Quando a medição
+contradiz o texto, o texto é reescrito --- não a medição. Esta seção resume o
+que eles mediram, porque vários resultados mudam o que se deve escrever.
+
+\begin{table}[htbp]
+\centering
+\caption{Medições dos subprojetos novos, todas obtidas na máquina descrita na
+         \cref{tab:ambiente} (GCC 13.3). Os valores absolutos variam com o
+         processador; a ordem de grandeza entre os casos comparados, não.}
+\label{tab:medidas-novas}
+\footnotesize
+\begin{tabular}{@{}llr@{}}
+\toprule
+\textbf{Subprojeto} & \textbf{Experimento} & \textbf{Resultado} \\
+\midrule
+\texttt{performance} & matriz $2048^2$, por linha \emph{vs} por coluna & 35$\times$ \\
+\texttt{performance} & soma sequencial \emph{vs} aleatória (8\,M \texttt{int}) & 26$\times$ \\
+\texttt{performance} & \emph{false sharing}: mesma linha \emph{vs} \texttt{alignas(64)} & 11{,}7$\times$ \\
+\texttt{performance} & \classe{std::vector} \emph{vs} \classe{std::list} (2\,M) & 6{,}6$\times$ \\
+\midrule
+\texttt{layout}      & reordenar 4 membros da mesma \emph{struct} & 24 $\rightarrow$ 16 B \\
+\texttt{layout}      & \texttt{[[no\_unique\_address]]} num membro vazio & 16 $\rightarrow$ 8 B \\
+\texttt{layout}      & um \texttt{virtual \textasciitilde T()} que ninguém usa & +8 B/objeto \\
+\midrule
+\texttt{linkage}     & duas TUs incrementam \texttt{inline int} 10$\times$ cada & 20 / 20 \\
+\texttt{linkage}     & duas TUs incrementam \texttt{static int} 10$\times$ cada & 10 / 10 \\
+\midrule
+\texttt{type\_erasure} & \emph{small buffer} da \classe{std::function} & 16 B \emph{inline} \\
+\texttt{type\_erasure} & despacho sobre 200\,000 elementos (base: CRTP) & \texttt{variant} 1{,}0$\times$ \\
+\midrule
+\texttt{strings}     & \emph{string} de até 15 caracteres & 0 alocações \\
+\texttt{strings}     & extrair um campo: \texttt{from\_chars} \emph{vs} \classe{std::regex} & 0 \emph{vs} 133\,ms \\
+\midrule
+\texttt{concurrency2}& \texttt{seq\_cst} \emph{vs} \texttt{relaxed} sem contenção & 1{,}01$\times$ \\
+\texttt{concurrency2}& pilha \emph{lock-free} \emph{vs} \texttt{vector} sob \emph{mutex} & 2{,}7$\times$ \emph{pior} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{O custo de um \texttt{\#include}, medido}
+
+O \projeto{linkage} é o único subprojeto do repositório com múltiplas unidades
+de tradução, e não por capricho: o assunto é exatamente o que acontece quando o
+mesmo cabeçalho é compilado mais de uma vez.
+
+\begin{porque}[o que é uma unidade de tradução]
+O C++ não compila ``o projeto''. Ele compila \textbf{uma unidade de tradução
+por vez}, em total ignorância das outras. Uma unidade de tradução (TU) é um
+\texttt{.cpp} mais tudo o que os \texttt{\#include} dele trouxeram,
+recursivamente. Cada TU vira um \texttt{.o} com uma lista de símbolos
+\emph{definidos} e outra de símbolos \emph{necessários}; o \emph{linker} cola
+tudo no fim.
+
+Praticamente todo erro confuso de \emph{build} --- \texttt{undefined
+reference}, \texttt{multiple definition}, \texttt{undefined reference to
+vtable} --- é consequência direta desse modelo.
+\end{porque}
+
+\begin{table}[htbp]
+\centering
+\caption{Linhas produzidas pelo pré-processador, GCC 13.3 com
+         \texttt{-std=c++20}. Medido, não estimado: a primeira versão desta
+         tabela era chutada e cinco dos seis números estavam errados ---
+         \texttt{<cstddef>} por um fator de 4.}
+\label{tab:include-custo}
+\footnotesize
+\begin{tabular}{@{}lr@{}}
+\toprule
+\textbf{Inclui} & \textbf{Linhas} \\
+\midrule
+arquivo vazio        & 6 \\
+\texttt{<cstddef>}   & 253 \\
+\texttt{<vector>}    & 26.258 \\
+\texttt{<algorithm>} & 28.270 \\
+\texttt{<string>}    & 31.825 \\
+\texttt{<iostream>}  & 43.165 \\
+\texttt{<ranges>}    & 44.309 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Cada TU paga esse custo \emph{inteiro}, de novo. Um projeto com 100 arquivos
+\texttt{.cpp} que incluem \texttt{<string>} compila \texttt{<string>} cem vezes.
+É por isso que \emph{build} de C++ é lento --- e a medição é reprodutível em
+quatro linhas de \emph{shell}:
+
+\begin{lstlisting}[style=bt, language=bash, caption={O reprodutor da
+    \cref{tab:include-custo}, do \texttt{README.md} de \texttt{src/linkage/}.
+    Rode no seu \emph{toolchain}: os números serão outros.}]
+for h in cstddef vector string ranges; do
+  echo "#include <$h>" > /tmp/t.cpp
+  printf '%-12s %s\n' "$h" "$(g++ -std=c++20 -E /tmp/t.cpp | wc -l)"
+done
+\end{lstlisting}
+
+As saídas, em ordem de eficácia: \textbf{módulos} (C++20, \projeto{modules}),
+\textbf{declaração adiantada} no cabeçalho e \textbf{pimpl}. Cabeçalhos
+pré-compilados e \emph{unity builds} atacam o sintoma, não a causa.
+
+\subsubsection{O \texttt{static} em cabeçalho, medido com duas TUs}
+
+As duas linhas de \texttt{linkage} na \cref{tab:medidas-novas} são o
+experimento central do subprojeto, e o resultado é o que separa entender
+\emph{linkage} de decorar palavras-chave.
+
+Duas unidades de tradução idênticas incluem o mesmo cabeçalho e incrementam a
+mesma variável dez vezes cada. Se a variável é \texttt{inline int}, as duas
+somam no \emph{mesmo} objeto e o contador chega a 20 nas duas leituras. Se é
+\texttt{static int}, cada TU ganhou a \emph{sua} variável, e cada uma lê 10.
+
+\begin{armadilha}[o \emph{bug} do \texttt{static} em cabeçalho não dá erro]
+Ele compila, linka e funciona --- enquanto houver uma única TU incluindo o
+cabeçalho. Quebra no dia em que alguém acrescenta o segundo \texttt{.cpp}, e o
+sintoma (``o cache não persiste entre os módulos'') não aponta para o cabeçalho.
+
+É a classe de \emph{bug} mais cara desta seção, porque a distância entre a
+causa e o efeito é máxima. A palavra-chave certa em cabeçalho é
+\texttt{inline}; \texttt{static} em escopo de arquivo significa
+\emph{exatamente} ``uma cópia por TU''.
+\end{armadilha}
+
+\subsubsection{Os sanitizers, medidos em vez de citados}
+
+O \projeto{undefined\_behavior} tem dois alvos, e a distinção importa: o binário
+instalado \emph{narra} o assunto e não executa \gls{ub} nenhum; um segundo
+alvo, não instalado, contém doze casos de UB de propósito, um por argumento de
+linha de comando, para rodar sob \emph{sanitizer}.
+
+Nenhuma afirmação sobre o que os \emph{sanitizers} pegam foi copiada de
+documentação. A \cref{tab:matriz-ub} saiu de rodar esses doze casos, e três
+resultados contrariam o senso comum.
+
+\begin{table}[htbp]
+\centering
+\caption{Matriz de detecção, medida com
+         \texttt{-fsanitize=address,undefined} no GCC 13.3. Os três casos em
+         que o resultado surpreendeu estão em \textbf{negrito}.}
+\label{tab:matriz-ub}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Caso} & \textbf{\texttt{-O0}} & \textbf{\texttt{-O1}} \\
+\midrule
+\emph{heap overflow}      & ASan: \emph{buffer-overflow}       & idem \\
+índice de pilha           & UBSan: \emph{index out of bounds}  & idem \\
+\textbf{\emph{use-after-free}} & ASan: \emph{heap-use-after-free} & \textbf{nada} \\
+referência pendurada      & UBSan: \emph{null reference binding} & idem \\
+\emph{overflow} com sinal & UBSan: \emph{signed integer overflow} & idem \\
+deslocamento excessivo    & UBSan: \emph{shift exponent too large} & idem \\
+divisão por zero          & UBSan: \emph{division by zero}     & idem \\
+vazamento                 & LSan: \emph{detected memory leaks} & idem \\
+\textbf{\emph{strict aliasing}} & \textbf{nada}                & \textbf{nada} \\
+leitura de não inicializado & \textbf{nada}                    & \textbf{nada} \\
+\textbf{desalinhamento}   & \textbf{nada (GCC)}                & \textbf{nada (GCC)} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+As três surpresas:
+
+\begin{enumerate}
+    \item \textbf{O \emph{use-after-free} some com \texttt{-O1}.} O otimizador
+          elimina a leitura que o ASan instrumentaria. Rodar o \emph{sanitizer}
+          só na configuração otimizada dá falsa segurança; rodar só em
+          \texttt{-O0} dá falsa segurança sobre o binário que se entrega. A
+          resposta é rodar nas duas.
+    \item \textbf{Desalinhamento não é pego pelo GCC}, nem com
+          \texttt{-fsanitize=alignment} isolado. O \emph{clang} pega. Se
+          alinhamento importa no seu código --- e a \cref{sec:apodrece} mostra
+          o que acontece quando importa ---, esta checagem exige o outro
+          compilador.
+    \item \textbf{\emph{Strict aliasing} não é pego por nenhum dos dois.} É a
+          categoria de UB sem rede de proteção; a defesa é \texttt{std::bit\_cast}
+          e \texttt{-fno-strict-aliasing} onde não houver alternativa.
+\end{enumerate}
+
+\begin{armadilha}[\emph{sanitizer} é análise dinâmica: só vê o que rodou]
+Um \texttt{catch} que os testes nunca exercitam pode conter UB e passar limpo
+por qualquer \emph{sanitizer}. Por isso \emph{sanitizer} e cobertura formam um
+par: um mede o que rodou, o outro diz o que \emph{não} rodou.
+
+E no CI, \texttt{-fno-sanitize-recover=all} é obrigatório: sem ele o UBSan
+apenas imprime e continua, o processo termina com código~0, e o \emph{job} passa
+com o diagnóstico enterrado no log.
+\end{armadilha}
+
+\subsubsection{Quando a medição contrariou a expectativa}
+
+Esta é a parte que ensina método, e por isso está registrada em vez de
+silenciada. Doze vezes, ao longo dos subprojetos novos, o número contradisse o
+texto que já estava escrito. Nas doze, o texto foi reescrito.
+
+\begin{table}[htbp]
+\centering
+\caption{As contradições registradas no \texttt{src/ROADMAP.md}. Em todas, a
+         explicação do resultado inesperado era mais interessante que a
+         expectativa.}
+\label{tab:contradicoes}
+\footnotesize
+\begin{tabular}{@{}p{0.20\textwidth}p{0.32\textwidth}p{0.40\textwidth}@{}}
+\toprule
+\textbf{Onde} & \textbf{O que estava escrito} & \textbf{O que a medição mostrou} \\
+\midrule
+\texttt{performance} & o vetor ordenado é $\sim$3$\times$ mais rápido &
+    \textbf{1{,}0$\times$} em \texttt{-O1} ou acima --- o GCC gera \texttt{cmov} e
+    não há desvio para prever; o efeito só existe em \texttt{-O0} \\[3pt]
+\texttt{performance} & usando todos os campos, o AoS ganha &
+    \textbf{o SoA ganhou 1{,}6$\times$} --- \texttt{sizeof} da partícula é 40, e
+    $64/40 = 1$: a linha de cache carrega uma partícula só \\[3pt]
+\texttt{performance} & a razão de tempo acompanha a de bytes lidos &
+    bytes 10$\times$, tempo \textbf{1{,}5$\times$} --- o \emph{prefetcher} esconde
+    a diferença \\[3pt]
+\texttt{concurrency2} & \texttt{seq\_cst} é bem mais caro que \texttt{relaxed} &
+    \textbf{1{,}01$\times$} no x86-64 sem contenção --- a otimização ``que todo
+    mundo faz'' não pagou nada aqui, e pagaria num ARM \\[3pt]
+\texttt{linkage} & uma tabela de custo de \texttt{\#include} &
+    cinco dos seis números estavam errados; \texttt{<cstddef>} por um fator de 4 \\[3pt]
+\texttt{cpp23} & seis \emph{features} do C++23 ausentes no GCC 13 &
+    \textbf{as seis estão presentes} --- \texttt{stacktrace}, \texttt{views::zip},
+    \texttt{fold\_left}, \texttt{chunk}/\texttt{slide},
+    \texttt{move\_only\_function}, \texttt{spanstream} \\[3pt]
+\texttt{cmake} & OpenMP dá \emph{speedup} no SAXPY &
+    \textbf{0{,}32$\times$} na primeira versão --- a paralela saiu 3$\times$ mais
+    LENTA; faltava aquecer o \emph{pool} de \emph{threads} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Duas dessas linhas merecem destaque porque a lição não é sobre o resultado, e
+sim sobre o \emph{instrumento}.
+
+O caso do \texttt{cpp23} é o mais confortável de todos: as seis correções foram
+na direção de \textbf{subestimar} o que já estava disponível. Havia uma tabela
+de suporte escrita de memória, e ela era pessimista. A substituição foi
+mecânica: um demo que consulta as \emph{feature-test macros}
+(\texttt{\_\_cpp\_*} para a linguagem, \texttt{\_\_cpp\_lib\_*} vindas de
+\texttt{<version>} para a biblioteca) e imprime o inventário. A tabela do
+\texttt{ROADMAP} passou a ser gerada do que o programa imprime.
+
+O caso do \texttt{cmake} é o mais desconfortável, e passou por três versões
+antes de valer alguma coisa:
+
+\begin{lstlisting}[style=bt, language=bash, caption={As três versões do
+    \emph{benchmark} de OpenMP em \texttt{src/cmake/}, e o que cada erro
+    escondia. A terceira versão não tem ``um'' número --- e é isso que a torna
+    honesta.}]
+1a versao: speedup 0.32x   <- a paralela ficou 3x MAIS LENTA
+           causa: o pool de threads do OpenMP e criado na 1a regiao paralela;
+                  o custo da criacao entrou na medicao
+
+2a versao: speedup 1.03x   <- praticamente nenhum ganho
+           causa: o reset do vetor (80 MB) estava DENTRO da regiao cronometrada
+
+3a versao: 3.09x -> 1.20x  <- conforme os dados saem do cache
+           a QUEDA e a licao: o problema deixa de ser limitado por CPU e passa
+           a ser limitado por largura de banda de memoria
+\end{lstlisting}
+
+\begin{armadilha}[as cinco maneiras de mentir para si mesmo num \emph{benchmark}]
+O \projeto{chrono} e o \projeto{performance} catalogam as armadilhas que
+produziram os erros acima:
+
+\begin{enumerate}
+    \item \textbf{Medir o que o compilador apagou.} Um laço cujo resultado é
+          descartado é eliminado inteiro. Em \texttt{performance}, a razão
+          medida foi $\infty$. A defesa é um sumidouro
+          (\emph{sink}) que force o uso do valor.
+    \item \textbf{Medir a primeira execução.} Cache frio, \emph{pool} de
+          \emph{threads} inexistente, páginas ainda não mapeadas. Aqueça antes.
+    \item \textbf{Medir a preparação junto.} O \texttt{reset} de 80\,MB dentro
+          da região cronometrada, como acima.
+    \item \textbf{Medir uma vez.} Use a mediana de várias repetições; a média é
+          sensível ao pico que o escalonador do sistema operacional causou.
+    \item \textbf{Medir em \texttt{-O0}.} Um \emph{benchmark} sem otimização não
+          diz nada sobre o binário que se entrega. O \texttt{performance} é o
+          único subprojeto que \emph{fixa} \texttt{-O2 -g} no próprio
+          \texttt{meson.build}, exatamente por isso.
+\end{enumerate}
+\end{armadilha}
+
+\begin{armadilha}[\texttt{high\_resolution\_clock} não é o relógio de medir]
+Medição do \projeto{chrono} nesta \texttt{libstdc++}:
+
+\begin{center}\ttfamily high\_resolution\_clock::is\_steady = false\end{center}
+
+Ele \emph{é} o \texttt{system\_clock}. Um relógio não monotônico pode andar para
+trás quando o NTP ajusta a hora, e todo código que mede duração com ele está
+sujeito a resultado \textbf{negativo}. O relógio de medir intervalos é
+\texttt{std::chrono::steady\_clock}, sempre. O \texttt{system\_clock} serve para
+saber \emph{que horas são}, não \emph{quanto tempo passou}.
+\end{armadilha}
+
+\subsubsection{Três números de texto que mudam código}
+
+Por fim, o \projeto{strings} mede três coisas que aparecem em quase todo
+programa e que quase ninguém mediu.
+
+\begin{lstlisting}[style=bt, language=bash, caption={Saída dos demos de
+    \texttt{src/strings/}: o limite do \emph{small string optimization} e o
+    custo real de \texttt{std::regex}, ambos instrumentando
+    \texttt{operator new}.}]
+sizeof(std::string) = 32 bytes
+ 1 chars -> 0 alocacoes   <- cabe no SSO
+15 chars -> 0 alocacoes   <- cabe no SSO
+16 chars -> 1 alocacao
+
+200 chars, um a um, sem reserve  ->  4 alocacoes
+
+extrair um campo de log:
+  find + from_chars    ->    0 ms
+  std::regex           ->  133 ms      <- mesmo com a regex fora do laco
+\end{lstlisting}
+
+As três consequências práticas:
+
+\begin{itemize}
+    \item \textbf{Strings curtas são quase de graça.} Até 15 caracteres nesta
+          implementação, os bytes moram dentro do próprio objeto --- não evite
+          \classe{std::string} em nomes e chaves por medo de alocação.
+    \item \textbf{Mas o \gls{move} de uma string curta \emph{copia}.} Só é
+          $O(1)$ acima do limite do SSO. É um dos poucos lugares em que
+          ``mover é barato'' tem exceção.
+    \item \textbf{\classe{std::regex} é a última opção, não a primeira.} Duas
+          ordens de grandeza contra \texttt{find} mais \texttt{from\_chars},
+          \emph{mesmo} com o objeto de expressão regular construído fora do
+          laço. Para extrair um campo de posição conhecida, expressão regular é
+          a ferramenta errada.
+\end{itemize}
+
+% =============================================================================
+\subsection{Encerramento}
+% =============================================================================
+
+O relatório reuniu, numa ordem única, a teoria que cinquenta e sete
+subprojetos desenvolvem em separado. Vale terminar registrando o que essa
+reunião tornou visível --- e que nenhum \texttt{README} isolado deixava ver.
+
+O primeiro é a \textbf{recorrência dos mesmos poucos mecanismos}. RAII aparece em
+oito seções com oito nomes diferentes; \emph{type erasure} sustenta
+\texttt{std::function}, \texttt{std::any} e o ECS; o invólucro sobre API
+estrangeira reaparece seis vezes, com seis bibliotecas que não se conhecem. Um
+repertório pequeno explica um domínio grande.
+
+O segundo é que \textbf{quase toda decisão de projeto do C++ é uma troca
+explícita}, e o relatório é, em boa medida, um catálogo delas: \emph{views}
+custam fragilidade e pagam em passadas evitadas; \texttt{span} custa tempo de
+vida e paga em zero \emph{overhead}; CRTP custa a base comum e paga com
+\emph{inline}; \texttt{variant} custa extensão por tipo e paga com
+exaustividade. Não há escolha gratuita, e conhecer o preço é o que separa usar a
+linguagem de brigar com ela.
+
+O terceiro é o mais prático: \textbf{o compilador cala em quase tudo o que
+importa}. A \cref{tab:sintese-fundamentos} lista vinte erros que compilam sem
+aviso, e cada capítulo posterior acrescenta os seus. A defesa não é atenção ---
+é ferramenta: \texttt{warning\_level=3}, \emph{sanitizers},
+\texttt{-D\_GLIBCXX\_DEBUG}, \texttt{static\_assert}, \emph{concepts}, tipos
+fortes. Tudo o que transforma um erro de execução em erro de compilação paga por
+si mesmo na primeira vez que evita uma madrugada.
+
+O quarto é o motivo de o repositório existir na forma em que existe: as
+tabelas mais convincentes deste relatório não são argumentos, são \emph{saídas
+de programa}. O destrutor vazio que suprime os \emph{moves}, os 140$\times$ entre
+\texttt{vector} e \texttt{list}, os mil entre lançar e não lançar, os 3{,}5 entre
+\emph{template} e \texttt{std::function}, os 11{,}7 do \emph{false sharing}, os
+133\,ms de \texttt{std::regex} --- nenhum deles precisa ser acreditado. Basta
+compilar e rodar.
+
+E o quinto foi aprendido depois dos outros quatro, ao ligar os 57 alvos de uma
+vez: \textbf{a ferramenta mais barata de garantia de qualidade que existe é
+compilar o código}. Não estática, não formal, não paga --- apenas construir
+tudo, sempre, sem exceções escondidas atrás de um \texttt{\#}. Foram nove
+defeitos encontrados em uma tarde, três deles capazes de derrubar o processo,
+todos residindo pacientemente nos únicos arquivos que o compilador não estava
+lendo. Um alvo que não é construído é um alvo que apodrece --- e o único jeito
+de saber quanto ele já apodreceu é construí-lo.

@@ -1,0 +1,1893 @@
+% =============================================================================
+%  Design e arquitetura
+%  Cobre a Etapa 4 da trilha: solid, design-of-pattern, ecs, plugin_registry.
+% =============================================================================
+
+% =============================================================================
+\section{Design e arquitetura}
+\label{sec:design}
+% =============================================================================
+
+Os capítulos anteriores tratavam de \emph{o que a linguagem faz}. Este trata de
+\emph{como organizar o que se escreve com ela} --- e a mudança de assunto vem
+com uma mudança de natureza: nada aqui é verificável pelo compilador. Um
+programa que viola os cinco princípios SOLID compila, roda e passa nos testes.
+O preço é cobrado depois, na primeira mudança de requisito.
+
+A ordem interna é a da trilha, e ela tem uma lógica: \projeto{solid} estabelece
+os princípios; \projeto{design-of-pattern} mostra as soluções canônicas que os
+realizam; \projeto{ecs} apresenta o contraponto radical à herança; e
+\projeto{plugin\_registry} leva o último princípio --- inversão de dependência
+--- até o limite do sistema operacional.
+
+% =============================================================================
+\subsection{Os cinco princípios SOLID}
+\label{sec:solid}
+% =============================================================================
+
+O subprojeto \projeto{solid} implementa cada princípio duas vezes: uma versão
+que o \emph{viola} e uma que o \emph{cumpre}, lado a lado, executáveis. É a
+única forma honesta de discutir o assunto, porque a versão violada quase sempre
+é a mais curta --- e o custo dela não aparece até que alguém precise mudar algo.
+
+\subsubsection{SRP --- responsabilidade única}
+
+A definição popular ``uma classe, uma responsabilidade'' é vaga a ponto de ser
+inútil. A definição precisa de Robert Martin~\cite{martin2017} usa outra
+palavra:
+
+\begin{quote}
+\emph{``A module should be responsible to one, and only one, actor.''}
+\end{quote}
+
+\textbf{Ator} é um grupo de \emph{stakeholders} que pode exigir a mesma mudança.
+Se duas equipes diferentes podem pedir alterações na mesma classe, ela tem duas
+responsabilidades --- e a mudança pedida por uma vai quebrar o que a outra
+esperava.
+
+O exemplo canônico do livro, reproduzido no subprojeto, é uma classe
+\texttt{Employee} que serve a três atores:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/solid/srp/}: o acoplamento oculto.}]
+Employee serve a 3 atores:
+   calculatePay()  → COO / RH
+   reportHours()   → CFO (auditoria)
+   save()          → CTO / DBA
+
+   Risco: total_hours() compartilhado entre calculatePay() e reportHours()
+   Uma mudança pedida pelo COO afeta silenciosamente o relatório do CFO!
+\end{lstlisting}
+
+O perigo não é a classe ser grande. É o método privado \texttt{total\_hours()}
+ser \emph{compartilhado} entre dois atores que nunca conversaram: quando o COO
+pedir uma mudança na regra de horas, o relatório de auditoria do CFO muda
+junto, e ninguém será avisado.
+
+\begin{regra}[a heurística do ``e'']
+Se você precisa da conjunção ``e'' ou ``ou'' para descrever o que uma função
+faz, ela tem mais de uma responsabilidade. \texttt{process\_and\_print\_student}
+é o nome delatando o problema. O complemento natural para funções é a
+\emph{Command-Query Separation}: um \emph{command} muda estado e devolve
+\texttt{void}; uma \emph{query} lê estado e não tem efeito colateral. Um
+\texttt{int increment\_and\_get()} é os dois ao mesmo tempo.
+\end{regra}
+
+\begin{table}[htbp]
+\centering
+\caption{Sinais de violação de SRP, e o que cada um costuma indicar.}
+\label{tab:srp-sinais}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Sinal} & \textbf{Problema provável} \\
+\midrule
+classe com mais de 200--300 linhas                       & múltiplas responsabilidades \\
+nome genérico: \texttt{Manager}, \texttt{Helper}, \texttt{Utils} & \emph{god class} \\
+método com ``e'' ou ``ou'' na descrição                  & duas responsabilidades \\
+teste que precisa de 5 ou mais \emph{mocks}              & a classe faz demais \\
+mudar formato de e-mail quebra cálculo de salário        & acoplamento oculto \\
+classe inclui \texttt{<filesystem>}, \texttt{<regex>} \emph{e} \texttt{<curl.h>} & mistura de camadas \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{armadilha}[SRP também pode ser aplicado demais]
+Classes de uma linha, um \emph{getter} por classe, módulos tão pequenos que o
+custo de coordená-los supera o benefício --- todos são sintomas de
+sobre-aplicação. A regra de ouro é \textbf{coesão acima de granularidade}:
+agrupe o que muda junto, separe o que muda por razões diferentes.
+\end{armadilha}
+
+\subsubsection{OCP --- aberto para extensão, fechado para modificação}
+
+O sintoma de violação é sempre o mesmo: um \texttt{switch} ou uma cascata de
+\texttt{if/else if} sobre um \emph{tipo}, repetida em várias funções.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A cascata, e o motivo de ela não escalar.}]
+double area(const Forma& f) {
+    if      (f.tipo == Circulo)   return 3.14159 * f.raio * f.raio;
+    else if (f.tipo == Retangulo) return f.largura * f.altura;
+    // ← e um `else if` por forma nova. Para sempre.
+}
+double perimetro(const Forma& f) { /* a MESMA cascata, repetida */ }
+\end{lstlisting}
+
+Acrescentar um triângulo exige editar \textbf{quatro} lugares já testados --- e
+esquecer um deles não gera erro de compilação: gera resultado errado. Com
+polimorfismo, o triângulo é um \emph{arquivo novo}, a função que consome nunca é
+tocada, e o \texttt{= 0} obriga a implementar tudo.
+
+O subprojeto conta o custo, e a linha que decide é a terceira:
+
+\begin{table}[htbp]
+\centering
+\caption{O que muda ao acrescentar um caso novo. Código que não é tocado não
+         pode regredir.}
+\label{tab:ocp-custo}
+\footnotesize
+\begin{tabular}{@{}lcc@{}}
+\toprule
+\textbf{Ao acrescentar um caso} & \textbf{Com \texttt{switch}} & \textbf{Com OCP} \\
+\midrule
+arquivos criados          & 0      & 1 \\
+arquivos \textbf{editados}& 3--5   & \textbf{0} \\
+testes a reescrever       & 3--5   & \textbf{0} \\
+risco de regressão        & alto   & nenhum \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Quando o que varia é um \emph{algoritmo} --- e não uma família de entidades ---
+a forma correta é injetá-lo, e há quatro mecanismos com trocas diferentes
+(\cref{tab:ocp-mecanismos}).
+
+\begin{table}[htbp]
+\centering
+\caption{Quatro formas de injetar variação. ``Homogêneo'' significa poder
+         guardar variantes no mesmo \texttt{vector}.}
+\label{tab:ocp-mecanismos}
+\footnotesize
+\begin{tabular}{@{}llcc@{}}
+\toprule
+\textbf{Mecanismo} & \textbf{Extensão} & \textbf{Custo} & \textbf{Homogêneo?} \\
+\midrule
+herança                  & execução   & \gls{vtable}   & sim \\
+\texttt{std::function}   & execução   & indireção      & sim \\
+\emph{template} (policy) & compilação & \textbf{zero}  & não \\
+\emph{concept}           & compilação & \textbf{zero}  & não \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O \emph{concept} resolve o pior defeito da \emph{policy} por \emph{template}, que
+é a mensagem de erro. Declarando o contrato explicitamente, uma política
+incompleta falha \emph{na linha da chamada}, dizendo qual expressão faltou ---
+em vez de trezentas linhas de instanciação (\cref{sec:concepts}):
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O contrato da política, escrito como \emph{concept}.}]
+template <typename P>
+concept PoliticaDeDesconto = requires(double total) {
+    { P::aplicar(total) } -> std::convertible_to<double>;
+    { P::nome() }         -> std::convertible_to<std::string>;
+};
+
+template <PoliticaDeDesconto P> class Carrinho { /* ... */ };
+\end{lstlisting}
+
+O último demo do subprojeto vai além: um \textbf{registro auto-populado} elimina
+até a edição do ponto de composição. Uma macro no arquivo do exportador basta
+--- \texttt{REGISTRAR\_EXPORTADOR(ExportadorMarkdown, "markdown")} --- e o laço
+que consome nunca foi editado, nem conhece os nomes das classes.
+
+\begin{armadilha}[o registro auto-populado tem três armadilhas de ligação]
+Primeira: a ordem de inicialização estática entre unidades de tradução não é
+definida, então o registro precisa ser um \emph{Meyers singleton} --- função com
+\texttt{static} local --- e nunca uma variável global. Segunda: o \emph{linker}
+pode \textbf{descartar} o objeto estático se nada naquela unidade for
+referenciado (\texttt{-{}-gc-sections}, bibliotecas estáticas), o que exige
+\texttt{-{}-whole-archive} ou um símbolo âncora. Terceira: o fluxo fica indireto
+--- não se descobre quem registrou lendo o \texttt{main}.
+\end{armadilha}
+
+\begin{regra}[Rule of Three: OCP responde ao passado, não profetiza o futuro]
+OCP aplicado \textbf{antes} de existir um segundo caso é custo puro --- e a
+abstração escolhida com uma amostra de tamanho um quase sempre é a errada. Na
+primeira vez, escreva direto. Na segunda, duplique e anote o incômodo. Na
+terceira, abstraia --- porque agora você já viu o \emph{eixo} da variação.
+E há o caso em que a cascata é a resposta certa: quando o conjunto é
+\emph{fechado} (quatro naipes, três estados de semáforo), o \texttt{switch} é
+mais simples e mais rápido, ou então \texttt{std::variant} com \texttt{visit}
+(\cref{sec:vocabulary}). A pergunta que decide: \emph{casos novos vão chegar
+depois do \emph{deploy}, vindos de quem não controla este arquivo?}
+\end{regra}
+
+\subsubsection{LSP --- substituição de Liskov}
+
+É o terceiro princípio e o único que o compilador \textbf{não pode verificar}.
+LSP é sobre \emph{comportamento}, não sobre assinatura: o compilador confere a
+assinatura, e ninguém confere o comportamento. Por isso violações de LSP
+compilam perfeitamente e aparecem em produção.
+
+O exemplo canônico é canônico porque ``quadrado é um retângulo'' é verdade na
+matemática e mentira no código:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/solid/lsp/}: a mesma sequência de chamadas,
+             resultados diferentes.}]
+com Retangulo: largura=5, altura=4 → área esperada 20, obtida 20  ✓
+com Quadrado:  largura=5, altura=4 → área esperada 20, obtida 16  ✗ LSP VIOLADO
+\end{lstlisting}
+
+O erro não foi implementar mal o quadrado. Foi afirmar que ele \emph{é um}
+retângulo \textbf{mutável} --- e essa relação não sobrevive à mutabilidade. As
+duas saídas boas são a imutabilidade (sem \emph{setters}, o conflito desaparece)
+e tratá-los como irmãos sob uma interface que ambos \emph{podem} cumprir
+(\texttt{escala()} em vez de \emph{setters} independentes).
+
+\begin{regra}[a pergunta certa não é ``X é um Y?'']
+É: \emph{X consegue cumprir \textbf{todas} as promessas que Y faz aos seus
+clientes?} A primeira pergunta é sobre taxonomia; a segunda é sobre contrato ---
+e só a segunda tem consequência para o código.
+\end{regra}
+
+O contrato se decompõe em quatro regras, e todas seguem a mesma direção
+(\cref{tab:lsp-regras}).
+
+\begin{table}[htbp]
+\centering
+\caption{O derivado pode ser mais \emph{generoso}, nunca mais \emph{exigente} ---
+         a mesma contravariância dos tipos de função.}
+\label{tab:lsp-regras}
+\footnotesize
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{O subtipo pode\ldots} & \textbf{Pré-condição} & \textbf{Pós-condição} & \textbf{Invariante} \\
+\midrule
+exigir \textbf{mais}    & não & --- & --- \\
+exigir \textbf{menos}   & sim & --- & --- \\
+entregar \textbf{mais}  & --- & sim & sim \\
+entregar \textbf{menos} & --- & não & não \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+As três primeiras regras são diretas: fortalecer uma pré-condição quebra quem
+chamava com argumentos que a base aceitava (um depósito ``VIP'' que exige mínimo
+de 100); enfraquecer uma pós-condição quebra quem contava com ela (um
+``ordenador'' que também deduplica devolve menos elementos do que entraram);
+violar uma invariante sabota todo código que confiava nela (uma conta com cheque
+especial cujo saldo fica negativo).
+
+\begin{armadilha}[a \emph{history rule} não muda nenhuma assinatura]
+A quarta regra é a menos conhecida: um derivado não pode permitir mudanças de
+estado que a base proibia.
+\begin{lstlisting}[style=bt, language=bash, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+PontoImutavel  → cache válido ✓
+PontoMutavel   → cache INVÁLIDO ✗ LSP
+\end{lstlisting}
+Nenhum método foi sobrescrito, nenhuma assinatura mudou. O que mudou foi o
+conjunto de \textbf{histórias possíveis} do objeto --- e quem tinha um cache
+baseado na imutabilidade passou a ter um cache errado. É por isso que
+\texttt{final} e a imutabilidade são ferramentas de LSP, e não apenas de
+otimização.
+\end{armadilha}
+
+Como o compilador não ajuda, o subprojeto oferece dois instrumentos práticos. O
+primeiro é o \textbf{teste de contrato}: uma suíte escrita contra a \emph{base} e
+rodada contra \emph{cada} derivado --- em GoogleTest, é o que
+\texttt{TYPED\_TEST\_SUITE} faz.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/solid/lsp/}: o LSP virando código executável.}]
+PilhaVetor         5 passou, 0 falhou  ✓
+PilhaLimitada(3)   3 passou, 2 falhou  ✗ LSP VIOLADO
+  ✗ empilhar 10 → tamanho 10
+  ✗ round-trip: 5 entraram, 5 devem sair
+\end{lstlisting}
+
+O segundo é o idioma \textbf{NVI}, já visto na \cref{sec:oop} como solução para
+argumentos padrão em virtuais --- e que aqui aparece no seu papel principal:
+colocar o contrato na base, onde o derivado não pode afrouxá-lo.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={NVI: pré e pós-condições na fronteira pública, não virtual.}]
+std::string buscar(int id) {              // público, NÃO virtual
+    if (id <= 0) throw std::invalid_argument("id deve ser positivo");  // pré
+    std::string r = buscar_impl(id);                                    // miolo
+    if (r.empty()) throw std::runtime_error("devolveu vazio");          // pós
+    return r;
+}
+private:
+    virtual std::string buscar_impl(int id) = 0;   // privado, virtual
+\end{lstlisting}
+
+\subsubsection{ISP --- segregação de interfaces}
+
+ISP e LSP são o mesmo problema visto de dois lados: LSP pergunta \emph{o derivado
+consegue cumprir tudo que a base promete?}; ISP pergunta \emph{a base está
+prometendo coisas demais?}
+
+A \emph{fat interface} força um implementador a declarar métodos que ele não sabe
+fazer, e as três saídas disponíveis são todas ruins
+(\cref{tab:isp-saidas}).
+
+\begin{table}[htbp]
+\centering
+\caption{O que fazer num \texttt{override} que não se sabe implementar --- e por
+         que nenhuma das opções serve.}
+\label{tab:isp-saidas}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Saída} & \textbf{Problema} \\
+\midrule
+lançar exceção          & viola o LSP --- o cliente quebra \\
+não fazer nada          & pior: quebra em \textbf{silêncio} \\
+devolver valor inventado& pior ainda: corrompe dados \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A correção segrega cada capacidade em uma interface própria, e o ganho decisivo
+é de categoria: \textbf{o que era exceção em tempo de execução (ou silêncio)
+vira erro de compilação}.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O cliente pede o mínimo de que precisa.}]
+void fluxo_de_impressao(Imprimivel& d, const std::string& doc);
+void fluxo_de_arquivamento(Digitalizavel& d, const std::string& destino);
+
+fluxo_de_impressao(scanner, "x");    // ERRO DE COMPILAÇÃO
+\end{lstlisting}
+
+\begin{porque}[a interface pertence ao cliente, não ao fornecedor]
+A leitura ingênua do ISP é ``interfaces pequenas''. A leitura correta é mais
+forte: a interface é definida pelo que o \textbf{cliente} precisa, e por isso
+deve ser \emph{declarada junto do cliente}. Um serviço de doze métodos pode ser
+consumido por dez clientes através de dez interfaces minúsculas, cada uma
+nomeada segundo o \emph{papel} que cumpre, com adaptadores fininhos ligando o
+serviço legado a cada papel. O que isso compra: o enviador de e-mails
+\textbf{não consegue} tocar em dinheiro, garantido pelo tipo; e os dublês de
+teste têm dois métodos cada, em vez de doze --- sem \emph{framework} de
+\emph{mock}, sem banco, sem rede.
+\end{porque}
+
+Daí decorre uma regra de nomenclatura que muda o desenho: nomeie pelo
+\textbf{papel}, não pela classe concreta. \texttt{FonteDeContato} em vez de
+\texttt{IServicoDeUsuarios}; \texttt{LeitorDePedidos} em vez de
+\texttt{IRepositorioMySql}; qualquer coisa em vez de \texttt{IHelper},
+\texttt{IManager} ou \texttt{IUtil}.
+
+\begin{armadilha}[segregar demais vira sopa de interfaces]
+O limite é objetivo: cada interface deve ter \emph{pelo menos um cliente que use
+todos os seus métodos}. Se nenhum cliente usa a interface inteira, ela ainda não
+foi segregada o bastante; se cada interface tem um método e nenhum cliente
+real, foi segregada demais.
+\end{armadilha}
+
+\subsubsection{DIP --- inversão de dependência}
+
+O nome engana. \textbf{``Inversão'' não é sobre injetar dependência} --- é sobre
+a direção da seta no diagrama de módulos (\cref{fig:dip}).
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=6mm and 14mm]
+  \node[caixarisco] (pol1) {Política de negócio};
+  \node[caixarisco, right=of pol1] (db1) {MySQL};
+  \draw[setarisco] (pol1) -- node[rotulo,above] {depende} (db1);
+
+  \node[caixaok, below=14mm of pol1] (pol2) {Política de negócio};
+  \node[folha, right=of pol2] (abs) {\texttt{IRepositorio}\\\scriptsize declarada na política};
+  \node[caixaok, right=of abs] (db2) {MySQL};
+  \draw[setaok] (pol2) -- (abs);
+  \draw[setaok] (db2) -- node[rotulo,above] {implementa} (abs);
+
+  \node[rotulo, left=2mm of pol1] {antes};
+  \node[rotulo, left=2mm of pol2] {depois};
+\end{tikzpicture}
+\caption{A inversão. A seta do MySQL passou a apontar \emph{para dentro}, na
+         direção da abstração que a própria política definiu --- e é a
+         abstração morar na camada de negócio, e não numa camada neutra, que
+         caracteriza a inversão.}
+\label{fig:dip}
+\end{figure}
+
+O detalhe que faz a diferença é onde a abstração é \emph{declarada} e como é
+\emph{nomeada}: \texttt{RepositorioDePedidos}, ao lado da política, e não
+\texttt{IBancoDeDados}, ao lado da infraestrutura. O mesmo serviço passa a rodar
+com MySQL, com arquivo e em memória --- e nunca soube que MySQL existe.
+
+\begin{regra}[o teste decisivo é a direção do \texttt{\#include}]
+Em que direção o código-fonte aponta em tempo de compilação? Se o módulo de
+negócio faz \texttt{\#include "mysql.hpp"}, não houve inversão nenhuma --- por
+mais interfaces que existam no meio. A verificação é mecânica:
+\texttt{grep -r '\#include' src/entidades/}. Se aparecer um cabeçalho de SQL, a
+arquitetura foi violada.
+\end{regra}
+
+As formas de injeção diferem pelo momento em que a dependência é fixada:
+construtor para dependência obrigatória (o estado inválido fica inexprimível);
+parâmetro para o que varia a cada chamada; \emph{template} quando a escolha é
+conhecida em compilação e o custo deve ser zero. Nesta última, o \emph{concept}
+\textbf{é} a abstração:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Injeção estática: a dependência continua invertida, e não custa nada.}]
+template <RelogioEstatico R>
+class AuditoriaEstatica {
+    R relogio_;                       // por VALOR: sem indireção, sem heap
+};
+// sizeof(AuditoriaEstatica<RelogioRapido>) = 1 byte
+\end{lstlisting}
+
+Se o serviço não pode construir o repositório, alguém precisa construir --- e
+esse alguém é o \textbf{composition root}: um ponto único que pode conhecer tudo
+porque não tem regra de negócio nenhuma. O subprojeto o materializa em duas
+funções, \texttt{montar\_producao()} e \texttt{montar\_teste()}, e a
+consequência é que \emph{todo \texttt{new} do programa está nessas duas
+funções}.
+
+\begin{armadilha}[\emph{service locator} não é injeção --- é pior que o acoplamento direto]
+\begin{lstlisting}[style=bt, language=C++, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+void fazer() {
+    auto* log = Locator::obter<Log>();   // ← o objeto vai BUSCAR
+}
+\end{lstlisting}
+As dependências ficam \textbf{invisíveis na assinatura}, o teste vira estado
+global mutável, e a falha é em tempo de execução --- ao passo que a injeção por
+construtor falha em compilação. A regra que separa os dois: na injeção, a
+dependência é \textbf{empurrada} para o objeto; no \emph{locator}, o objeto vai
+\textbf{buscar}. Se a classe busca, ela conhece o buscador, e não houve
+inversão.
+\end{armadilha}
+
+Em escala, DIP vira a \emph{regra da dependência}: o código-fonte só pode
+apontar para dentro, na direção das políticas de mais alto nível
+(\cref{tab:camadas}). E o ponto que dá nome ao princípio é que o fluxo de
+\emph{controle} vai de dentro para fora --- o caso de uso chama o banco ---
+enquanto o fluxo de \emph{código} vai de fora para dentro. São opostos.
+
+\begin{table}[htbp]
+\centering
+\caption{A regra da dependência: cada círculo só inclui os de dentro.}
+\label{tab:camadas}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Círculo} & \textbf{Pode incluir} & \textbf{Volatilidade} \\
+\midrule
+entidades    & \textbf{nada}                & mínima \\
+casos de uso & entidades                    & baixa \\
+adaptadores  & casos de uso + entidades     & média \\
+\emph{frameworks} & tudo                    & máxima \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{regra}[inverta o volátil; não inverta o estável]
+DIP paga-se com uma interface, uma indireção e um arquivo por dependência. Não
+vale quando a dependência é \emph{estável} --- ninguém abstrai
+\texttt{std::string}, \texttt{std::vector} ou \texttt{fmt} --- nem quando o
+programa é pequeno e sem testes automatizados, nem quando existe um
+implementador e não haverá outro. A pergunta que decide: \emph{esta dependência
+é volátil?} Inverta banco, rede, relógio, sistema de arquivos e aleatoriedade.
+Não inverta o que é estável há trinta anos.
+\end{regra}
+
+% =============================================================================
+\subsection{Padrões de projeto}
+\label{sec:patterns}
+% =============================================================================
+
+O subprojeto \projeto{design-of-pattern} implementa \textbf{24 padrões}: os 23
+do catálogo GoF~\cite{gof1994} e mais o \emph{Null Object}, que não está no
+livro e aparece em quase todo código real. Cada padrão mora no seu diretório,
+tem \texttt{meson.build} próprio e produz um executável --- são 24 alvos, todos
+construídos e todos executáveis a partir de \texttt{dist/bin/}. Nenhum está
+comentado, e os números citados adiante foram lidos da saída desses binários,
+não de livro.
+
+Antes de tudo, uma definição, porque a palavra costuma ser usada de forma
+descuidada. Um \textbf{padrão de projeto} não é uma biblioteca, não é uma
+classe-base para herdar e não é uma receita a seguir: é o \emph{nome} de uma
+solução que foi redescoberta de forma independente tantas vezes que valeu a
+pena catalogá-la. O valor está tanto na solução quanto no nome --- dizer ``isto
+é um \emph{Strategy}'' comunica em duas palavras o que levaria um parágrafo, e
+é por isso que o catálogo sobreviveu a três revisões da linguagem.
+
+\begin{porque}[por que estudar 24 padrões se metade deles ``sumiu'' no C++ moderno?]
+Porque o que ``sumiu'' foi a \emph{implementação}, não o \emph{problema}. O
+\emph{Strategy} continua existindo quando um \classe{std::function} substitui a
+hierarquia --- só que agora o padrão tem uma linha em vez de quatro classes. E
+saber que aquilo é um \emph{Strategy} é o que permite reconhecer, seis meses
+depois, que a variação é do algoritmo e não do tipo. Um padrão é vocabulário
+antes de ser código: o dia em que o \classe{std::function} não servir --- porque
+o algoritmo precisa de estado, de nome, de ciclo de vida --- é o padrão clássico
+que volta, e ele precisa estar aprendido.
+\end{porque}
+
+\begin{table}[htbp]
+\centering
+\caption{Os 24 padrões implementados em \texttt{src/design-of-pattern/}, e o que
+         o executável de cada um demonstra. A coluna da direita reproduz o que o
+         \texttt{README.md} do subprojeto registra como objetivo de cada demo.}
+\label{tab:padroes}
+\footnotesize
+\begin{tabular}{@{}llp{0.44\textwidth}@{}}
+\toprule
+\textbf{Padrão} & \textbf{Categoria} & \textbf{O que o demo mostra} \\
+\midrule
+\emph{Factory Method}  & criacional & criação polimórfica por nome \\
+\emph{Abstract Factory}& criacional & famílias compatíveis; misturar temas fica inexprimível \\
+\emph{Builder}         & criacional & \texttt{construir() \&\&} impede reusar o \emph{builder} \\
+\emph{Prototype}       & criacional & clone profundo medido; CRTP elimina o \emph{boilerplate} \\
+\emph{Singleton}       & criacional & \emph{Meyers singleton} e o custo dele \\
+\midrule
+\emph{Adapter}   & estrutural & API C legada $\rightarrow$ \texttt{expected} + \gls{raii} \\
+\emph{Bridge}    & estrutural & $3\times3 = 9$ classes vira $3+3$; \emph{pimpl} é um \emph{Bridge} degenerado \\
+\emph{Composite} & estrutural & \texttt{adicionar} só no composto, por LSP/ISP \\
+\emph{Decorator} & estrutural & empilhamento de comportamento \\
+\emph{Facade}    & estrutural & 6 subsistemas $\rightarrow$ 1 chamada; o subsistema segue acessível \\
+\emph{Flyweight} & estrutural & \textbf{10,4$\times$ menos memória}, medido \\
+\emph{Proxy}     & estrutural & virtual/proteção/\emph{smart}; \classe{std::shared\_ptr} é um deles \\
+\midrule
+\emph{Chain of Responsibility} & comportamental & \emph{pipeline} de \emph{handlers} \\
+\emph{Command}         & comportamental & \emph{undo} por operação inversa \\
+\emph{Interpreter}     & comportamental & AST com hierarquia virtual \\
+\emph{Iterator}        & comportamental & iteradores próprios, direto e reverso \\
+\emph{Mediator}        & comportamental & teia $N\times(N-1)$ vira estrela $N$ \\
+\emph{Memento}         & comportamental & opacidade real, via \texttt{friend} \\
+\emph{Observer}        & comportamental & notificação $1\rightarrow N$ \\
+\emph{State}           & comportamental & máquina de estados de TCP \\
+\emph{Strategy}        & comportamental & algoritmos intercambiáveis \\
+\emph{Template Method} & comportamental & obrigatório \emph{vs.} \emph{hook} \emph{vs.} fixo \\
+\emph{Visitor}         & comportamental & despacho duplo, e o \texttt{variant} fazendo melhor \\
+\midrule
+\emph{Null Object}     & fora do catálogo & eliminar verificações de \texttt{nullptr} espalhadas \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% -----------------------------------------------------------------------------
+\subsubsection{O eixo que decide quase tudo: o \emph{expression problem}}
+\label{sec:expression-problem}
+% -----------------------------------------------------------------------------
+
+Vários padrões do catálogo são respostas à \emph{mesma} pergunta, formulada de
+maneiras diferentes. Reconhecer a pergunta economiza metade do estudo.
+
+Considere um programa que manipula uma coleção de \textbf{tipos} (nós de uma
+árvore sintática, formas geométricas, widgets) sobre os quais se executam
+\textbf{operações} (imprimir, avaliar, serializar, calcular área). Há duas
+direções em que esse programa pode crescer, e o \emph{expression
+problem} é a observação de que \textbf{as duas ferramentas
+disponíveis são boas em direções opostas}.
+
+\begin{porque}[o que exatamente é ``aberto'' e ``fechado'' aqui]
+Com uma \textbf{hierarquia virtual}, acrescentar um \emph{tipo} é criar um
+arquivo: a classe nova herda da base, implementa os métodos, e nenhum código
+existente é tocado. Mas acrescentar uma \emph{operação} é editar a base e
+\emph{todas} as derivadas --- e recompilar tudo.
+
+Com um \classe{std::variant}, é o inverso exato: acrescentar uma \emph{operação}
+é escrever uma função livre nova, sem tocar em nada; mas acrescentar um
+\emph{tipo} à lista do \texttt{variant} obriga a revisitar todos os
+\texttt{visit} do programa. A diferença decisiva é que, no segundo caso,
+\textbf{o compilador aponta cada lugar} --- um \texttt{visit} que não cobre
+todas as alternativas não compila. Na hierarquia, esquecer de sobrescrever um
+método novo com corpo padrão compila e falha em execução.
+\end{porque}
+
+\begin{table}[htbp]
+\centering
+\caption{O \emph{expression problem}, como o \texttt{README.md} de
+         \texttt{design-of-pattern} o formula: qual eixo do seu problema cresce?}
+\label{tab:expression-problem}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Cresce mais} & \textbf{Use} & \textbf{Padrões que realizam} \\
+\midrule
+os \textbf{tipos}     & hierarquia virtual        & \emph{Visitor}, \emph{Composite}, \emph{Abstract Factory} \\
+as \textbf{operações} & \texttt{variant} + \texttt{visit} & --- (função livre, exaustividade verificada) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{regra}[a pergunta que substitui metade da discussão sobre padrões]
+\emph{O que vai variar mais no meu problema: os tipos ou as operações?} Se a
+resposta for ``os tipos, e eles vêm de fora --- de \emph{plugins}, de
+bibliotecas que não controlo'', a hierarquia virtual é a resposta certa e
+continua sendo. Se for ``os tipos são poucos e conhecidos, mas toda semana
+alguém pede uma operação nova'', o \classe{std::variant} é a resposta certa e
+ainda dá exaustividade de graça. Nenhum dos dois é melhor em abstrato.
+\end{regra}
+
+% -----------------------------------------------------------------------------
+\subsubsection{Os cinco criacionais}
+% -----------------------------------------------------------------------------
+
+Os padrões criacionais respondem a uma pergunta só: \emph{quem decide qual
+classe concreta será instanciada, e quando?} A resposta ingênua --- o cliente,
+com \texttt{new} --- acopla o cliente a todos os tipos concretos e é o que os
+cinco evitam, cada um por um motivo diferente.
+
+\paragraph{\emph{Factory Method}: criar sem nomear a classe.} O cliente pede
+\texttt{ShapeFactory::create("circle", \{5.0\})} e recebe um
+\texttt{unique\_ptr<Shape>}. O \texttt{switch} sobre a \emph{string} existe, mas
+existe em \textbf{um} lugar --- e esse lugar é o único do programa que conhece
+os nomes concretos. É a mesma ideia do \emph{composition root} da
+\cref{sec:solid}, aplicada a uma família só.
+
+\paragraph{\emph{Abstract Factory}: a consistência da família virando tipo.} A
+diferença em relação ao anterior costuma escapar, e o demo a torna visível numa
+linha:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Resumo de \texttt{src/design-of-pattern/abstract\_factory/main.cpp}: o que a
+             \emph{Factory} simples não impede.}]
+// Com Factory simples, uma por produto:
+auto b = criar_botao("escuro");
+auto c = criar_campo("claro");    // COMPILA -- e a UI fica inconsistente
+
+// Com Abstract Factory:
+const FabricaDeWidgets& f = escolher_tema();
+auto b = f.criar_botao("Salvar");
+auto c = f.criar_campo();         // MESMA familia, garantido pelo TIPO
+\end{lstlisting}
+
+A família é escolhida uma vez; depois disso, misturar temas não é
+``desencorajado'' --- é \textbf{inexprimível}. E a função
+\texttt{renderizar\_formulario} foi escrita uma vez, contra
+\texttt{FabricaDeWidgets}: acrescentar um terceiro tema não muda uma linha dela.
+
+\paragraph{\emph{Builder}: construção com validação no fim.} O problema aparece
+antes da solução. Sem \emph{Builder}, há três saídas, e as três são ruins:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{dist/bin/builder}, seção 1: as três saídas e seus
+             defeitos.}]
+(a) construtor gigante:
+      Relatorio r{"Vendas","csv",true,false,true,100,",","utf-8",2};
+    -> trocar dois `bool` de lugar COMPILA e muda o comportamento
+
+(b) N sobrecargas:
+      Relatorio(t, f);  Relatorio(t, f, cabecalho);  ...
+    -> 2^n combinacoes para n campos opcionais
+
+(c) setters publicos:
+      Relatorio r; r.set_titulo(...); r.set_formato(...);
+    -> entre as chamadas, o objeto esta INVALIDO e isso e visivel
+\end{lstlisting}
+
+O \emph{Builder} resolve as três: os campos obrigatórios estão no construtor do
+\emph{builder} (não há como esquecê-los, porque o \emph{builder} não existe sem
+eles), a ordem dos opcionais é livre, e cada passo tem \emph{nome} ---
+\texttt{.com\_rodape()} é mais legível que um \texttt{true} na quarta posição.
+E a validação acontece uma vez, em \texttt{construir()}, quando todos os campos
+já foram definidos:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{dist/bin/builder}, seção 3: regras que dependem de
+             \emph{dois} campos.}]
+formato valido       -> ok: 'X' [html] cab=sim rod=nao sep=',' dec=2
+formato invalido     -> recusado: formato deve ser csv, json ou html
+casas_decimais = 99  -> recusado: casas_decimais fora de 0..10
+csv sem separador    -> recusado: csv exige um separador
+\end{lstlisting}
+
+A última linha é a que justifica o padrão: um \emph{setter} público jamais
+conseguiria validar ``csv exige separador'', porque no momento em que ele roda
+não se sabe se o outro campo já foi preenchido.
+
+\begin{armadilha}[o \texttt{\&\&} nos métodos do \emph{builder} não é enfeite]
+Todos os métodos do \emph{builder} do subprojeto são qualificados com
+\texttt{\&\&} --- inclusive \texttt{construir()}:
+\begin{lstlisting}[style=bt, language=C++, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+Construtor&& limite(int n) &&  { ...; return std::move(*this); }
+Relatorio    construir()   &&;
+\end{lstlisting}
+O qualificador de referência (\cref{sec:value-semantics}) faz com que os
+métodos só possam ser chamados sobre um \emph{rvalue}. A consequência prática é
+que o \emph{builder} \textbf{não pode ser reusado depois de construir}: o objeto
+foi movido para dentro do produto, e chamar outro método nele seria ler um
+objeto ``movido de''. O compilador passa a recusar exatamente o erro que a
+versão sem \texttt{\&\&} permitiria silenciosamente.
+\end{armadilha}
+
+\paragraph{\emph{Prototype}: copiar sem conhecer o tipo concreto.} A assinatura
+é \texttt{virtual std::unique\_ptr<Forma> clonar() const}, e o detalhe que o
+demo mede é que a cópia precisa ser \textbf{profunda}: um nó composto que copie
+apenas os ponteiros produz duas árvores compartilhando filhos. No caso do
+subprojeto, o código nem compilaria --- \classe{std::unique\_ptr} não é
+copiável, e é o próprio sistema de tipos denunciando a cópia rasa.
+
+Como todo \texttt{clonar()} é literalmente a mesma linha, uma camada CRTP
+(\cref{sec:templates}) escreve por todas:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={De \texttt{src/design-of-pattern/prototype/}: o CRTP eliminando o
+             \emph{boilerplate}. Nenhuma das classes concretas escreveu
+             \texttt{clonar()}.}]
+template <typename Derivada, typename Base = Forma>
+class Clonavel : public Base {
+    std::unique_ptr<Forma> clonar() const override {
+        return std::make_unique<Derivada>(static_cast<const Derivada&>(*this));
+    }
+};
+class Quadrado : public Clonavel<Quadrado> { /* ... */ };
+\end{lstlisting}
+
+\paragraph{\emph{Singleton}.} Discutido adiante (\cref{sec:padroes-modernos}),
+porque nele a ``versão moderna'' resolveu um problema e deixou o outro intacto.
+
+\begin{regra}[o \emph{Prototype} ganha da \emph{Factory} num caso específico]
+Uma \emph{factory} só sabe criar o que foi \textbf{compilado} nela. Um registro
+de protótipos guarda \emph{instâncias-modelo} que podem ter sido configuradas em
+tempo de execução --- carregadas de um arquivo, montadas pelo usuário --- e
+clonadas sob demanda. É esse uso que dá nome ao padrão, e é a única situação em
+que ele vence claramente a \emph{factory}.
+\end{regra}
+
+% -----------------------------------------------------------------------------
+\subsubsection{Os sete estruturais}
+% -----------------------------------------------------------------------------
+
+Os estruturais respondem a \emph{como compor objetos em estruturas maiores sem
+que o cliente precise saber da composição}. Quatro deles --- \emph{Adapter},
+\emph{Decorator}, \emph{Proxy} e \emph{Facade} --- têm praticamente o mesmo
+diagrama de classes, e a diferença entre eles é de \emph{intenção}; a
+\cref{tab:confusoes} adiante separa os quatro de uma vez.
+
+\paragraph{\emph{Adapter}: quando a interface é a errada.} O demo adapta uma
+biblioteca C legada, que não pode ser modificada, a uma interface moderna. São
+quatro incompatibilidades simultâneas, e o adaptador resolve as quatro:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{dist/bin/adapter}, seção 1: o que o adaptador
+             traduz.}]
+codigo de erro int    -> std::expected
+int magico de nivel   -> enum class Nivel
+(char*, size_t)       -> std::string_view
+create/destroy manual -> RAII
+\end{lstlisting}
+
+O ganho fica visível na terceira seção do demo: o \texttt{LEGACY\_BUFFER\_FULL}
+--- um \texttt{int} de valor 2 --- vira \texttt{std::unexpected\{ErroDeLog::
+BufferCheio\}}, e o cliente trata com \texttt{if (r)} sem nunca ver o código
+numérico (\cref{sec:errors}). A função de negócio recebe \texttt{adapter::Log\&}
+e nunca vai saber que existe uma biblioteca C por baixo.
+
+\paragraph{\emph{Bridge}: duas hierarquias que variam sozinhas.} É o padrão
+cujo benefício é puramente aritmético, e o demo faz a conta:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{dist/bin/bridge}, seção 1: a explosão evitada.}]
+Sem Bridge, com heranca nos dois eixos:
+    3 formas x 3 renderizadores = 9 classes
+    acrescentar 1 renderizador  = +3 classes
+    acrescentar 1 forma         = +3 classes
+
+Com Bridge:
+    3 formas + 3 renderizadores = 6 classes
+    acrescentar 1 renderizador  = +1 classe
+    acrescentar 1 forma         = +1 classe
+
+A conta piora rapido: 5x5 seria 25 contra 10.
+\end{lstlisting}
+
+O produto vira soma. E o demo mostra que os dois lados variam de verdade:
+\texttt{redimensionar()} é do lado da \emph{abstração} e nenhum renderizador
+soube dele; a troca de SVG para ASCII é do lado da \emph{implementação} e
+nenhuma forma soube dela.
+
+\begin{regra}[\emph{Bridge} \emph{vs.} \emph{Strategy}: a mesma forma, escalas diferentes]
+Os dois têm diagrama idêntico --- um objeto guarda uma referência a uma
+interface e delega. A diferença: no \emph{Strategy}, o outro lado é
+\textbf{um método} (um algoritmo trocável); no \emph{Bridge}, o outro lado é
+\textbf{uma hierarquia inteira} (uma família de operações que forma um
+\emph{backend}). E há um caso degenerado famoso: o idioma \emph{pimpl}
+é um \emph{Bridge} com exatamente uma implementação, usado
+não para variar mas para esconder --- e para cortar tempo de compilação.
+\end{regra}
+
+\paragraph{\emph{Composite}: a árvore que o cliente trata como folha.} O demo
+monta uma árvore de diretórios e chama a mesma função com um arquivo e com a
+raiz inteira. A recursão está encapsulada em \texttt{Pasta::tamanho()}, e a
+remoção de uma subárvore não tem um único \texttt{delete}: o
+\classe{std::unique\_ptr} destrói tudo em cascata.
+
+A decisão de design que o padrão força é onde colocar \texttt{adicionar()}, e o
+subprojeto escolhe o lado menos ``uniforme'' de propósito:
+
+\begin{table}[htbp]
+\centering
+\caption{As duas opções que o próprio GoF apresenta para o \emph{Composite}, e
+         por que o subprojeto escolheu a segunda.}
+\label{tab:composite-opcoes}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{\texttt{adicionar()} fica\ldots} & \textbf{Uniformidade} & \textbf{Custo} \\
+\midrule
+na interface \texttt{No}, para todos & máxima & \texttt{Arquivo::adicionar()} viola LSP ou falha em silêncio \\
+só no composto \texttt{Pasta}        & parcial & o cliente precisa do tipo \texttt{Pasta} para compor \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O argumento decisivo é prático: quase toda composição acontece na
+\emph{construção} da árvore, onde os tipos concretos já são conhecidos. A
+uniformidade que importa é a das operações de \emph{leitura} --- e essa a
+segunda opção preserva inteira, sem obrigar \texttt{Arquivo} a prometer algo que
+não sabe cumprir.
+
+\begin{armadilha}[um bug real encontrado escrevendo o \emph{Composite}]
+A primeira versão do demo declarava
+\texttt{virtual void imprimir(int nivel = 0) const = 0;} --- e
+\texttt{raiz->imprimir()} \textbf{não compilou}. O motivo: o \texttt{override}
+em \texttt{Pasta} não repetiu o argumento padrão, e argumento padrão é escolhido
+pelo tipo \textbf{estático}, não pelo dinâmico. A correção é o idioma NVI
+(\cref{sec:oop}):
+\begin{lstlisting}[style=bt, language=C++, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+void imprimir() const { imprimir_em(0); }   // NAO-virtual, com o default
+virtual void imprimir_em(int) const = 0;    // virtual, sem default
+\end{lstlisting}
+Aqui o NVI não é questão de estilo: é o que compila. Vale registrar que este bug
+foi encontrado \emph{porque o alvo foi construído} --- um padrão bonito num
+diretório que ninguém compila não ensina nada.
+\end{armadilha}
+
+\paragraph{\emph{Decorator}: composição em vez de herança.} O problema
+--- acrescentar compressão, criptografia e \emph{logging} a um \emph{stream} em
+\emph{qualquer combinação} --- resolvido por herança exigiria uma classe por
+combinação. Com decoradores, cada um envolve o anterior:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Composição em tempo de execução: a ordem das camadas é a ordem
+             das chamadas.}]
+auto stream = std::make_unique<LoggingDecorator>(
+    std::make_unique<CompressionDecorator>(
+        std::make_unique<EncryptionDecorator>(
+            std::make_unique<FileStream>("arquivo.bin")
+        )
+    )
+);
+stream->write("dados confidenciais"); // log -> comprime -> criptografa -> arquivo
+\end{lstlisting}
+
+\paragraph{\emph{Facade}: a ordem, escrita num lugar só.} O demo simula um
+sistema de \emph{build} com seis subsistemas --- resolvedor de dependências,
+compilador, cache, \emph{linker}, testes e empacotador. Sem a fachada, o cliente
+escreve quinze linhas e precisa saber que \texttt{resolver} vem antes de
+\texttt{compilar}, que a saída de \texttt{compilar} alimenta \texttt{linkar}, e
+quais são os \emph{defaults} razoáveis de cada um. Esse conhecimento fica
+duplicado em cada cliente. Com a fachada, é uma chamada.
+
+O ponto que distingue a \emph{Facade} de uma camada de abstração é que
+\textbf{o subsistema continua acessível}: quem precisa de um caso incomum
+chama os subsistemas diretamente. A fachada otimiza o \emph{caso comum}, não
+todos os casos --- e é por isso que ela não ``esconde'' nada.
+
+\begin{armadilha}[a \emph{Facade} que cresce tem nome: \emph{God Object}]
+Uma fachada que vira a \emph{única} porta de entrada, com quarenta métodos e
+estado próprio, deixou de simplificar e passou a acoplar. O sinal de alarme é
+objetivo: \textbf{ela acumular estado que os subsistemas não têm}. É a mesma
+patologia da \emph{god class} do SRP (\cref{sec:solid}), e a mesma que ameaça o
+\emph{Mediator}.
+\end{armadilha}
+
+\paragraph{\emph{Flyweight}: o único padrão do catálogo cujo ganho se mede.} A
+motivação é puramente de memória, e a divisão que define o padrão é entre estado
+\textbf{intrínseco} (compartilhável e imutável: o desenho da letra
+\texttt{'a'}, a fonte, o tamanho, o \emph{bitmap} rasterizado) e
+\textbf{extrínseco} (único por instância: a posição e a cor). Um documento de
+cem mil caracteres precisa de cem mil \emph{posições}, mas de cerca de cem
+glifos distintos.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{dist/bin/flyweight}, seção 3 --- a economia, medida
+             no próprio binário deste repositório.}]
+documento de 12200 caracteres:
+
+COM flyweight:
+  glifos distintos     :         21
+  memoria dos glifos   :       5019 B
+  memoria do documento :     292800 B  (12200 x 24 B)
+  TOTAL                :     297819 B
+
+SEM flyweight:
+  objetos completos    :      12200
+  TOTAL                :    3111000 B
+
+economia: 10.4x menos memoria (3111000 B -> 297819 B)
+
+sizeof(CaractereNaTela) =  24 B  (ponteiro + x,y + cor)
+sizeof(CaractereGordo)  =  96 B  + as duas strings na heap
+\end{lstlisting}
+
+A assinatura do glifo é o que torna o compartilhamento possível:
+\texttt{std::string desenhar(int x, int y, const std::string\& cor) const} ---
+\texttt{x}, \texttt{y} e \texttt{cor} são \emph{parâmetros}, não membros. Um
+objeto que guardasse a posição não poderia ser reusado por ninguém.
+
+\begin{armadilha}[cinco condições sem as quais o \emph{Flyweight} não funciona]
+O demo lista as cinco, e a segunda é a menos óbvia.
+\textbf{(1)} O objeto compartilhado tem que ser \textbf{imutável} --- por isso a
+fábrica devolve \texttt{const Glifo\&} e o glifo não tem \emph{setters}.
+\textbf{(2)} O contêiner da fábrica não pode \textbf{invalidar referências}: o
+demo usa \classe{std::deque} e não \classe{std::vector}, porque o
+\texttt{vector} realoca ao crescer e transforma em pendurado todo ponteiro já
+entregue (\cref{sec:stl}).
+\textbf{(3)} A fábrica precisa sobreviver a todos os clientes.
+\textbf{(4)} Em código concorrente, a \emph{inserção} precisa de sincronização;
+a leitura dos glifos já criados é segura por serem imutáveis.
+\textbf{(5)} Não compensa se o estado intrínseco for pequeno --- um ponteiro
+custa 8 bytes, e compartilhar um objeto de 4 bytes \emph{gasta} memória. A
+conta é: compensa se \texttt{sizeof(intrínseco)} $>$ \texttt{sizeof(ptr)} e
+houver repetição real.
+\end{armadilha}
+
+O inverso interessante mora na biblioteca padrão: o \emph{SSO} da
+\classe{std::string} --- medido em \projeto{strings} --- evita a indireção justamente para
+objetos \emph{pequenos} --- pelo motivo exato da quinta condição.
+
+\paragraph{\emph{Proxy}: mesma interface, acesso controlado.} O demo apresenta
+três variedades --- \emph{proxy} virtual (adia a criação cara, usando
+\texttt{mutable}), \emph{proxy} de proteção (verifica permissão antes de
+repassar) e \emph{smart proxy} (registra, mede, faz \emph{cache}). E a pergunta
+que o separa do \emph{Decorator} é única: \emph{o objeto real é sempre
+chamado?} Se sim, é \emph{Decorator}; se ele pode \textbf{não} repassar ---
+negar, adiar, servir do \emph{cache} --- é \emph{Proxy}. No demo, o
+\emph{proxy} de proteção negou a chamada, e o \emph{proxy} de instrumentação
+empilhado nem chegou a contá-la.
+
+Vale notar que os \emph{smart pointers} da biblioteca padrão são \emph{proxies}
+no sentido estrito, e o \classe{std::shared\_ptr} é o exemplo mais visitado do
+catálogo sem que ninguém o chame assim.
+
+% -----------------------------------------------------------------------------
+\subsubsection{Os onze comportamentais}
+% -----------------------------------------------------------------------------
+
+Os comportamentais tratam de \emph{como os objetos se comunicam}. Quatro deles
+já foram vistos de outro ângulo neste livro, e vale explicitar as ligações antes
+dos novos.
+
+\paragraph{\emph{Strategy} é OCP por injeção.} Cada algoritmo é um objeto
+trocável em tempo de execução, e o contexto que o usa nunca é editado. É
+literalmente o Demo~2 da \cref{sec:solid} com outro nome --- e a coincidência
+não é acidental: o princípio descreve a propriedade, o padrão descreve a
+realização.
+
+\paragraph{\emph{Command} transforma ação em objeto.} O par
+\texttt{execute()}/\texttt{undo()} é o que permite pilha de desfazer, fila de
+tarefas e \emph{log} de operações. É a mesma reificação que a
+\cref{sec:concurrency} usa para enfileirar trabalho numa \emph{thread pool} ---
+com a diferença de que lá o objeto é um \classe{std::function}.
+
+\paragraph{\emph{State} substitui o \texttt{switch} sobre estado.} Cada estado é
+um objeto, e a transição é o próprio estado trocando o ponteiro do contexto ---
+o exemplo do subprojeto é uma conexão TCP passando de \texttt{Listen} para
+\texttt{Established}. O ganho sobre a máquina de estados com \texttt{enum} é o
+mesmo do OCP: acrescentar um estado é acrescentar um arquivo.
+
+\paragraph{\emph{Chain of Responsibility} e \emph{Observer}.} O primeiro
+encadeia \emph{handlers} --- autenticação, limite de taxa, validação, negócio
+--- e cada elo decide se processa ou repassa; o segundo notifica $N$ assinantes
+a partir de um evento. São os dois padrões mais presentes em código de rede, e o
+\cref{sec:network} os reencontra sem os nomear.
+
+\paragraph{\emph{Template Method}: o que se protege é a \emph{ordem}.} O
+esqueleto do algoritmo mora na base, num método \textbf{não virtual}, e os
+derivados preenchem os buracos. A distinção de três níveis é o que faz o padrão
+funcionar:
+
+\begin{table}[htbp]
+\centering
+\caption{Os três tipos de passo do \emph{Template Method}, como o demo
+         \texttt{dist/bin/template\_method} os classifica.}
+\label{tab:template-method}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Tipo} & \textbf{Declaração} & \textbf{O derivado\ldots} \\
+\midrule
+obrigatório & \texttt{virtual \ldots{} = 0}        & \textbf{tem que} implementar \\
+\emph{hook} & \texttt{virtual \ldots{} \{ padrão \}} & \textbf{pode} sobrescrever \\
+fixo        & não virtual, \texttt{private}        & não pode mudar \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O demo quantifica o que cada variação precisou escrever: o
+\texttt{PipelineCsv} implementou \textbf{2} métodos (só os obrigatórios), o
+\texttt{PipelineJson} \textbf{3} (mais o \emph{hook} de validação) e o
+\texttt{PipelineBanco} \textbf{6} (todos os \emph{hooks}). O passo
+\texttt{ordenar()} é \texttt{private} e não virtual: ninguém o alcança. E
+\texttt{executar()} é não virtual pelo mesmo motivo --- se um derivado pudesse
+sobrescrevê-lo, a garantia de ordem, que é o padrão inteiro, evaporaria. É NVI
+outra vez (\cref{sec:oop}).
+
+\paragraph{\emph{Mediator}: a teia virando estrela.} O demo é um formulário com
+seis componentes e regras cruzadas (``Enviar'' só ativa com e-mail válido
+\emph{e} termos aceitos; marcar ``empresa'' revela o CNPJ e o torna
+obrigatório). A conta que ele imprime é a razão de ser do padrão:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{dist/bin/mediator}, seção 1: quem conhece quem.}]
+SEM mediador:
+  email   -> botao, status
+  termos  -> botao, status
+  empresa -> cnpj, botao, status
+  cnpj    -> botao, status
+  6 componentes -> ate 30 referencias
+  e acrescentar "aceito newsletter" toca varios deles
+
+COM mediador:
+  cada componente -> o mediador. So isso.
+  6 referencias, e a regra num lugar so.
+\end{lstlisting}
+
+O ganho real não é a contagem: é que os componentes ficam \textbf{reutilizáveis}
+--- um campo de texto que não conhece nenhum outro campo pode ir para qualquer
+formulário.
+
+\begin{armadilha}[o \emph{Mediator} carrega o defeito na própria definição]
+Ao centralizar a interação, ele acumula toda a lógica que estava distribuída ---
+e vira um \emph{God Object}. Os sinais: \texttt{notificar} virando um
+\texttt{switch} de duzentas linhas; o mediador ganhando estado que não é de
+ninguém; acrescentar um componente exigindo entender o mediador inteiro. As três
+saídas que o demo registra: quebrar em mediadores menores por área; trocar o
+\texttt{switch} por um \texttt{std::map<std::string, std::function<void()>>};
+ou extrair as \emph{regras} para objetos próprios, deixando o mediador só
+roteando.
+\end{armadilha}
+
+\paragraph{\emph{Memento}: salvar estado sem furar o encapsulamento.} São três
+papéis --- o \textbf{originador} (que cria e restaura), o \textbf{memento}
+(opaco) e o \textbf{zelador} (que guarda e nunca inspeciona). Em C++, a
+opacidade não é convenção: é o sistema de tipos.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={De \texttt{src/design-of-pattern/memento/}: a opacidade construída
+             com classe aninhada privada e \texttt{friend}.}]
+class Editor {
+    class Estado {
+        std::string conteudo_;   // privado
+        std::size_t cursor_;     // privado
+        Estado(...);             // construtor PRIVADO
+        friend class Editor;     // so ele
+    };
+};
+\end{lstlisting}
+
+O que o zelador \emph{não} consegue fazer é o valor do padrão: ler
+\texttt{conteudo\_}, escrever em \texttt{cursor\_} ou fabricar um
+\texttt{Estado} do nada --- as três tentativas são erros de compilação. O que
+ele pode, e é tudo de que precisa: guardar num \texttt{vector}, devolver ao
+editor e ler os metadados públicos (rótulo, tamanho). O ganho concreto: o
+originador pode \textbf{trocar a representação interna} sem que o histórico
+sequer recompile.
+
+\begin{regra}[\emph{Memento} \emph{vs.} \emph{Command}: a operação tem inversa barata?]
+Se sim, use \emph{Command} e guarde a \emph{operação} --- custo $O(\Delta)$.
+Inserir texto tem inversa óbvia (apagar). Se não --- um filtro de imagem
+destrutivo ---, use \emph{Memento} e guarde o \emph{estado} inteiro, custo
+$O(\text{estado})$. E os dois se combinam: um \emph{Command} que não consegue se
+inverter guarda um \emph{Memento} do estado anterior, que é exatamente como
+editores de imagem tratam filtros destrutivos. A distinção sutil é com o
+\emph{Prototype}: o clone é um objeto \textbf{normal e usável}; o memento é
+\textbf{opaco} e só serve para restaurar.
+\end{regra}
+
+\paragraph{\emph{Visitor}: despacho duplo, e o preço dele.} O \emph{Visitor}
+resolve o problema de acrescentar operações a uma hierarquia fechada sem editar
+as classes: cada nó tem \texttt{aceitar(Visitante\&)}, que chama de volta o
+método específico do visitante --- daí ``duplo despacho''. Ele funciona, e o
+demo o implementa por inteiro; mas o mesmo demo mede o que ele custa:
+
+\begin{table}[htbp]
+\centering
+\caption{\emph{Visitor} clássico contra \texttt{variant} + \texttt{visit}, como
+         o demo \texttt{dist/bin/visitor} compara na seção 6.}
+\label{tab:visitor-variant}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Critério} & \textbf{\emph{Visitor}} & \textbf{\texttt{variant} + \texttt{visit}} \\
+\midrule
+operações novas               & fácil    & fácil \\
+\textbf{tipos} novos          & difícil  & difícil \\
+exaustividade verificada      & não      & \textbf{sim} \\
+retorno com valor             & não      & \textbf{sim} \\
+linhas de infraestrutura      & $\approx$ 40 & $\approx$ 3 \\
+alocação por nó               & sempre   & opcional \\
+tipos de bibliotecas alheias  & sim      & não \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Três defeitos do \emph{Visitor} clássico desaparecem com \texttt{visit}: a
+operação passa a \textbf{devolver valor} (nada de acumular resultado num membro
+do visitante), os nós deixam de precisar do método \texttt{aceitar}, e o
+acoplamento circular entre nós e visitantes some. E há um ganho que o clássico
+nunca teve: \texttt{visit} faz despacho \textbf{múltiplo}, sobre $N$
+\texttt{variant} de uma vez --- estender o \emph{Visitor} para despacho triplo
+seria uma explosão de métodos.
+
+% -----------------------------------------------------------------------------
+\subsubsection{As confusões que sobram}
+% -----------------------------------------------------------------------------
+
+Quase todo mal-entendido sobre padrões cai em um de oito pares. O
+\texttt{README.md} do subprojeto os tabula, e cada demo dedica uma seção a
+separar o seu padrão dos vizinhos.
+
+\begin{table}[htbp]
+\centering
+\caption{Os oito pares que mais confundem, e a pergunta que separa cada um.}
+\label{tab:confusoes}
+\footnotesize
+\begin{tabular}{@{}lp{0.56\textwidth}@{}}
+\toprule
+\textbf{Confusão} & \textbf{O que separa} \\
+\midrule
+\emph{Adapter} $\times$ \emph{Decorator} $\times$ \emph{Proxy} &
+  \emph{Adapter} \textbf{muda} a interface; \emph{Decorator} \textbf{acrescenta} comportamento; \emph{Proxy} \textbf{controla} o acesso (pode não repassar) \\
+\emph{Bridge} $\times$ \emph{Strategy} &
+  o outro lado é uma \textbf{hierarquia} (\emph{Bridge}) ou \textbf{um método} (\emph{Strategy}) \\
+\emph{Facade} $\times$ \emph{Mediator} &
+  a \emph{Facade} \textbf{não acrescenta} lógica; o \emph{Mediator} \textbf{coordena} \\
+\emph{Template Method} $\times$ \emph{Strategy} &
+  o que se protege é a \textbf{ordem} dos passos ou o \textbf{algoritmo} inteiro? \\
+\emph{Mediator} $\times$ \emph{Observer} &
+  existe uma \textbf{regra} que depende de vários participantes? \\
+\emph{Memento} $\times$ \emph{Command} &
+  a operação tem \textbf{inversa barata}? \\
+\emph{Memento} $\times$ \emph{Prototype} &
+  o clone é \textbf{usável}; o memento é \textbf{opaco} \\
+\emph{Visitor} $\times$ \texttt{variant} &
+  a hierarquia é \textbf{aberta} (\emph{Visitor}) ou \textbf{fechada} (\texttt{variant})? \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% -----------------------------------------------------------------------------
+\subsubsection{A versão moderna, padrão a padrão}
+\label{sec:padroes-modernos}
+% -----------------------------------------------------------------------------
+
+Vários padrões do GoF descrevem soluções para limitações de linguagens dos anos
+1990 --- linguagens sem \emph{closures}, sem uniões com tipo, sem inicialização
+por nome. Em C++20, parte deles tem realização mais simples. Por isso os treze
+padrões acrescentados na última fase do subprojeto trazem, além do padrão
+clássico, uma seção \textbf{``versão moderna''} no próprio executável --- e é
+dela que sai a \cref{tab:padroes-modernos}.
+
+O ponto importante, e que a tabela sozinha não transmite: em \textbf{nenhum}
+caso a versão moderna substitui a clássica sem trocar algo. A última coluna é a
+que se deve ler primeiro.
+
+\begin{table}[htbp]
+\centering
+\caption{A versão clássica, a moderna e o que se perde ao trocar. As perdas
+         foram transcritas das seções ``versão moderna'' dos executáveis.}
+\label{tab:padroes-modernos}
+\scriptsize
+\begin{tabular}{@{}lllp{0.30\textwidth}@{}}
+\toprule
+\textbf{Padrão} & \textbf{Clássica} & \textbf{Moderna} & \textbf{O que a moderna PERDE} \\
+\midrule
+\emph{Strategy} & hierarquia virtual & \classe{std::function} ou \emph{concept} & nome, estado e ciclo de vida do algoritmo \\
+\emph{Command}  & classe com \texttt{execute()} & \emph{lambda} com \emph{init-capture} & o \texttt{undo()} pareado, que a \emph{lambda} não carrega \\
+\emph{Visitor}  & duplo despacho com \texttt{accept()} & \classe{std::visit} sobre \texttt{variant} & tipos vindos de bibliotecas alheias \\
+\emph{Iterator} & interface com \texttt{hasNext()} & iterador da STL, ou \emph{view} & --- (aqui a moderna ganha em tudo) \\
+\emph{Singleton}& ponteiro estático + \emph{mutex} & \emph{Meyers singleton} & nada; mas o problema real continua (adiante) \\
+\emph{Builder}  & \emph{builder} encadeado & \emph{designated initializers} & validação, campos obrigatórios, ordem livre, etapas \\
+\emph{Prototype}& \texttt{clonar()} virtual & \texttt{variant} copiável, ou CRTP & a hierarquia deixa de ser aberta \\
+\emph{Abstract Factory} & fábrica virtual por família & \texttt{struct} de \classe{std::function} & a garantia de consistência da família \\
+\emph{Adapter}  & classe adaptadora & \emph{lambda} adaptadora & \gls{raii}, múltiplos métodos, estado próprio \\
+\emph{Bridge}   & duas hierarquias & \texttt{struct} de \classe{std::function} & uma indireção por primitiva, em laço quente \\
+\emph{Composite}& \texttt{No} virtual + filhos & \texttt{variant} recursivo & tipos de nó novos vindos de fora \\
+\emph{Template Method} & \emph{hooks} virtuais & \texttt{struct} de \emph{callbacks} & a obrigatoriedade verificada em compilação \\
+\emph{Flyweight}& fábrica + \texttt{const T\&} & \texttt{shared\_ptr<const T>} & a \textbf{garantia de unicidade} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{\emph{Builder} \emph{vs.} \emph{designated initializers}.} O C++20
+permite \texttt{gerar(\{.titulo = "Vendas Q3", .formato = "json",
+.casas\_decimais = 4\})}, e isso dá três das quatro coisas que se queria do
+\emph{Builder}: cada campo tem nome no ponto de uso, os omitidos usam o
+\emph{default} do \texttt{struct}, e o código extra é zero. O que \emph{não} dá
+--- e é o que mantém o \emph{Builder} vivo --- são quatro coisas: não há
+\textbf{validação} (o agregado aceita qualquer combinação), não há
+\textbf{campos obrigatórios}, a \textbf{ordem não é livre} (em C++, os
+designadores precisam seguir a ordem de declaração dos membros; em C, não), e
+não há \textbf{construção em etapas} com lógica entre elas. A regra que sai
+disso é simples: agregado sem invariantes, use \emph{designated init}; produto
+com invariantes ou campos privados, use \emph{Builder}.
+
+\paragraph{\emph{Template Method} \emph{vs.} \texttt{struct} de \emph{callbacks}.}
+A versão moderna troca a hierarquia por um agregado de \classe{std::function},
+e ganha o direito de montar os passos em tempo de execução, vindos de lugares
+diferentes. Perde uma garantia que era gratuita: nada obriga a preencher o
+\emph{callback} obrigatório. Um \classe{std::function} vazio \textbf{compila} e
+lança \texttt{std::bad\_function\_call} em execução --- ao passo que o
+\texttt{virtual \ldots{} = 0} tornava o esquecimento um erro de compilação.
+Perde também o estado compartilhado entre os passos, que na versão clássica eram
+membros protegidos da base e agora precisam virar capturas.
+
+\paragraph{\emph{Bridge} e o custo do \emph{type erasure}.} Substituir a
+hierarquia de renderizadores por um \texttt{struct} de \classe{std::function}
+permite montar um \emph{backend} em execução, misturando primitivas de origens
+diferentes. Mas cada \classe{std::function} é um \gls{typeerasure}, e cada
+chamada custa uma indireção --- que num laço de renderização é caminho quente. A
+medição de \texttt{src/lambdas/} registra \textbf{3,5$\times$} de diferença
+entre a chamada direta e a passagem por \classe{std::function}
+(\cref{sec:lambdas}). Para um \emph{Bridge} de renderização, a hierarquia
+virtual costuma ganhar: a implementação é escolhida \emph{uma} vez na
+inicialização, e depois são milhões de chamadas --- uma \gls{vtable} é mais
+barata que $N$ \classe{std::function}. E se a escolha for conhecida em
+compilação, um \emph{template} elimina os dois custos.
+
+\paragraph{\emph{Flyweight} e o \classe{std::shared\_ptr}.} Trocar a fábrica por
+\texttt{shared\_ptr<const Glifo>} ganha contagem de referência automática --- os
+glifos sem uso podem ser liberados. Perde a única coisa que o padrão promete:
+\textbf{nada impede criar dois \texttt{shared\_ptr} para glifos idênticos}. É a
+fábrica que garante que ``mesmo estado intrínseco'' implica ``mesmo objeto''; o
+ponteiro compartilhado, sozinho, não garante nada.
+
+\paragraph{\emph{Singleton}: a versão moderna resolveu o problema errado.} O
+\emph{Meyers singleton} é \emph{thread-safe} por garantia do padrão desde o
+C++11 --- a inicialização de um \texttt{static} local é sincronizada pelo
+compilador:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O \emph{Meyers singleton}: \emph{thread-safe} por garantia do padrão.}]
+class Logger {
+public:
+    static Logger& instance() {
+        static Logger inst; // thread-safe por garantia do C++11 (6.7)
+        return inst;
+    }
+
+    Logger(const Logger&)            = delete;
+    Logger& operator=(const Logger&) = delete;
+
+private:
+    Logger() = default;
+};
+\end{lstlisting}
+
+\begin{armadilha}[o problema do \emph{Singleton} nunca foi a inicialização]
+Resolver a inicialização preguiçosa e a segurança entre \emph{threads} não
+resolve o que realmente pesa: estado global que persiste entre testes,
+acoplamento oculto (qualquer código pode chamar \texttt{Logger::instance()}) e
+violação direta do DIP --- a dependência não aparece na assinatura. É a mesma
+crítica que se faz ao \emph{service locator} (\cref{sec:solid}). O uso legítimo
+existe --- \emph{logger} de processo, configuração, registro de \emph{plugins}
+(\cref{sec:plugin-registry}) --- mas a pergunta certa continua sendo se a
+injeção por construtor não resolveria melhor.
+\end{armadilha}
+
+E o \emph{Null Object} é o complemento que torna o \emph{Singleton} dispensável
+em teste: uma implementação que não faz nada, injetada no lugar da real. O ganho
+é eliminar as verificações de \texttt{nullptr} do cliente --- o membro passa a
+ser uma \emph{referência}, e referência nunca é nula. O demo mostra os dois
+lados da moeda: com um \texttt{NullLogger}, um erro de validação é
+\emph{silenciado} --- e ninguém percebe, porque não há verificação nenhuma.
+
+\begin{regra}[\texttt{optional} para dados; \emph{Null Object} para comportamento]
+\classe{std::optional} obriga o chamador a verificar --- e é isso que se quer
+para um \emph{valor} que pode não existir (\cref{sec:vocabulary}). O \emph{Null
+Object} faz o contrário: garante que a chamada seja segura para que ninguém
+precise verificar --- e é isso que se quer para um \emph{serviço} opcional. Usar
+um no lugar do outro produz ou verificações desnecessárias ou ausência
+silenciosa de comportamento.
+\end{regra}
+
+\subsubsection{\emph{Interpreter}: onde ele ganha e onde perde}
+
+O \emph{Interpreter} do subprojeto implementa a mesma gramática de expressões
+aritméticas que o \projeto{parser} do \cref{sec:parser} resolve com Flex e
+Bison, o que permite a comparação direta (\cref{tab:interpreter-bison}). A
+precedência dos operadores sai naturalmente da estrutura das chamadas:
+\texttt{expr} chama \texttt{term}, que chama \texttt{factor}.
+
+\begin{table}[htbp]
+\centering
+\caption{\emph{Interpreter} escrito à mão contra gerador de \emph{parser}.}
+\label{tab:interpreter-bison}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+ & \textbf{\emph{Interpreter} GoF} & \textbf{Flex/Bison} \\
+\midrule
+dependências           & zero --- C++ puro      & \texttt{flex} + \texttt{bison} instalados \\
+AST                    & objeto reutilizável    & precisa ser implementada à parte \\
+testabilidade          & cada nó isoladamente   & o \emph{parser} inteiro \\
+gramáticas grandes     & trabalhoso             & ideal \\
+recuperação de erros   & manual                 & robusta \\
+quando usar            & DSL embutida, $<$ 20 regras & linguagem completa \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Acrescentar um operador novo ao \emph{Interpreter} são três passos --- classe
+nova, função auxiliar, um caso no \emph{parser} --- e nenhum arquivo existente
+quebra. É OCP em ação, e é também exatamente o eixo em que uma AST baseada em
+\texttt{std::variant} \emph{perderia}: acrescentar um \emph{tipo} de nó a um
+\texttt{variant} recompila todos os \texttt{visit} (\cref{sec:vocabulary}). É o
+\emph{expression problem} da \cref{sec:expression-problem} aparecendo, pela
+última vez, com nome e sobrenome.
+
+% =============================================================================
+\subsection{Entity Component System}
+\label{sec:ecs}
+% =============================================================================
+
+O subprojeto \projeto{ecs} implementa do zero o padrão arquitetural dominante
+nas \emph{engines} de jogo --- Unity, Unreal, Bevy. Ele entra na trilha logo
+depois dos padrões porque é o \textbf{contraponto direto} ao \cref{sec:oop}:
+composição em tempo de execução no lugar de herança.
+
+\subsubsection{O problema}
+
+Uma hierarquia de herança obriga a decidir, em tempo de compilação, quais
+combinações de capacidades existem --- e o número de combinações cresce
+exponencialmente:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A explosão combinatória, e a alternativa.}]
+class EntidadeMovel   : public Entidade { Posicao pos; Velocidade vel; };
+class EntidadeComSaude: public Entidade { Saude hp; };
+class Jogador : public EntidadeMovel, public EntidadeComSaude { };  // e as outras?
+
+Entity jogador = world.criar();
+world.adicionar<Posicao>(jogador, 0.f, 0.f);
+world.adicionar<Velocidade>(jogador, 5.f, 0.f);
+world.adicionar<Saude>(jogador, 100, 100);
+world.adicionar<Voando>(jogador);       // vira voadora em runtime, sem classe nova
+\end{lstlisting}
+
+\subsubsection{Os três pilares}
+
+\begin{table}[htbp]
+\centering
+\caption{A separação radical entre identidade, dados e lógica.}
+\label{tab:ecs-pilares}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Pilar} & \textbf{Responsabilidade} & \textbf{Neste subprojeto} \\
+\midrule
+\textbf{Entity}    & identificador único (só um número) & \texttt{uint32\_t} com reciclagem \\
+\textbf{Component} & dados puros, sem lógica            & \texttt{Posicao}, \texttt{Velocidade}, \texttt{Saude} \\
+\textbf{System}    & lógica que opera sobre componentes & \texttt{movimento()}, \texttt{colisao()}, \texttt{dano()} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A entidade não é um objeto: é um número. Não tem métodos, não tem dados, não tem
+tipo. Os componentes são \emph{aggregates} sem um único método --- inclusive os
+de marcação, que não têm nem dados (\texttt{struct Jogador \{\};}) e existem só
+para que a presença deles seja consultável. E os sistemas são funções livres.
+
+\begin{porque}[por que a reciclagem de IDs importa]
+Um jogo de longa duração cria e destrói projéteis a cada quadro. Sem
+reciclagem, o espaço de IDs cresce indefinidamente até estourar o
+\texttt{uint32\_t}; com reciclagem, o \texttt{EntityManager} devolve o ID
+destruído a uma pilha e o reutiliza na próxima criação. O custo é que um ID
+reutilizado pode ser confundido com o antigo --- razão pela qual ECS de
+produção usam \emph{generational indices}, com um contador de geração no bit
+alto do identificador.
+\end{porque}
+
+\subsubsection{\emph{Type erasure} para guardar tipos heterogêneos}
+
+O problema técnico central é armazenar \texttt{ComponentStore<Posicao>},
+\texttt{ComponentStore<Saude>} e todas as outras no mesmo mapa --- tipos
+diferentes, sem base comum natural. A solução é o mesmo \gls{typeerasure} de
+\texttt{std::function} e \texttt{std::any} (\cref{sec:lambdas,sec:vocabulary}):
+uma interface não \emph{template}, e um \classe{std::type\_index} como chave.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A chave é o tipo, e o \texttt{static\_cast} de volta é seguro
+             porque a chave garante qual é.}]
+struct IComponentStore {                    // interface base, sem templates
+    virtual ~IComponentStore() = default;
+    virtual void remover(Entity e) = 0;
+};
+
+template<typename T>
+class ComponentStore : public IComponentStore { /* ... */ };
+
+std::unordered_map<std::type_index, std::unique_ptr<IComponentStore>> stores_;
+
+template<typename T>
+ComponentStore<T>& store_de() {
+    auto key = std::type_index(typeid(T));
+    return static_cast<ComponentStore<T>&>(*stores_[key]);
+}
+\end{lstlisting}
+
+\subsubsection{A \emph{query}: onde as peças se encaixam}
+
+A operação que define o ECS é a consulta ``todas as entidades que têm
+\emph{estes} componentes''. E ela é uma aplicação direta de uma
+\emph{fold expression} (\cref{sec:templates}):
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A \emph{query} genérica, em \texttt{src/ecs/world.hpp}.}]
+    template <typename... Ts, typename Func>
+    void query(Func&& func) {
+        // Itera sobre todas as entidades do primeiro tipo (menor iteração possível)
+        // Depois verifica se têm os demais tipos
+        auto& primeiro_store = store_de<first_t<Ts...>>();
+
+        const auto& ents = primeiro_store.entidades();
+        for (std::size_t i = 0; i < ents.size(); ++i) {
+            Entity e = ents[i];
+            if (tem_todos<Ts...>(e)) {
+                func(e, get<Ts>(e)...);
+            }
+        }
+    }
+\end{lstlisting}
+
+Com ela, um sistema inteiro cabe em quatro linhas, e é uma função pura testável
+isoladamente:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Um sistema completo.}]
+void movimento(World& w, float dt) {
+    w.query<Posicao, Velocidade>([&](Entity, Posicao& p, Velocidade& v) {
+        p.x += v.dx * dt;
+        p.y += v.dy * dt;
+    });
+}
+\end{lstlisting}
+
+\subsubsection{O que se ganha e o que se perde}
+
+\begin{table}[htbp]
+\centering
+\caption{ECS contra hierarquia de herança.}
+\label{tab:ecs-heranca}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Critério} & \textbf{Herança} & \textbf{ECS} \\
+\midrule
+combinação de capacidades   & explosão combinatória & composição em execução \\
+localidade de cache         & objetos dispersos     & componentes do mesmo tipo juntos \\
+acrescentar comportamento   & classe nova           & \texttt{adicionar<T>()} em execução \\
+paralelismo                 & difícil               & sistemas independentes \\
+testabilidade               & precisa do objeto     & função pura sobre componentes \\
+legibilidade do fluxo       & direta                & indireta (quem roda quando?) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{armadilha}[o ECS deste subprojeto ainda não é \emph{cache-friendly}]
+A promessa de localidade de cache do ECS depende de os componentes ficarem
+\emph{contíguos} em memória --- o que exige armazenamento em \texttt{vector}
+denso com um mapa esparso de índices. O \texttt{ComponentStore} aqui usa
+\texttt{std::unordered\_map<Entity, T>}, que espalha os componentes pela
+\emph{heap} exatamente como a herança fazia. A arquitetura está certa e o
+armazenamento é didático: trocá-lo por um \emph{sparse set} não muda uma linha
+dos sistemas --- que é, aliás, a melhor demonstração de que a separação vale a
+pena.
+\end{armadilha}
+
+% =============================================================================
+\subsection{Plugins: DIP até o limite do sistema operacional}
+\label{sec:plugin-registry}
+% =============================================================================
+
+O subprojeto \projeto{plugin\_registry} carrega bibliotecas compartilhadas em
+tempo de execução com \texttt{dlopen}/\texttt{dlsym}, descobre os
+\emph{plugins} disponíveis varrendo um diretório, e troca o algoritmo de
+controle sem recompilar nada. É o \cref{sec:solid} levado ao extremo: a
+dependência não só está invertida como \textbf{nem existe no binário}.
+
+O contrato é uma interface virtual pura --- \texttt{IController}, com
+\texttt{name()}, \texttt{reset()} e \texttt{compute()} --- e o que atravessa a
+fronteira são apenas \emph{aggregates} simples (\texttt{State},
+\texttt{Action}).
+
+\subsubsection{O que é, exatamente, carregar código em tempo de execução}
+
+Antes do código, os termos. Um \textbf{objeto compartilhado} (\emph{shared
+object}, arquivo \texttt{.so} no Linux, \texttt{.dll} no Windows,
+\texttt{.dylib} no macOS) é um binário que contém código de máquina e uma
+\textbf{tabela de símbolos}: uma lista que diz, para cada função exportada, em
+que deslocamento dentro do arquivo ela começa. Nada nele é endereço absoluto ---
+é código \emph{relocável}, compilado com \texttt{-fPIC}, para poder ser
+carregado em qualquer posição da memória do processo.
+
+Há duas maneiras de usar um \texttt{.so}, e a diferença entre elas é o assunto
+deste subprojeto (\cref{tab:ligacao}). Na \textbf{ligação dinâmica comum}, o
+\emph{linker} anota no executável ``preciso de \texttt{libfmt.so}'', e quem
+carrega é o \emph{loader} do sistema, antes de o \texttt{main} começar. Na
+\textbf{ligação dinâmica explícita}, ninguém anota nada: o programa chama
+\texttt{dlopen} em tempo de execução, com um caminho que pode ter vindo de um
+arquivo de configuração, e o arquivo pode não existir na hora da compilação.
+
+\begin{table}[htbp]
+\centering
+\caption{As duas formas de usar uma biblioteca compartilhada. Só a segunda
+         permite que o \emph{plugin} seja escrito depois do \emph{host}.}
+\label{tab:ligacao}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+ & \textbf{Ligação dinâmica comum} & \textbf{\texttt{dlopen} explícito} \\
+\midrule
+quem carrega            & o \emph{loader}, antes do \texttt{main} & o seu código, quando quiser \\
+o nome do \texttt{.so}  & fixo no executável            & uma \texttt{std::string} qualquer \\
+símbolo faltando        & o programa nem inicia          & exceção tratável \\
+o arquivo precisa existir & na compilação                & só na hora do \texttt{dlopen} \\
+resolução de símbolo    & pelo tipo, no \emph{link}      & \textbf{por nome literal}, em execução \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A última linha é a que dita todo o desenho que vem a seguir: \texttt{dlsym}
+procura uma \emph{string}. Não há verificação de tipos --- o que atravessa a
+fronteira é um nome e um \texttt{void*}.
+
+\begin{porque}[por que só \emph{aggregates} simples cruzam a fronteira]
+\texttt{State} e \texttt{Action} são \texttt{struct} de \texttt{double}, sem
+\gls{vtable}, sem alocação escondida, sem \classe{std::string} dentro. Isso é
+deliberado, e o cabeçalho do subprojeto documenta o porquê: \emph{host} e
+\emph{plugin} são duas unidades compiladas separadamente, possivelmente por
+compiladores ou versões diferentes de biblioteca padrão. Um
+\classe{std::string} passado por valor entre elas depende de os dois lados
+concordarem sobre o \emph{layout} interno da \texttt{string} --- e essa
+concordância é a \gls{abi}, que nem o padrão da linguagem garante. Um
+\texttt{struct} de \texttt{double} tem \emph{layout} ditado pela ABI da
+plataforma (System V AMD64, no Linux), e essa, sim, é estável há décadas.
+\end{porque}
+
+\subsubsection{Os símbolos exportados}
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Os três símbolos que todo \emph{plugin} precisa exportar.}]
+extern "C" const char* plugin_name() { return "pid"; }
+
+extern "C" plugin::IController* create_controller() {
+    return new PIDController();
+}
+
+extern "C" void destroy_controller(plugin::IController* p) {
+    delete p;
+}
+\end{lstlisting}
+
+O \texttt{extern "C"} é obrigatório: \texttt{dlsym} busca por nome literal, e a
+decoração de nomes do C++~\cite{itaniumabi} transformaria
+\texttt{create\_controller} em algo que ninguém digitaria. Note que o
+\emph{plugin} exporta funções livres, não a classe --- a classe permanece
+invisível, e o \emph{host} só conhece a interface.
+
+Como os três símbolos são sempre os mesmos, o subprojeto os empacota numa macro,
+e o cabeçalho \texttt{icontroller.hpp} explica, no próprio comentário, por que
+uma macro e não algo mais civilizado:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={De \texttt{src/plugin\_registry/icontroller.hpp}: um \emph{plugin}
+             inteiro se registra com uma linha.}]
+#define REGISTER_CONTROLLER(ClassName, name_str)                        \
+    extern "C" __attribute__((visibility("default")))                   \
+    const char* plugin_name() { return name_str; }                      \
+    extern "C" __attribute__((visibility("default")))                   \
+    plugin::IController* create_controller() { return new ClassName(); }\
+    extern "C" __attribute__((visibility("default")))                   \
+    void destroy_controller(plugin::IController* p) { delete p; }
+
+// no plugin, uma linha:
+REGISTER_CONTROLLER(PIDController, "pid")
+\end{lstlisting}
+
+As três alternativas foram descartadas por motivos concretos, e vale enunciá-los
+porque é raro ver uma macro justificada de forma defensável. Um \emph{template}
+não serve: \emph{templates} têm decoração de nomes, e \texttt{dlsym} não
+acharia nada. Uma função normal de auto-registro não serve: exigiria que o
+\emph{plugin} se registrasse em algum ponto de inicialização estática --- com
+todas as armadilhas de ordem de inicialização já vistas na \cref{sec:solid}. A
+macro resolve no pré-processador: zero custo em execução, zero infraestrutura,
+zero risco de esquecer um dos três símbolos.
+
+O \texttt{\_\_attribute\_\_((visibility("default")))} é o complemento
+necessário: com \texttt{-fvisibility=hidden} --- que é o padrão recomendado
+para bibliotecas compartilhadas, porque encolhe a tabela de símbolos e acelera o
+carregamento --- os símbolos ficam \emph{invisíveis} por omissão, e o
+\texttt{dlsym} não acharia justamente aqueles três. O atributo abre exceção
+para eles, e apenas para eles.
+
+\subsubsection{\texttt{dlopen} e a ordem certa de checar erro}
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={As flags, e o motivo de \texttt{dlerror()} vir antes.}]
+void* handle = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+if (!handle) throw std::runtime_error("dlopen falhou: " + std::string(dlerror()));
+
+dlerror();                                     // limpa erro anterior
+auto fn = reinterpret_cast<FnPluginName>(dlsym(handle, "plugin_name"));
+if (const char* err = dlerror()) {             // e só ENTÃO checa
+    dlclose(handle);
+    throw std::runtime_error("plugin_name não encontrado: " + std::string(err));
+}
+\end{lstlisting}
+
+\texttt{RTLD\_NOW} resolve todos os símbolos no carregamento, fazendo a falha
+acontecer cedo em vez de na primeira chamada; \texttt{RTLD\_LOCAL} impede que os
+símbolos do \emph{plugin} vazem para os outros. As alternativas existem e têm
+uso legítimo (\cref{tab:rtld}) --- mas as duas escolhas do subprojeto são as
+que se deve tomar por omissão.
+
+\begin{table}[htbp]
+\centering
+\caption{As quatro \emph{flags} de \texttt{dlopen} que importam, e quando a
+         alternativa se justifica.}
+\label{tab:rtld}
+\footnotesize
+\begin{tabular}{@{}lp{0.34\textwidth}p{0.30\textwidth}@{}}
+\toprule
+\textbf{\emph{Flag}} & \textbf{O que faz} & \textbf{Quando escolher} \\
+\midrule
+\texttt{RTLD\_NOW}   & resolve todos os símbolos ao carregar & padrão: falha cedo, com mensagem \\
+\texttt{RTLD\_LAZY}  & resolve cada símbolo na primeira chamada & \texttt{.so} enorme do qual se usa pouco \\
+\texttt{RTLD\_LOCAL} & os símbolos não vazam para outros \texttt{.so} & padrão: isola os \emph{plugins} \\
+\texttt{RTLD\_GLOBAL}& os símbolos ficam globais & quando um \emph{plugin} depende de outro \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{armadilha}[\texttt{RTLD\_LAZY} adia o erro para o pior momento possível]
+Com \texttt{RTLD\_LAZY}, um \emph{plugin} a que falte um símbolo carrega sem
+reclamar e mata o processo horas depois, na primeira vez que aquele caminho de
+código for percorrido --- tipicamente em produção, e nunca no teste. É a mesma
+categoria de erro dos alvos que não se constroem, discutida no fim desta seção:
+o problema não é a falha, é o \emph{atraso} entre a causa e o sintoma.
+\end{armadilha}
+
+\begin{armadilha}[\texttt{dlsym} pode devolver \texttt{nullptr} legitimamente]
+Testar o retorno de \texttt{dlsym} contra \texttt{nullptr} é errado: um símbolo
+pode existir e \emph{valer} \texttt{nullptr}. A forma correta é chamar
+\texttt{dlerror()} antes, para limpar qualquer erro pendente, e conferir
+\texttt{dlerror()} depois. Como o repositório documenta no próprio código, é
+esta a ordem, e não a intuitiva.
+\end{armadilha}
+
+\subsubsection{O \emph{deleter} customizado, e por que ele é crítico}
+
+Este é o ponto em que o subprojeto deixa de ser sobre \emph{plugins} e passa a
+ser sobre \gls{abi}. O objeto foi alocado \emph{dentro} do \texttt{.so}, com o
+alocador do \texttt{.so}. Se o \emph{host} fizer \texttt{delete}, ele usará o
+alocador \emph{dele} --- e se os dois forem diferentes, o resultado é corrupção
+de \emph{heap}.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O \emph{deleter} como parâmetro de \emph{template}, em
+             \texttt{src/plugin\_registry/plugin\_registry.hpp}.}]
+    std::unique_ptr<IController, FnDestroyController>
+    create(const std::string& name) {
+        // ...
+        // O segundo argumento do unique_ptr é o deleter:
+        // em vez de `delete ptr`, ele chama `ph.destroy(ptr)`.
+        return { raw, ph.destroy };
+    }
+\end{lstlisting}
+
+\begin{regra}[quem aloca, destrói]
+Um objeto criado dentro de uma biblioteca dinâmica deve ser destruído por ela.
+O \texttt{unique\_ptr} com \emph{deleter} customizado
+(\cref{sec:smart-pointers}) é o instrumento exato para isso: a regra deixa de
+depender da disciplina de quem escreve o código de chamada e passa a estar no
+\emph{tipo} do ponteiro. É a mesma técnica do \texttt{unique\_ptr<FILE,
+decltype(closer)>}, aplicada a um problema muito mais caro de diagnosticar.
+\end{regra}
+
+\subsubsection{O registro, e a ordem em que tudo morre}
+
+O \texttt{ControllerRegistry} é um \emph{Meyers singleton}: uma função com
+\texttt{static} local, exatamente como a \cref{sec:padroes-modernos} descreve.
+Aqui o uso é dos legítimos --- há \emph{handles} do sistema operacional abertos,
+e faz sentido que exista um dono só ---, e a classe declara isso no tipo:
+construtor de cópia e atribuição são \texttt{= delete}.
+
+O destrutor fecha todos os \emph{handles} com \texttt{dlclose}, e é aí que mora
+a armadilha mais cara deste subprojeto.
+
+\begin{armadilha}[\texttt{dlclose} antes do último \texttt{unique\_ptr} é código morto sendo executado]
+Quando \texttt{dlclose} descarrega um \texttt{.so}, o sistema operacional
+\textbf{desmapeia as páginas} em que aquele código estava. Todos os ponteiros
+para dentro dele --- ponteiros de função, ponteiros para as \gls{vtable} das
+classes do \emph{plugin}, o próprio \emph{deleter} guardado dentro do
+\texttt{unique\_ptr} --- passam a apontar para memória não mapeada. Destruir um
+\texttt{unique\_ptr<IController, FnDestroyController>} depois disso não é ``usar
+um ponteiro inválido'': é saltar para um endereço que não existe mais, e o
+processo morre com \texttt{SIGSEGV} num \emph{stack trace} que não menciona
+nenhuma linha do seu código.
+
+A regra que evita isso é de tempo de vida, não de sintaxe: \textbf{todos os
+\texttt{unique\_ptr} devem ser destruídos antes do registro}. O comentário no
+destrutor de \texttt{plugin\_registry.hpp} registra exatamente essa
+dependência --- e ela é a razão de o \texttt{main} criar os controladores dentro
+de funções de escopo curto (\texttt{run\_episode}), em vez de guardá-los em
+variáveis globais.
+\end{armadilha}
+
+\subsubsection{Onde estão os \emph{plugins}? A resolução de caminho}
+
+Um detalhe que parece trivial e não é. O \emph{host} precisa saber em que
+diretório procurar os \texttt{.so} --- e a resposta ingênua, um caminho relativo
+como \texttt{"plugins"}, resolve contra o \textbf{diretório de trabalho} do
+processo, não contra o local do executável. O mesmo binário passa a funcionar ou
+não dependendo de onde foi invocado: roda de dentro do \texttt{dist/}, falha se
+chamado por caminho absoluto de qualquer outro lugar.
+
+A saída portável no Linux é \texttt{/proc/self/exe}: um \emph{symlink} que o
+núcleo mantém apontando para o binário do próprio processo. Lê-lo devolve o
+caminho real, já com todos os \emph{symlinks} resolvidos.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={De \texttt{src/plugin\_registry/main.cpp}: descobrir o próprio
+             diretório, sem depender do \texttt{CWD}.}]
+static std::filesystem::path diretorio_do_executavel() {
+    std::error_code ec;
+    auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+    return ec ? std::filesystem::path{} : exe.parent_path();
+}
+\end{lstlisting}
+
+Com isso, a busca vira uma lista de candidatos com prioridade explícita, e cada
+um deles corresponde a um \emph{layout} real do repositório:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A ordem dos candidatos --- e o argumento de linha de comando
+             vencendo todos.}]
+if (argc > 1) return argv[1];                  // 1. explicito ganha sempre
+candidatos.push_back(exe_dir / ".." / "plugins"); // 2. instalado: dist/bin -> dist/plugins
+candidatos.push_back(exe_dir / "plugins");        // 3. build: ao lado do exe
+candidatos.emplace_back("plugins");               // 4. ultimo recurso: o CWD
+\end{lstlisting}
+
+E quando nenhum serve, o programa não estoura uma exceção não tratada: imprime
+os caminhos que \emph{tentou}, ensina a sintaxe do argumento explícito e devolve
+\texttt{1}. É uma diferença pequena de código e enorme de diagnóstico --- a
+mensagem contém a informação que o usuário precisa para consertar sozinho.
+
+\begin{regra}[três formas de achar recursos, e a que se deve preferir]
+\texttt{argv[0]} não serve: ele contém o que o \emph{shell} digitou, que pode
+ser um nome relativo ou nem existir. Variáveis de ambiente
+(\texttt{MEUAPP\_PLUGIN\_DIR}) servem como \emph{override} e são o que se
+oferece ao usuário avançado. Mas o \emph{default} deve ser derivado do
+executável --- \texttt{/proc/self/exe} no Linux,
+\texttt{GetModuleFileName} no Windows, \texttt{\_NSGetExecutablePath} no
+macOS --- porque é a única fonte que não depende de como o programa foi
+invocado.
+\end{regra}
+
+\subsubsection{O ciclo completo}
+
+A descoberta automática fecha o ciclo: o registro varre o diretório, tenta
+carregar cada \texttt{.so}, e --- detalhe que importa em produção --- captura a
+exceção por \emph{plugin}, de modo que um \emph{plugin} defeituoso não derruba
+os demais. O resultado é a troca de algoritmo em tempo de execução, sem
+recompilação:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída real de \texttt{dist/bin/plugin\_registry}, executado sem
+             argumento nenhum: o caminho foi deduzido de
+             \texttt{/proc/self/exe}.}]
+=== Plugin Registry Demo ===
+
+Varrendo '/home/lima/Projects/cpp_academy/dist/plugins'...
+[registry] plugin 'pid' carregado de .../dist/plugins/pid.so
+[registry] plugin 'lqr' carregado de .../dist/plugins/lqr.so
+2 plugin(s) carregado(s).
+
+=== Troca de controlador em runtime ===
+(mesma interface, implementacao diferente, zero recompilacao)
+
+  [pid]   alt= 2900.0 ft  spd= 88.0 kts  pitch=  0.0  | elev=+1.000  thr=0.750
+  [lqr]   alt= 2900.3 ft  spd= 88.0 kts  pitch=  2.0  | elev=-0.011  thr=0.710
+\end{lstlisting}
+
+As duas últimas linhas são o subprojeto inteiro em duas medições: o
+\textbf{mesmo estado} entra nos dois controladores e sai uma ação diferente de
+cada um. O PID satura o profundor em \texttt{+1.000}; o LQR, com a mesma
+entrada, pede \texttt{-0.011}. O \emph{host} não sabe qual é qual, nunca soube
+o nome das classes, e não foi recompilado entre as duas chamadas.
+
+\subsubsection{A lição que só apareceu quando os alvos foram construídos}
+
+Vale fechar este capítulo com um resultado de método, e não de projeto. Até uma
+revisão recente, boa parte dos alvos deste repositório estava com o
+\texttt{subdir()} comentado no \texttt{src/meson.build} --- inclusive os
+``pesados'' (Qt, SFML, Bullet, ONNX, JSBSim, AWS, RabbitMQ, SOCI). Hoje os
+\textbf{57} subprojetos são construídos, produzindo \textbf{98} binários
+instalados em \texttt{dist/bin}, com zero avisos sob
+\texttt{-Wall -Wextra -Wpedantic}.
+
+Habilitar os alvos não foi uma operação administrativa: ela \emph{encontrou
+bugs}, e todos estavam exatamente nos alvos que ninguém compilava.
+
+\begin{table}[htbp]
+\centering
+\caption{Bugs reais encontrados ao habilitar alvos que estavam desativados. A
+         coluna da direita é o que cada um ensina --- e nenhum deles teria
+         aparecido em revisão de código.}
+\label{tab:bugs-latentes}
+\footnotesize
+\begin{tabular}{@{}lp{0.52\textwidth}@{}}
+\toprule
+\textbf{Onde} & \textbf{O que estava errado} \\
+\midrule
+\texttt{asm\_course/07} & um \texttt{subq \$8, \%rsp} quebrava o alinhamento de 16 bytes que a ABI System V exige no \texttt{call}; o \emph{crash} aparecia \emph{dentro} do \texttt{fmt}, quatro quadros acima \\
+\texttt{asm\_course/10} & \texttt{RDI}/\texttt{RSI}/\texttt{RCX} declarados como entrada pura num \emph{asm} \emph{inline}, mas \texttt{rep movsb} os modifica --- o GCC acreditou na promessa e reusou um registrador corrompido \\
+\texttt{http-client}    & \texttt{std::string(n, '─')}: U+2500 tem \textbf{três} bytes, e entre aspas simples vira \emph{multi-character constant} truncada; e \texttt{40 - title.size()} é aritmética sem sinal, que dá a volta \\
+\texttt{aws/s3}         & faltava \texttt{\#include <fmt/core.h>} --- latente porque o alvo nunca era compilado \\
+\texttt{rabbitmq}       & a API do AMQP-CPP mudou: os \emph{callbacks} de ciclo de vida são métodos virtuais do \emph{handler}, não do \texttt{TcpConnection} \\
+\texttt{database}       & o demo não era idempotente: a segunda execução batia numa restrição \texttt{UNIQUE} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{regra}[um alvo que não é construído é um alvo que apodrece]
+Quatro \texttt{\#include} faltando e dois bugs de \gls{abi} estavam
+\emph{exatamente} nos alvos desabilitados --- e não é coincidência. Um alvo
+comentado não é ``código pausado'': é código que continua envelhecendo enquanto
+as bibliotecas mudam de API, os cabeçalhos param de ser incluídos
+transitivamente e o compilador aprende avisos novos, sem que nada nunca o diga.
+O corolário é organizacional: o mesmo raciocínio que levou o diretório
+\texttt{tests/} da raiz a ser \textbf{removido} --- ele estava 100\%
+comentado e nunca construiu nada, dando a \emph{impressão} de cobertura sem
+oferecer nenhuma. Os testes hoje moram junto do código que testam
+(\texttt{src/testing/} com 5 alvos e 41 casos, \texttt{src/meson/} com 1 alvo,
+\texttt{src/cmake/} com CTest e 11 casos), e \texttt{meson test} roda 6 alvos,
+todos passando. Um teste desabilitado é pior que teste nenhum, porque mente.
+\end{regra}
+
+E o alinhamento entre esta lição e o assunto do capítulo é direto: as fronteiras
+de que SOLID, os padrões e o registro de \emph{plugins} tratam só cumprem o que
+prometem se forem \emph{exercitadas}. Uma interface que nada implementa, um
+padrão que nada instancia e um \emph{plugin} que nada carrega são, os três, a
+mesma coisa --- desenho não verificado.
+
+% =============================================================================
+\subsection{Síntese}
+% =============================================================================
+
+Os quatro subprojetos deste capítulo respondem à mesma pergunta em escalas
+crescentes: \emph{onde colocar a fronteira, para que a mudança seguinte custe
+pouco?}
+
+SOLID responde no nível da classe e do módulo. Os padrões respondem com soluções
+nomeadas para as fronteiras que reaparecem sempre. O ECS responde recusando a
+fronteira da herança e substituindo-a pela composição. E o registro de
+\emph{plugins} responde levando a fronteira até o limite do processo, onde o
+outro lado é literalmente um arquivo que ainda não existia quando o programa foi
+compilado.
+
+\begin{armadilha}[toda abstração deste capítulo é reversível --- e cara antes da hora]
+Nenhum princípio aqui deve ser aplicado profilaticamente. OCP antes do segundo
+caso é custo puro; DIP sobre uma dependência estável é indireção sem ganho; ISP
+levado longe demais vira sopa de interfaces; um ECS num programa com três tipos
+de entidade é complexidade sem contrapartida. A pergunta que atravessa o
+capítulo inteiro --- e que os quatro subprojetos formulam com palavras
+diferentes --- é sempre: \emph{esta variação já aconteceu duas vezes?}
+\end{armadilha}

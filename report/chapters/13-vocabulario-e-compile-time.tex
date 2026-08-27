@@ -1,0 +1,1890 @@
+% =============================================================================
+%  Tipos de vocabulário e computação em tempo de compilação
+%  Cobre os subprojetos vocabulary_types, compile_time, cpp23 e modules.
+% =============================================================================
+
+% =============================================================================
+\section{Tipos de vocabulário e computação em tempo de compilação}
+\label{sec:vocab-compile-time}
+% =============================================================================
+
+Este capítulo trata de duas ideias que parecem não ter relação: um punhado de
+tipos da biblioteca padrão --- \texttt{optional}, \texttt{variant},
+\texttt{any}, \texttt{tuple}, \texttt{span} --- e um conjunto de palavras-chave
+que mandam o compilador calcular coisas antes de o programa existir ---
+\texttt{constexpr}, \texttt{consteval}, \texttt{constinit},
+\texttt{static\_assert}.
+
+A relação é esta: as duas movem informação para dentro do \textbf{tipo}, e tudo
+o que está no tipo é verificado por alguém que nunca se distrai. Um
+\texttt{optional<int>} diz, na assinatura, que pode não haver valor --- e quem
+esquecer de testar recebe um erro em vez de ler lixo. Uma
+\texttt{Matriz<2,3>} diz, no tipo, quantas linhas e colunas tem --- e quem
+multiplicar por uma \texttt{Matriz<2,2>} não compila. É a mesma estratégia em
+escalas diferentes: \textbf{fazer o compilador trabalhar no seu lugar}.
+
+O capítulo percorre quatro subprojetos. \projeto{vocabulary\_types} apresenta os
+tipos que atravessam fronteiras de biblioteca (\cref{sec:vocab-fundo});
+\projeto{compile\_time} mostra o que o compilador calcula sozinho
+(\cref{sec:ct-fundo}); \projeto{cpp23} \emph{mede} o que o compilador de
+referência realmente implementa, em vez de supor (\cref{sec:cpp23-medido}); e
+\projeto{modules} enfrenta a substituição do \texttt{\#include} e documenta dois
+defeitos do GCC 13 encontrados na prática (\cref{sec:modulos}). Os dois
+primeiros assuntos apareceram resumidos no \cref{sec:vocabulary} e no
+\cref{sec:compile-time}; aqui são desenvolvidos do zero.
+
+% =============================================================================
+\subsection{O vocabulário compartilhado}
+\label{sec:vocab-fundo}
+% =============================================================================
+
+Dois termos, antes de tudo. Uma \textbf{unidade de tradução} (TU) é o que o
+compilador enxerga de cada vez: um \texttt{.cpp} depois de o pré-processador ter
+colado dentro dele, textualmente, todos os \texttt{\#include}. É a unidade real
+de compilação --- um arquivo-objeto por TU, e nenhuma sabe das outras. Uma
+\textbf{fronteira de biblioteca} é o ponto em que código escrito por uma pessoa
+passa um valor a código escrito por outra, sem que as duas possam combinar
+convenções.
+
+\begin{porque}[o problema: convenções que ninguém verifica]
+Antes desses tipos, cada biblioteca inventava a sua forma de dizer as mesmas
+quatro ou cinco coisas, e todas tinham o mesmo defeito: nada no tipo obrigava o
+outro lado a respeitar a convenção. Para ``pode não haver valor'' usava-se um
+ponteiro nulo, um índice $-1$ ou um \texttt{bool} de saída --- e nada exigia a
+verificação. Para ``é um destes'', uma \texttt{union} com etiqueta ao lado ---
+e nada impedia ler o membro errado. Para ``é qualquer coisa'', \texttt{void*}
+--- que perde o tipo por completo. Para ``é uma sequência contígua'', o par
+(ponteiro, tamanho) --- dois parâmetros que precisam concordar e que nada obriga
+a concordar. O ganho dos tipos de vocabulário não é elegância: é que o erro
+passa a ser detectável.
+\end{porque}
+
+Cada um dos cinco responde a uma pergunta diferente sobre ``que valor está
+aqui?'' (\cref{tab:vocab-perguntas}). A coluna da direita organiza a seção: ela
+diz \emph{quando} o conjunto de tipos possíveis é conhecido.
+
+\begin{table}[htbp]
+\centering
+\caption{As cinco perguntas do vocabulário compartilhado.}
+\label{tab:vocab-perguntas}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Tipo} & \textbf{Responde} & \textbf{Tipos conhecidos em} \\
+\midrule
+\texttt{optional<T>}      & \emph{pode não haver valor}       & compilação, 1 tipo \\
+\texttt{variant<Ts...>}   & \emph{é um destes}                & compilação, $N$ tipos \\
+\texttt{any}              & \emph{é qualquer coisa}           & \textbf{execução} \\
+\texttt{tuple<Ts...>}     & \emph{são todos estes}            & compilação, $N$ tipos \\
+\texttt{span<T>}          & \emph{é uma janela sobre aqueles} & compilação, 1 tipo \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O subprojeto compila com C++23, e não com o C++20 da raiz, porque as operações
+monádicas de \texttt{optional} só chegaram nesse padrão (\cref{sec:ambiente}).
+
+% -----------------------------------------------------------------------------
+\subsubsection{\classe{std::optional}: a ausência dentro do tipo}
+% -----------------------------------------------------------------------------
+
+Uma função que procura pode não achar, e a questão é como ela comunica isso. A
+solução tradicional escolhe um valor de retorno para significar ``não achei'':
+\texttt{nullptr}, $-1$, \emph{string} vazia. Todas funcionam e todas têm o mesmo
+problema --- o valor especial \emph{cabe} no tipo de retorno, então quem chama
+pode usá-lo como resultado legítimo, e o compilador não tem o que reclamar.
+
+\classe{std::optional} põe a ausência \textbf{no tipo}. Um
+\texttt{std::optional<int>} não é um \texttt{int}: chegar ao \texttt{int} exige
+um passo explícito, e é nesse passo que a decisão sobre a ausência é tomada.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A ausência declarada na assinatura, em
+             \texttt{src/vocabulary\_types/demo\_optional.hpp}.}]
+std::optional<int> buscar_idade(const std::string& nome) {
+    static const std::unordered_map<std::string, int> pessoas{
+        {"Ada", 36}, {"Grace", 45}, {"Alan", 41},
+    };
+    auto it = pessoas.find(nome);
+    if (it == pessoas.end()) return std::nullopt;   // ausência explícita
+    return it->second;              // conversão implícita para optional
+}
+\end{lstlisting}
+
+O \texttt{std::nullopt} é um objeto de tipo próprio que significa ``vazio''; o
+\texttt{return it->second;} funciona porque há construtor implícito a partir de
+\texttt{T}, de modo que escrever o caso de sucesso não custa nada a mais.
+
+As três formas de acessar diferem no que fazem quando não há valor
+(\cref{tab:optional-formas}), e a primeira é a perigosa justamente porque não
+falha: falha em silêncio.
+
+\begin{table}[htbp]
+\centering
+\caption{Extraindo o valor de um \texttt{optional}.}
+\label{tab:optional-formas}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Forma} & \textbf{Se estiver vazio} & \textbf{Quando usar} \\
+\midrule
+\texttt{*opt}             & \textbf{\gls{ub}}                    & já testou com \texttt{if} \\
+\texttt{opt.value()}      & lança \texttt{bad\_optional\_access} & quer rede de segurança \\
+\texttt{opt.value\_or(x)} & devolve \texttt{x}                   & tem um padrão óbvio \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{armadilha}[\texttt{*opt} vazio não é exceção nem \emph{crash}]
+É \gls{ub}: o padrão não diz o que acontece, e o que acontece na prática é ler
+os bytes do \emph{buffer} interno como se fossem um \texttt{T}. Isso costuma
+produzir um valor plausível, e o programa segue com um número inventado. Sem
+aviso, sem exceção, sem \emph{segmentation fault} garantido. É \textbf{lixo
+silencioso}, a pior categoria de erro que existe.
+\end{armadilha}
+
+O nome sugere ponteiro, e a sugestão é falsa: não há alocação. O \texttt{T} vive
+dentro do próprio \texttt{optional}, num \emph{buffer} alinhado, ao lado de um
+\texttt{bool}. O subprojeto prova imprimindo os dois endereços:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/vocabulary\_types/}: o \texttt{T} vive dentro
+             do \texttt{optional}.}]
+sizeof(int)              =  4
+sizeof(optional<int>)    =  8      ← int + flag + padding
+&optional  = 0x7ffe9c642e00
+&*optional = 0x7ffe9c642e00        ← o mesmo endereço
+\end{lstlisting}
+
+\emph{Padding}, nessa saída, são bytes de enchimento que o compilador insere
+para que cada membro caia num endereço múltiplo do seu alinhamento: 4 mais 1
+dariam 5, mas o objeto precisa ter tamanho múltiplo de 4 para que arranjos dele
+fiquem alinhados.
+
+\paragraph{As operações monádicas (C++23).} Encadear operações que podem falhar
+gera, na forma ingênua, um \texttt{if} de propagação por passo. As três
+operações monádicas eliminam esses \texttt{if} --- se o \texttt{optional}
+estiver vazio, a função nem é chamada, e a ausência propaga sozinha:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O encadeamento monádico, em
+             \texttt{src/vocabulary\_types/demo\_optional.hpp}.}]
+nome_do_id(id)                                     // optional<string>
+    .and_then(comprimento_se_curto)                // T → optional<U>
+    .transform([](int n) { return n * 100; })      // T → U
+    .or_else([] { return std::optional<int>{-1}; });
+\end{lstlisting}
+
+A distinção entre \texttt{and\_then} e \texttt{transform} é o retorno da função
+passada: \texttt{transform} devolve \texttt{U} e a biblioteca embrulha;
+\texttt{and\_then} já devolve \texttt{optional<U>} e a biblioteca não embrulha
+de novo --- é o que evita o \texttt{optional<optional<U>>}.
+
+\begin{porque}[por que \texttt{optional<T\&>} não existe]
+A pergunta que decide é: o que \texttt{opt = outro} deveria fazer com uma
+referência dentro? \emph{Religar} a referência para outro objeto, ou
+\emph{atribuir} ao objeto referido? As duas respostas são defensáveis, nenhuma é
+obviamente correta, e o comitê preferiu proibir a escolher. Na prática o C++ já
+tinha o ``\emph{optional reference}'': é o ponteiro cru --- um
+\texttt{const Config*} devolvido por uma busca significa exatamente ``opcional e
+não-proprietário'', com a desvantagem de não dizer isso no nome. Quando a
+assinatura precisa ser inequívoca,
+\texttt{optional<std::reference\_wrapper<const T>>} compila, ao custo de um
+\texttt{.get()} no uso.
+\end{porque}
+
+\begin{armadilha}[\texttt{optional<bool>} tem três estados e o \texttt{if} lê o errado]
+O \texttt{operator bool} responde ``\emph{tem valor?}'', não ``\emph{o valor é
+verdadeiro?}''. Com um \texttt{bool} dentro, as duas perguntas se confundem:
+\begin{lstlisting}[style=bt, language=bash, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+vazio        if(o) = false   value_or(false) = false
+false        if(o) = true    value_or(false) = false    ← a armadilha
+true         if(o) = true    value_or(false) = true
+\end{lstlisting}
+A linha do meio pega todo mundo: \texttt{if (o)} é verdadeiro porque \emph{há}
+valor, ainda que o valor seja \texttt{false}. E \texttt{value\_or(false)}
+responde \texttt{false} tanto para o vazio quanto para o \texttt{false}
+armazenado --- apagando exatamente a distinção que motivou usar
+\texttt{optional}. A saída é modelar com três estados nomeados:
+\texttt{enum class Resposta \{ Sim, Nao, NaoInformado \};}. Se o
+\texttt{optional<bool>} for inevitável, escreva sempre
+\texttt{if (o.has\_value() \&\& *o)}.
+\end{armadilha}
+
+\begin{regra}[\texttt{optional} diz ``pode não haver''; não diz ``por quê'']
+Use como retorno de busca, \emph{parse} ou consulta; como membro genuinamente
+opcional; e para inicialização tardia de membro sem construtor padrão. Não o use
+quando o \textbf{motivo} da falha importa --- aí a ferramenta é
+\classe{std::expected} (\cref{sec:errors}), que carrega o erro. E não use
+\texttt{optional<unique\_ptr<T>>}: o ponteiro já tem estado nulo.
+\end{regra}
+
+% -----------------------------------------------------------------------------
+\subsubsection{\classe{std::variant}: a soma de tipos que faltava}
+% -----------------------------------------------------------------------------
+
+Uma \texttt{struct} é um \emph{produto} de tipos: contém um \texttt{int}
+\textbf{e} um \texttt{double} \textbf{e} uma \texttt{string}. A operação
+complementar --- \textbf{ou} um \textbf{ou} outro --- chama-se soma de tipos, e
+o C++ só tinha uma versão insegura dela: a \texttt{union}, que guarda vários
+membros no mesmo espaço mas não guarda \emph{qual} está ativo.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/vocabulary\_types/}: a \texttt{union} não sabe
+             quem está ativo; o \texttt{variant} sabe.}]
+union: escrevi u.i = 42
+  ler u.i → 42 ✓
+  ler u.d → seria UNDEFINED BEHAVIOR (membro inativo)
+  e NADA no código impede
+
+variant: v = 42
+  v.index()                 = 0  (0 = int)
+  holds_alternative<double> = false
+  std::get<double>(v)       → bad_variant_access
+\end{lstlisting}
+
+\classe{std::variant} guarda o mesmo espaço \textbf{mais} o índice do tipo
+ativo, e verifica todo acesso: paga um inteiro pequeno e devolve segurança de
+tipo. O que ele não paga é alocação --- reserva inline o espaço do maior membro.
+
+Das quatro formas de acessar (\cref{tab:variant-formas}), uma se destaca.
+\textbf{Exaustividade} aqui significa que o compilador garante que todos os
+tipos possíveis foram tratados: \texttt{std::visit} exige um invocável que
+aceite \emph{todos} os tipos, e se faltar um a chamada não compila. É a mesma
+propriedade que faz valer a pena um \texttt{switch} sobre \texttt{enum class}
+sem \texttt{default} (\cref{sec:syntax}) --- acrescentar um caso quebra o
+\emph{build} nos lugares que precisam ser atualizados.
+
+\begin{table}[htbp]
+\centering
+\caption{Acessando um \texttt{variant}. Só \texttt{visit} verifica exaustividade.}
+\label{tab:variant-formas}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Forma} & \textbf{Se o tipo estiver errado} & \textbf{Exaustividade} \\
+\midrule
+\texttt{get\_if<T>(\&v)} & devolve \texttt{nullptr}      & não verifica \\
+\texttt{get<T>(v)}       & \texttt{bad\_variant\_access} & não verifica \\
+\texttt{get<I>(v)}       & \texttt{bad\_variant\_access} & não verifica \\
+\texttt{visit(f, v)}     & não acontece                  & \textbf{garantida} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{O \emph{overload idiom}.} O obstáculo prático do \texttt{visit} é que
+ele quer \emph{um} objeto invocável que aceite todos os tipos. Um \emph{lambda}
+genérico \texttt{[](const auto\& x)} atende, mas o corpo passa a ser o mesmo
+para todos --- e o motivo de usar \texttt{variant} era tratar cada um de um
+jeito. O \emph{overload idiom} são duas linhas de biblioteca que resolvem isso:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O \emph{overload idiom}, em
+             \texttt{src/vocabulary\_types/demo\_variant.hpp}.}]
+// Herda de todos os lambdas e traz o operator() de cada um para o escopo.
+template <typename... Ts>
+struct Overload : Ts... { using Ts::operator()...; };
+
+// Deduction guide — em C++20 é opcional, mas explícito não custa.
+template <typename... Ts> Overload(Ts...) -> Overload<Ts...>;
+\end{lstlisting}
+
+Cada pedaço é um recurso distinto. \texttt{typename... Ts} é um \emph{parameter
+pack}: uma lista de tipos de tamanho arbitrário. \texttt{: Ts...} expande essa
+lista na cláusula de herança --- a estrutura herda de \emph{cada} tipo, e como
+cada \emph{lambda} é uma classe com um \texttt{operator()}, herdar de $N$
+\emph{lambdas} traz $N$ funções de chamada. \texttt{using Ts::operator()...;}
+expande uma declaração \texttt{using} por tipo, o que é necessário porque, sem
+ela, os \texttt{operator()} herdados de bases diferentes não formam um conjunto
+de sobrecargas --- ficam escondidos uns pelos outros. Feito isso, a resolução de
+sobrecarga normal faz o despacho.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Um tratamento por tipo, com exaustividade verificada.}]
+using Valor = std::variant<int, double, std::string, bool>;
+
+std::string descrever(const Valor& v) {
+    return std::visit(Overload{
+        [](int i)                { return fmt::format("inteiro {}", i); },
+        [](double d)             { return fmt::format("real {:.2f}", d); },
+        [](const std::string& s) { return fmt::format("texto '{}'", s); },
+        [](bool b)               { return fmt::format("booleano {}", b); },
+    }, v);
+}
+\end{lstlisting}
+
+Acrescentar um tipo a \texttt{Valor} sem acrescentar o \emph{lambda}
+correspondente faz \texttt{descrever} deixar de compilar --- é a exaustividade
+em ação. E \texttt{visit} aceita \emph{vários} \texttt{variant} de uma vez, com
+o compilador gerando a matriz de combinações: o subprojeto usa
+pedra-papel-tesoura, com seis \emph{lambdas} de dois parâmetros mais um
+\texttt{[](auto, auto)} que absorve os empates. Fazer o mesmo com herança é o
+padrão \emph{Visitor} do GoF (\cref{sec:patterns}) --- duas hierarquias, um
+\texttt{accept()} por classe e despacho duplo escrito à mão. Aqui não há
+hierarquia, \texttt{accept()} nem \gls{vtable}.
+
+\begin{armadilha}[\texttt{valueless\_by\_exception}: o único estado inválido]
+Se a construção do novo valor lançar \emph{durante} uma atribuição, o antigo já
+foi destruído e o novo não chegou a existir. O \texttt{variant} fica sem tipo
+ativo, e \texttt{index()} devolve \texttt{variant\_npos}:
+\begin{lstlisting}[style=bt, language=bash, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+antes:  index=0 valueless=false
+exceção durante a atribuição: falhei na cópia
+depois: index=-1 valueless=true
+\end{lstlisting}
+Um \texttt{visit} sobre esse estado lança \texttt{bad\_variant\_access}.
+Evita-se com três hábitos: pôr um tipo trivial --- ou \classe{std::monostate}
+--- como primeira alternativa; preferir \texttt{emplace} à atribuição; e marcar
+o construtor de movimento como \texttt{noexcept}. É a Rule of 5 do
+\cref{sec:value-semantics} cobrando de novo.
+\end{armadilha}
+
+\classe{std::monostate} é um tipo vazio cuja única função é servir de primeira
+alternativa, e ele resolve um problema concreto: um \texttt{variant} só tem
+construtor padrão se o \emph{primeiro} tipo da lista tiver.
+\texttt{variant<SemDefault, int> v;} não compila;
+\texttt{variant<std::monostate, SemDefault, int> v;} compila e nasce no estado
+``nada ainda''.
+
+\paragraph{Um \texttt{variant} recursivo.} Um \texttt{variant} não pode conter a
+si mesmo diretamente --- o tamanho seria infinito, já que reserva espaço inline
+para o maior tipo. A saída é a indireção:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Uma árvore de expressão sem uma única função virtual, em
+             \texttt{src/vocabulary\_types/demo\_variant.hpp}.}]
+using Expressao = std::variant<double,
+                               std::unique_ptr<Soma>,
+                               std::unique_ptr<Multiplicacao>>;
+
+struct Soma          { Expressao esq, dir; };
+struct Multiplicacao { Expressao esq, dir; };
+
+double avaliar(const Expressao& e) {
+    return std::visit(Overload{
+        [](double d) { return d; },
+        [](const std::unique_ptr<Soma>& s) {
+            return avaliar(s->esq) + avaliar(s->dir);
+        },
+        [](const std::unique_ptr<Multiplicacao>& m) {
+            return avaliar(m->esq) * avaliar(m->dir);
+        },
+    }, e);
+}
+\end{lstlisting}
+
+Nenhuma classe base, nenhum método virtual, nenhum \texttt{accept()}. A
+hierarquia é \textbf{fechada} --- e é por ser fechada que o compilador consegue
+verificar a exaustividade.
+
+\paragraph{O \emph{expression problem}.} A comparação com herança não tem
+vencedor absoluto, e isso tem nome: os dois eixos de extensão de um programa ---
+acrescentar \emph{tipos} e acrescentar \emph{operações} --- puxam em direções
+opostas, e a estrutura que facilita um dificulta o outro
+(\cref{tab:variant-vs-heranca}). Com \texttt{variant}, uma operação nova é uma
+função nova e nenhum tipo existente muda; mas um tipo novo obriga a revisitar
+todos os \texttt{visit}. Com herança é o inverso: um tipo novo pode nascer em
+outra biblioteca, e uma operação nova obriga a mexer na base e em todas as
+derivadas. Escolha pelo eixo que vai variar mais.
+
+\begin{table}[htbp]
+\centering
+\caption{\texttt{variant} favorece operações novas; herança favorece tipos novos.}
+\label{tab:variant-vs-heranca}
+\footnotesize
+\begin{tabular}{@{}lcc@{}}
+\toprule
+\textbf{Critério} & \texttt{variant} & \textbf{herança virtual} \\
+\midrule
+tipos novos \emph{externos} & não          & \textbf{sim} \\
+operações novas             & \textbf{sim} & recompila tudo \\
+exaustividade verificada    & \textbf{sim} & não \\
+alocação por nó             & opcional     & sempre \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% -----------------------------------------------------------------------------
+\subsubsection{\classe{std::any} e o apagamento de tipo}
+% -----------------------------------------------------------------------------
+
+\texttt{optional<T>} sabe o tipo; \texttt{variant<Ts...>} sabe o \emph{conjunto}
+de tipos; \classe{std::any} não sabe nada em compilação: aceita qualquer tipo
+copiável e só descobre qual é em execução.
+
+O mecanismo chama-se \gls{typeerasure}: guardar, junto com o objeto, ponteiros
+para as funções que sabem operar sobre ele --- copiar, destruir, informar o
+\texttt{typeid} --- de modo que o código que manipula o \texttt{any} faça o
+necessário sem conhecer o tipo. É o princípio do \gls{vtable}, com a diferença
+de que a tabela não vive dentro do objeto e o tipo armazenado não precisa herdar
+de nada. A recuperação é feita por \texttt{any\_cast}, em duas formas: a que
+recebe o objeto e lança \texttt{bad\_any\_cast}, e a que recebe um
+\emph{ponteiro} e devolve \texttt{nullptr}. O casamento de tipo é
+\textbf{exato} --- um \texttt{any} com \texttt{double} não responde a
+\texttt{any\_cast<int>}.
+
+\paragraph{O custo, contado.} Em vez de afirmar que \texttt{any} aloca, o
+subprojeto \emph{substitui o \texttt{operator new} global} por uma versão que
+conta chamadas e bytes, e mede:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/vocabulary\_types/}: alocações contadas ao
+             construir um objeto.}]
+sizeof(std::any)                     = 16
+any<Pequeno> ( 4B) → 0 alocação(ões)
+any<Medio>   (16B) → 1 alocação(ões), 16 bytes
+any<Grande>  (64B) → 1 alocação(ões), 64 bytes
+variant<...Grande>  → 0 alocação(ões)      ← nunca aloca
+\end{lstlisting}
+
+A primeira linha é a \textbf{otimização de objeto pequeno} (SBO): a
+implementação reserva alguns bytes dentro do próprio objeto e, se o valor
+couber, guarda-o ali sem \emph{heap}. Na libstdc++ o limite do SBO do
+\texttt{any} é \texttt{sizeof(void*)} --- oito bytes numa máquina de 64 bits.
+Acima disso, \emph{cada} \texttt{any} construído é um \texttt{malloc} mais um
+\texttt{free}. A última linha é o contraste que importa: o \texttt{variant}
+\textbf{nunca} aloca. Essa diferença estrutural pesa muito mais que a velocidade
+bruta de uma chamada isolada --- num laço quente, o que se mede é a pressão
+sobre o alocador.
+
+\begin{regra}[a pergunta que elimina o \texttt{any} quase sempre]
+Pergunte: \emph{``eu consigo listar os tipos possíveis?''} \textbf{Sim}
+$\rightarrow$ \texttt{variant}, que ganha exaustividade e zero alocação.
+\textbf{Não, mas todos fazem a mesma coisa} $\rightarrow$ interface virtual: os
+tipos são abertos e o que os une é o comportamento. \textbf{Não, e cada um faz
+coisa diferente} $\rightarrow$ aí sim, \texttt{any}. O sintoma de \texttt{any}
+mal usado é uma cascata de \texttt{any\_cast} encadeados --- e essa cascata
+\emph{é} um \texttt{variant}, escrito à mão e sem exaustividade.
+\end{regra}
+
+Onde \texttt{any} é a resposta certa: quando o conjunto de tipos é aberto
+\textbf{por projeto}, definido por quem \emph{usa} a biblioteca. O subprojeto
+mostra o caso canônico --- uma classe \texttt{Propriedades} sobre um
+\texttt{std::map<std::string, std::any>} cujo método de leitura devolve
+\texttt{std::optional<T>}, combinando ``pode não existir'' e ``pode ser de
+qualquer tipo''. É assim que funcionam os ``\emph{user data}'' de bibliotecas de
+interface gráfica e os \emph{callbacks} de APIs em C.
+
+% -----------------------------------------------------------------------------
+\subsubsection{\texttt{tuple}, \texttt{pair} e os \emph{structured bindings}}
+% -----------------------------------------------------------------------------
+
+Uma \texttt{struct} nomeia os campos; uma \classe{std::tuple} não. É a única
+diferença relevante, e ela decide quando usar cada uma.
+
+O problema histórico da \texttt{tuple} era o acesso: \texttt{std::get<0>(r)} não
+diz nada sobre o que é o campo zero. Os \emph{structured bindings} do C++17
+mudaram essa conta ao dar nomes no ponto de uso --- e funcionam sobre
+\texttt{tuple}, \texttt{pair}, arranjo e \texttt{struct}:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\emph{Structured bindings} nos quatro contextos mais comuns.}]
+auto [nome, idade, salario] = obter_registro();   // tuple
+auto [x, y] = ponto;                              // struct, sem métodos
+
+for (const auto& [fruta, qtd] : estoque)          // map: chave e valor
+    fmt::print("{} → {}\n", fruta, qtd);
+
+if (auto [it, inserido] = m.try_emplace("nova", 1); inserido)
+    fmt::print("inseriu\n");                      // pair<iterator,bool>
+\end{lstlisting}
+
+\begin{armadilha}[os nomes do \emph{binding} são novos, não \emph{aliases}]
+\texttt{auto [a,b]} \textbf{copia} o objeto inteiro antes de dar nome às partes;
+\texttt{auto\& [a,b]} referencia; \texttt{const auto\& [a,b]} é o padrão seguro.
+Escrever \texttt{auto} por reflexo sobre um objeto grande copia o objeto sem
+avisar --- e alterar \texttt{a} não altera o original, o que costuma ser
+descoberto tarde.
+\end{armadilha}
+
+\paragraph{\texttt{std::tie}.} Constrói uma \texttt{tuple} de \emph{referências}
+aos argumentos, sem copiar. Como \texttt{tuple} já tem \texttt{operator<}
+lexicográfico, isso resolve comparação por múltiplos critérios numa linha:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Três usos de \texttt{std::tie}, em
+             \texttt{src/vocabulary\_types/demo\_tuple.hpp}.}]
+return std::tie(a.idade, a.nome) < std::tie(b.idade, b.nome);  // desempate
+std::tie(nome, idade, salario) = obter_registro();     // variáveis existentes
+std::tie(std::ignore, so_a_idade, std::ignore) = obter_registro();
+\end{lstlisting}
+
+A alternativa escrita à mão são duas linhas com um \texttt{if}; com quatro
+critérios, viram sete linhas e um defeito esperando para acontecer.
+
+\begin{armadilha}[\texttt{tie} guarda referências: nunca o devolva]
+O resultado referencia os objetos passados. Devolvê-lo de uma função deixa
+referências penduradas para locais que já morreram. Para devolver,
+\texttt{std::make\_tuple}, que copia.
+\end{armadilha}
+
+\texttt{std::apply} desempacota uma \texttt{tuple} nos parâmetros de uma função
+e \texttt{std::make\_from\_tuple} faz o mesmo para um construtor: os dois são a
+base de qualquer mecanismo que guarde argumentos agora e chame depois ---
+\texttt{std::bind}, filas de \emph{thread pool}, sistemas de tarefas
+(\cref{sec:concurrency}).
+
+Percorrer uma \texttt{tuple} não é possível com \emph{range-for}, porque cada
+elemento tem um \textbf{tipo} diferente e não há \texttt{operator++} que faça
+sentido. Exige desdobrar em compilação, o que uma \emph{fold expression} resolve
+em uma linha: \texttt{std::apply([\&f](const auto\&... e) \{ (f(e), ...); \},
+t);}. Uma \emph{fold expression} (C++17) aplica um operador binário a todos os
+elementos de um \emph{pack}; aqui o operador é a vírgula, e \texttt{(f(e), ...)}
+expande em \texttt{f(e1), f(e2), f(e3)} --- o corpo é instanciado uma vez por
+elemento, com o tipo certo.
+
+Quanto a escolher (\cref{tab:tuple-ou-struct}): o \texttt{sizeof} é
+\textbf{idêntico} --- o subprojeto verifica ---, então a decisão é inteiramente
+de legibilidade. E desde o C++20 a inicialização designada
+(\texttt{return R\{.encontrou = true, .indice = 3\};}) tirou o último argumento
+prático a favor da \texttt{tuple} em código de aplicação.
+
+\begin{table}[htbp]
+\centering
+\caption{A escolha é 100\% de legibilidade: o custo é o mesmo.}
+\label{tab:tuple-ou-struct}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Use \texttt{tuple}/\texttt{pair} quando\ldots} & \textbf{Use \texttt{struct} quando\ldots} \\
+\midrule
+os campos não têm nome natural         & o agregado é do \textbf{domínio} \\
+é interno e efêmero                    & atravessa uma API pública \\
+precisa de \texttt{tie}/\texttt{apply} & tem invariantes a manter \\
+é código genérico sobre $N$ tipos      & tem métodos próprios \\
+são 2 valores óbvios (\texttt{pair})   & tem 3 ou mais campos \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% -----------------------------------------------------------------------------
+\subsubsection{\classe{std::span}: a janela sobre memória alheia}
+% -----------------------------------------------------------------------------
+
+A assinatura mais comum do C legado é o par (ponteiro, tamanho):
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O parâmetro que não pode discordar de si mesmo, em
+             \texttt{src/vocabulary\_types/demo\_span.hpp}.}]
+int soma_antiga(const int* dados, std::size_t n);  // soma_antiga(bruto, 500) compila
+int soma_span(std::span<const int> dados);          // o tamanho vem do objeto
+\end{lstlisting}
+
+A primeira funciona e é rápida, mas separa duas informações que só fazem sentido
+juntas. \texttt{soma\_antiga(v, 500)} sobre um arranjo de cinco elementos
+compila sem um único aviso e lê 495 inteiros de memória que não é dela. E o
+corpo da função não pode usar \emph{range-for} nem os algoritmos da biblioteca,
+porque um ponteiro cru não é um \emph{range}.
+
+\classe{std::span} é esse par unificado num tipo que \emph{é} um \emph{range}.
+Não possui os dados, aceita arranjo C, \classe{std::array},
+\classe{std::vector} e qualquer sequência contígua, e o tamanho vem sempre do
+objeto de origem --- é impossível errar.
+
+O segundo parâmetro é o \emph{extent}: o número de elementos, quando conhecido
+em compilação. A diferença aparece no \texttt{sizeof} medido:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/vocabulary\_types/}: o tamanho no tipo não
+             ocupa espaço no objeto.}]
+sizeof(span<int>)    = 16      ponteiro + tamanho
+sizeof(span<int, 3>) =  8      só o ponteiro — o 3 está no TIPO
+sizeof(vector<int>)  = 24      ponteiro + size + capacity
+\end{lstlisting}
+
+Um \texttt{span<double, 3>} pode declarar \texttt{static\_assert(v.extent ==
+3);} dentro da própria função. A conversão de estático para dinâmico é
+implícita; a inversa exige \texttt{.first<3>()}, e quem escreve assume o risco.
+As janelas --- \texttt{first(n)}, \texttt{last(n)}, \texttt{subspan(i, n)} ---
+devolvem outro \texttt{span} sobre o mesmo \emph{buffer}, sem copiar nada.
+
+\begin{armadilha}[\texttt{subspan} fora dos limites é \gls{ub}, não exceção]
+As versões com \emph{template} (\texttt{.first<4>()}) verificam em compilação
+\emph{quando o extent é estático}; as versões com argumento de execução não
+verificam nada. Prefira as primeiras sempre que o tamanho for conhecido.
+\end{armadilha}
+
+Há duas coisas diferentes que podem ser congeladas, e a sintaxe engana
+(\cref{tab:span-constancia}). \texttt{span<const T>} protege os
+\emph{elementos}: não dá para escrever pela janela. \texttt{const span<T>}
+protege a \emph{janela}: não dá para reapontar o \texttt{span}, mas escrever nos
+elementos compila normalmente. Numa assinatura,
+\texttt{std::span<const T>} é o padrão para ``só lê''.
+
+\begin{table}[htbp]
+\centering
+\caption{\texttt{span<const T>} contra \texttt{const span<T>}.}
+\label{tab:span-constancia}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Quer proteger} & \textbf{Escreva} \\
+\midrule
+os \textbf{elementos} & \texttt{span<const T>} --- 95\% dos casos \\
+a \textbf{janela}     & \texttt{const span<T>} \\
+ambos                 & \texttt{const span<const T>} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Um \emph{borrowed range} é um \emph{range} cujos iteradores continuam válidos
+depois de o objeto \emph{range} morrer. Vale para \texttt{span} e
+\classe{std::string\_view} porque eles não possuem nada:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/vocabulary\_types/}:
+             \texttt{std::ranges::borrowed\_range}.}]
+span<int>          : true
+string_view        : true
+vector<int>        : false     ← o objeto POSSUI os dados
+vector<int>&       : true      ← a referência não possui
+\end{lstlisting}
+
+A consequência prática é que os algoritmos de \cabecalho{ranges} aceitam um
+\texttt{span} temporário e devolvem iterador utilizável, mas recusam um
+\texttt{vector} temporário --- devolvem \texttt{std::ranges::dangling}
+(\cref{sec:ranges}).
+
+\begin{armadilha}[um \texttt{span} é tão frágil quanto um par de iteradores]
+\begin{lstlisting}[style=bt, language=C++, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+std::span<int> s{v};
+v.push_back(4);      // realocou → s está pendurado
+s[0] = 1;            // heap-use-after-free
+\end{lstlisting}
+Porque \emph{é} isso: um ponteiro e um tamanho. Vale a mesma tabela de
+invalidação do \cref{sec:stl}. As três regras de uso: (1)~\texttt{span} é
+\textbf{parâmetro} --- o uso dominante e sempre seguro; (2)~como retorno, só se
+o \emph{buffer} sobreviver à chamada, o que na prática significa apontar para um
+membro do objeto; (3)~como membro, exige documentar quem é o dono. O subprojeto
+recomenda \texttt{-Db\_sanitize=address,undefined} justamente por isto.
+\end{armadilha}
+
+\begin{regra}[o resumo do vocabulário]
+Função que pode não achar nada: \texttt{optional<T>}; e se o \emph{motivo}
+importa, \texttt{expected<T,E>}. ``Um destes $N$ tipos'', lista fechada:
+\texttt{variant} com \texttt{visit} e o \emph{overload idiom}. Tipos definidos
+por quem \textbf{usa} a API: \texttt{any} --- e, se aparecer cascata de
+\texttt{any\_cast}, era \texttt{variant}. Dois valores sem nome natural:
+\texttt{pair}; três ou mais, ou API pública: \texttt{struct} nomeado. Parâmetro
+que recebe sequência contígua: \texttt{span<const T>}.
+\end{regra}
+
+% =============================================================================
+\subsection{Computação em tempo de compilação}
+\label{sec:ct-fundo}
+% =============================================================================
+
+A segunda metade do capítulo troca de assunto sem trocar de estratégia. Se pôr
+informação no tipo permite ao compilador verificar, pôr \emph{cálculo} no tempo
+de compilação permite a ele \textbf{executar} --- e, o que é mais interessante,
+\emph{provar}.
+
+\begin{porque}[o argumento não é desempenho: é a ausência de \gls{ub}]
+O avaliador de expressões constantes é obrigado, pelo padrão, a recusar qualquer
+operação cujo comportamento não esteja definido. Isso transforma uma classe
+inteira de defeitos de execução em erros de compilação:
+\begin{lstlisting}[style=bt, language=C++, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+constexpr int x = 1 / 0;            // erro de compilação, não crash
+constexpr int y = arr[10];          // erro se estiver fora dos limites
+constexpr int z = *(int*)nullptr;   // erro
+\end{lstlisting}
+Código que passa sob \texttt{static\_assert} é código \textbf{provadamente}
+livre de \gls{ub} naquele caminho. Nenhuma bateria de testes dá essa garantia:
+testes cobrem as entradas que alguém pensou em escrever; isto cobre o caminho
+inteiro. A vantagem de desempenho é real, mas é a segunda melhor razão.
+\end{porque}
+
+% -----------------------------------------------------------------------------
+\subsubsection{\texttt{constexpr} é permissão, não garantia}
+% -----------------------------------------------------------------------------
+
+O erro conceitual mais comum é ler \texttt{constexpr} como ``isto sempre roda na
+compilação''. É uma \textbf{permissão}: ``isto \emph{pode} rodar na compilação,
+se os argumentos permitirem''. A mesma função serve aos dois mundos, e quem
+decide é o contexto da chamada:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A mesma função nos dois mundos, em
+             \texttt{src/compile\_time/demo\_constexpr.hpp}.}]
+constexpr int fatorial(int n) {
+    int r = 1;
+    for (int i = 2; i <= n; ++i) r *= i;   // laço: legal desde C++14
+    return r;
+}
+
+constexpr int em_compilacao = fatorial(10);   // avaliado AGORA
+int n = 5;
+const int em_runtime = fatorial(n);           // vira código de máquina
+\end{lstlisting}
+
+Para \textbf{forçar} a avaliação existem três contextos, do mais fraco para o
+mais forte: \texttt{constexpr int a = f();} força naquela declaração;
+\texttt{static\_assert(f() == x);} força e ainda verifica o valor; e
+\texttt{std::array<int, f()>} força, porque um parâmetro de \emph{template} que
+é valor é o contexto mais exigente que a linguagem tem. Sem nenhum desses, o
+compilador \emph{pode} avaliar em compilação --- e com \texttt{-O2} normalmente
+avalia ---, mas não é obrigado. Para \emph{garantir} que uma função nunca rode
+em execução, a ferramenta é \texttt{consteval}.
+
+O que cabe dentro de uma função \texttt{constexpr} cresceu a cada padrão
+(\cref{tab:evolucao-constexpr}). Conhecer essa tabela evita duas frustrações:
+tentar escrever um laço em C++11 e concluir que \texttt{constexpr} é inútil, e
+tentar devolver um \texttt{vector} em C++20 e concluir que o compilador está com
+defeito.
+
+\begin{table}[htbp]
+\centering
+\caption{O que passou a caber numa função \texttt{constexpr}, por padrão.}
+\label{tab:evolucao-constexpr}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Padrão} & \textbf{Passou a aceitar} \\
+\midrule
+C++11 & praticamente só \texttt{return expr;} --- uma única instrução \\
+C++14 & laços, variáveis locais, \texttt{if}/\texttt{switch}, vários \texttt{return} \\
+C++17 & \texttt{if constexpr}, \emph{lambdas} \texttt{constexpr} \\
+C++20 & alocação transitória, \texttt{try}/\texttt{catch}, \texttt{virtual}, \texttt{vector}, \texttt{string} \\
+C++23 & \texttt{if consteval}, \texttt{goto}, variáveis \texttt{static} locais \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O C++20 permitiu alocar durante uma avaliação em compilação, o que trouxe
+\classe{std::vector} e \classe{std::string} para dentro do \texttt{constexpr}. A
+permissão vem com uma condição --- \textbf{toda alocação feita durante a
+avaliação precisa ser liberada antes de a avaliação terminar} ---, a chamada
+alocação \emph{transitória}. Isso permite usar um \texttt{vector} como memória
+de rascunho, e o subprojeto resolve o crivo de Eratóstenes inteiro antes de o
+programa existir:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O crivo de Eratóstenes rodando no compilador.}]
+constexpr int soma_dos_primos_ate(int limite) {
+    std::vector<bool> composto(limite + 1, false);      // aloca
+    int soma = 0;
+    for (int i = 2; i <= limite; ++i) {
+        if (composto[i]) continue;
+        soma += i;
+        for (int j = i * i; j <= limite; j += i) composto[j] = true;
+    }
+    return soma;                       // o vector é destruído aqui
+}
+
+constexpr int soma_primos = soma_dos_primos_ate(1000);
+static_assert(soma_primos == 76127);
+\end{lstlisting}
+
+\begin{armadilha}[\texttt{constexpr std::vector<int> v = \{1,2,3\};} não compila]
+A regra transitória proíbe que a alocação sobreviva ao fim da avaliação --- e
+uma variável \texttt{constexpr} \emph{é} o resultado que sobrevive. A memória do
+compilador não existe mais quando o programa roda; não haveria para onde
+apontar. Logo, um \texttt{vector} pode aparecer no \emph{meio} de um cálculo
+\texttt{constexpr} e nunca ser o \emph{resultado} dele. Para devolver dados de
+uma função \texttt{constexpr}, o tipo é \classe{std::array}, cujo armazenamento
+é o próprio objeto.
+\end{armadilha}
+
+Um construtor \texttt{constexpr} permite que objetos existam em contexto de
+compilação, e desde o C++14 métodos \texttt{constexpr} não são implicitamente
+\texttt{const} --- podem modificar o objeto durante a avaliação. O
+\texttt{Racional} do subprojeto normaliza \texttt{2/4} para \texttt{1/2} no
+construtor, e \texttt{static\_assert(meio.numerador() == 1);} verifica isso sem
+executar nada. Onde a mutação é necessária, o idioma é um \emph{lambda} chamado
+imediatamente, que cria um escopo mutável e devolve a constante pronta.
+
+Uma avaliação \texttt{constexpr} não pode fazer entrada/saída --- não há sistema
+operacional na compilação ---, chamar função não-\texttt{constexpr}, ler
+variável não-\texttt{constexpr}, usar \texttt{reinterpret\_cast} nem deixar
+alocação viva ao fim. E há um limite prático: o GCC impõe um teto de passos de
+avaliação (\texttt{-fconstexpr-ops-limit}, padrão 33.554.432); ultrapassá-lo
+produz \emph{``constexpr evaluation operation count exceeded''}.
+
+% -----------------------------------------------------------------------------
+\subsubsection{\texttt{consteval} e \texttt{constinit}: as garantias}
+% -----------------------------------------------------------------------------
+
+\texttt{constexpr} deixa duas perguntas sem resposta, e o C++20 acrescentou uma
+palavra-chave para cada uma (\cref{tab:tres-palavras}). Funções
+\texttt{consteval} chamam-se \emph{immediate functions}: toda chamada precisa
+ser, ela própria, expressão constante. Chamar com uma variável não compila, com
+a mensagem \emph{``call to consteval function is not a constant expression''}.
+
+\begin{table}[htbp]
+\centering
+\caption{As três palavras e o que cada uma exige.}
+\label{tab:tres-palavras}
+\footnotesize
+\begin{tabular}{@{}lcc@{}}
+\toprule
+\textbf{Palavra} & \textbf{Avaliação em compilação} & \textbf{Argumento de execução} \\
+\midrule
+(nenhuma)          & não                  & aceita \\
+\texttt{constexpr} & \textbf{permitida}   & aceita \\
+\texttt{consteval} & \textbf{obrigatória} & \textbf{erro} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A regra que confunde é que \texttt{consteval} é \textbf{contagiosa para cima}:
+uma função \texttt{constexpr} \emph{pode} ser chamada em execução; se ela
+repassasse o próprio parâmetro a uma \texttt{consteval}, essa chamada teria de
+acontecer em execução --- proibido por definição. O compilador recusa já na
+definição:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Quem repassa um parâmetro para uma \texttt{consteval} precisa ser
+             \texttt{consteval}.}]
+consteval int dobro_imediato(int x) { return x * 2; }
+
+constexpr int f(int x) { return dobro_imediato(x); }      // ✗ não compila
+consteval int g(int x) { return dobro_imediato(x) + 1; }  // ✓ contexto imediato
+constexpr int h(int x) { return x + dobro_imediato(10); } // ✓ argumento literal
+\end{lstlisting}
+
+A aplicação mais útil é a \textbf{validação de argumento literal}. Como um
+\texttt{throw} que escapa de uma avaliação constante é erro de compilação, um
+construtor \texttt{consteval} recusa valores inválidos antes de o programa
+existir:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Validação em compilação, em
+             \texttt{src/compile\_time/demo\_consteval.hpp}.}]
+class Porta {
+public:
+    consteval explicit Porta(int valor) : valor_(valor) {
+        if (valor < 1 || valor > 65535)
+            throw "porta fora do intervalo 1..65535";
+    }
+    constexpr int valor() const { return valor_; }
+private:
+    int valor_;
+};
+
+constexpr Porta http{80};       // ✓
+// constexpr Porta ruim{70000}; // ✗ NÃO COMPILA — a mensagem cita o throw
+\end{lstlisting}
+
+É exatamente o mecanismo do \classe{std::format} do C++20: a \emph{string} de
+formato é validada por uma \texttt{consteval}, e por isso
+\texttt{std::format("\{:d\}", "texto")} falha na \textbf{compilação}, não com
+exceção em produção. O subprojeto reproduz a ideia com uma
+\texttt{contar\_placeholders} que recusa uma chave sem fechamento.
+
+\paragraph{\texttt{constinit} e o \emph{static initialization order fiasco}.}
+Variáveis globais de unidades de tradução diferentes são inicializadas em ordem
+\textbf{não especificada} --- ordem que, na prática, depende de como o
+\emph{linker} arrumou os objetos. Se a inicialização de uma global em
+\texttt{b.cpp} lê uma global de \texttt{a.cpp}, o programa pode ler um objeto
+ainda não construído. Esse é o fiasco: um defeito que aparece e desaparece
+conforme a ordem de link muda.
+
+\texttt{constinit} exige inicialização \textbf{estática} --- feita na compilação
+e gravada direto no binário. Se o valor já está lá quando o programa começa, não
+há ordem a respeitar; e o compilador recusa qualquer inicialização que não caiba
+na compilação, de modo que o fiasco vira erro de \emph{build}. A terceira linha
+da \cref{tab:constinit} é a razão de a palavra existir: sem ela, a única forma
+de garantir inicialização estática era tornar a variável \texttt{constexpr}, o
+que a congela. A outra saída clássica é o \emph{Meyers singleton}
+(\cref{sec:solid}).
+
+\begin{table}[htbp]
+\centering
+\caption{\texttt{constinit} não implica \texttt{const}.}
+\label{tab:constinit}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Palavra} & \textbf{Inicialização} & \textbf{Mutável depois} \\
+\midrule
+\texttt{const}     & qualquer            & não \\
+\texttt{constexpr} & compilação          & não \\
+\texttt{constinit} & \textbf{compilação} & \textbf{sim} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{\texttt{if consteval} (C++23).} Às vezes o algoritmo ótimo difere
+entre os dois mundos: em execução convém o intrínseco do processador; em
+compilação, ele não existe e é preciso um laço.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Uma função, dois algoritmos, um resultado.}]
+constexpr int contar_bits(unsigned x) {
+    if consteval {
+        int n = 0;                          // caminho de COMPILAÇÃO
+        while (x) { n += static_cast<int>(x & 1u); x >>= 1; }
+        return n;
+    } else {
+        return __builtin_popcount(x);       // caminho de EXECUÇÃO
+    }
+}
+\end{lstlisting}
+
+\begin{armadilha}[\texttt{std::is\_constant\_evaluated()} tem três pegadinhas]
+A função do C++20 que precedeu o \texttt{if consteval} erra de três maneiras.
+\textbf{Um:} dentro de um \texttt{if} comum, responde \texttt{true} sempre que a
+função \emph{é} \texttt{constexpr}, mesmo quando aquela chamada está sendo
+compilada para execução. \textbf{Dois:}
+\texttt{if constexpr (std::is\_constant\_evaluated())} é \textbf{sempre}
+verdadeiro, porque a própria condição é avaliada como constante --- o ramo
+\texttt{else} vira código morto, silenciosamente. \textbf{Três:} o ramo de um
+\texttt{if} comum \textbf{não é contexto imediato}, então chamar uma função
+\texttt{consteval} lá dentro é erro de compilação, mesmo que o ramo só fosse
+executado durante a avaliação constante. O \texttt{if consteval} \emph{cria}
+esse contexto, e é essa a diferença que justificou uma palavra-chave nova.
+\end{armadilha}
+
+% -----------------------------------------------------------------------------
+\subsubsection{\texttt{static\_assert} e \texttt{type\_traits}}
+% -----------------------------------------------------------------------------
+
+\texttt{static\_assert} é a única forma de fazer o compilador falhar de
+propósito, com uma mensagem sua. Combinado com \cabecalho{type\_traits},
+transforma suposições implícitas sobre tipos em contratos verificados. A regra
+que orienta o uso: \emph{se você escreveu o comentário ``T precisa ser
+copiável'', esse comentário deveria ser um \texttt{static\_assert}}.
+
+\begin{regra}[a mensagem é o produto]
+Um \texttt{static\_assert} sem mensagem faz o compilador repetir a
+\emph{expressão}, que raramente ajuda. A mensagem deve dizer \textbf{o que
+fazer}, não o que falhou --- quem lê já sabe o que falhou.
+\begin{lstlisting}[style=bt, language=C++, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+static_assert(std::is_trivially_copyable_v<T>,
+    "serializar() copia bytes crus e só aceita tipos trivialmente "
+    "copiáveis. Tipos com ponteiros, std::string ou destrutor próprio "
+    "precisam de uma sobrecarga específica.");
+\end{lstlisting}
+Compare com a alternativa: \emph{``static assertion failed''}.
+\end{regra}
+
+Um \emph{type trait} é um \emph{template} que responde uma pergunta sobre um
+tipo em compilação. Os que respondem sim ou não terminam em \texttt{\_v}; os de
+transformação terminam em \texttt{\_t} e produzem outro tipo
+(\cref{tab:traits}). Entre os de transformação, um explica um comportamento que
+todo mundo já encontrou: \texttt{decay\_t<const int\&>} é \texttt{int} e
+\texttt{decay\_t<int[5]>} é \texttt{int*} --- exatamente o que \texttt{auto} faz
+na dedução por valor.
+
+\begin{table}[htbp]
+\centering
+\caption{O catálogo de \emph{traits} que aparece de verdade.}
+\label{tab:traits}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Pergunta} & \textbf{Trait} \\
+\midrule
+dá para \texttt{memcpy}?                  & \texttt{is\_trivially\_copyable\_v} \\
+tem \gls{vtable}?                         & \texttt{is\_polymorphic\_v} \\
+o \emph{move} é barato \textbf{e} seguro? & \texttt{is\_nothrow\_move\_constructible\_v} \\
+dá para inicializar com \texttt{\{\}}?    & \texttt{is\_aggregate\_v} \\
+herda de X? converte para X?              & \texttt{is\_base\_of\_v}, \texttt{is\_convertible\_v} \\
+é chamável com estes argumentos?          & \texttt{is\_invocable\_v} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A pergunta ``este tipo tem o método X?'' não tem \emph{trait} pronto. A forma
+clássica usa \texttt{std::void\_t} com especialização parcial e \gls{sfinae}; a
+moderna usa um \gls{concept}:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O mesmo teste, em C++17 e em C++20, em
+             \texttt{src/compile\_time/demo\_static\_assert.hpp}.}]
+// C++17: void_t + especialização parcial (8 linhas)
+template <typename, typename = void>
+struct tem_serializar : std::false_type {};
+
+template <typename T>
+struct tem_serializar<T,
+        std::void_t<decltype(std::declval<const T&>().serializar())>>
+    : std::true_type {};
+
+// C++20: um concept diz a mesma coisa em 3 linhas — e diz mais
+template <typename T>
+concept Serializavel = requires(const T& t) {
+    { t.serializar() } -> std::convertible_to<std::string>;
+};
+\end{lstlisting}
+
+O \emph{concept} ganha em três frentes, e a terceira surpreende: além de ser
+mais curto e de dar mensagem de erro na chamada em vez de no meio da
+instanciação, ele verifica também o \textbf{tipo de retorno}. Um tipo cujo
+\texttt{serializar()} devolve \texttt{int} passa no \emph{detection idiom} ---
+que só pergunta se a expressão é válida --- e é corretamente rejeitado pelo
+\emph{concept}.
+
+Os dois não são substitutos: falham em \textbf{momentos diferentes}, e isso muda
+a resolução de sobrecarga (\cref{tab:assert-concept}).
+\texttt{com\_assert(3.14)} é erro --- o \emph{template} foi escolhido e só então
+o \emph{assert} falhou, sem chance de outra sobrecarga assumir.
+\texttt{com\_concept(3.14)} funciona: a restrição removeu o \emph{template} do
+conjunto de candidatos, e \texttt{void com\_concept(double)} venceu. Use
+\emph{concept} para \textbf{restringir}; \texttt{static\_assert} para
+\textbf{afirmar} fatos sem alternativa.
+
+\begin{table}[htbp]
+\centering
+\caption{O momento da falha decide se há alternativa.}
+\label{tab:assert-concept}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Ferramenta} & \textbf{Quando falha} & \textbf{Afeta a sobrecarga?} \\
+\midrule
+\texttt{static\_assert} & \textbf{após} a escolha    & não \\
+\emph{concept}          & \textbf{durante} a escolha & \textbf{sim} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Há um domínio em que \emph{concepts} não substituem nada: \emph{layout} e
+\gls{abi}. Estruturas que atravessam uma fronteira binária --- protocolo de
+rede, formato de arquivo, chamada para outra linguagem --- têm requisitos de
+tamanho e de deslocamento de campo que \emph{concepts} não expressam, porque
+restringem \emph{templates} e não dizem nada sobre disposição de bytes.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O contrato do protocolo, verificado no \emph{build}.}]
+static_assert(sizeof(CabecalhoDeRede) == 8,
+    "O cabeçalho do protocolo tem 8 bytes por especificação. "
+    "Se este assert falhou, o padding mudou e os pacotes gerados "
+    "serão incompatíveis com a outra ponta.");
+static_assert(offsetof(CabecalhoDeRede, comprimento) == 2);
+static_assert(std::is_trivially_copyable_v<CabecalhoDeRede>);
+\end{lstlisting}
+
+O subprojeto mostra o mesmo \texttt{struct} com e sem \texttt{\#pragma pack(1)},
+e os tamanhos diferem --- que é precisamente o acidente que os três
+\emph{asserts} existem para transformar em erro de \emph{build} em vez de pacote
+corrompido em produção.
+
+% -----------------------------------------------------------------------------
+\subsubsection{NTTP: quando o valor entra no tipo}
+% -----------------------------------------------------------------------------
+
+Um \emph{template} pode receber tipos (\texttt{template <typename T>}) e também
+\textbf{valores} (\texttt{template <int N>}). O segundo caso chama-se
+\textbf{NTTP}, de \emph{non-type template parameter}, e o ponto é que o valor
+passa a fazer parte da identidade do tipo: \texttt{BufferFixo<int,4>} e
+\texttt{BufferFixo<int,16>} são tipos \textbf{diferentes}, não são atribuíveis
+um ao outro, e \texttt{capacidade()} não lê memória nenhuma.
+
+A aplicação que mais rende é verificação dimensional, porque transforma uma
+classe inteira de defeitos de execução em erro de compilação:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Álgebra de matrizes verificada pelo compilador, em
+             \texttt{src/compile\_time/demo\_nttp.hpp}.}]
+template <std::size_t Linhas, std::size_t Colunas>
+class Matriz {
+    // Só compila se as dimensões internas casarem, e o resultado tem o
+    // tipo certo, derivado das entradas.
+    template <std::size_t OutrasColunas>
+    constexpr Matriz<Linhas, OutrasColunas>
+    operator*(const Matriz<Colunas, OutrasColunas>& o) const;
+};
+
+Matriz<2,3> * Matriz<3,4> → Matriz<2,4>     // compila
+Matriz<2,3> * Matriz<2,2> → NÃO COMPILA     // dimensões incompatíveis
+\end{lstlisting}
+
+Sem NTTP, as dimensões seriam campos e o erro só apareceria em execução ---
+provavelmente como leitura fora dos limites, que é \gls{ub} silencioso.
+
+Até o C++17, NTTP só admitia inteiros, \texttt{enum}, ponteiros e referências. O
+C++20 ampliou para tipos de classe literais, o que permitiu parametrizar por
+texto. A condição é o tipo ser \textbf{\emph{structural}}: todos os membros de
+dados públicos, sem \texttt{private} ou \texttt{protected}, sem
+\texttt{virtual}, e os membros também \emph{structural}. É por isso que
+\classe{std::string} \textbf{não} pode ser NTTP --- tem membros privados e aloca
+--- e é por isso que se escreve um \texttt{StringFixa} à mão:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\emph{Strings} como parâmetro de \emph{template} (C++20).}]
+template <std::size_t N>
+struct StringFixa {
+    char dados[N]{};
+    consteval StringFixa(const char (&lit)[N]) { std::copy_n(lit, N, dados); }
+    constexpr std::string_view view() const { return {dados, N - 1}; }
+    constexpr bool operator==(const StringFixa&) const = default;  // obrigatório
+};
+template <std::size_t N> StringFixa(const char (&)[N]) -> StringFixa<N>;
+
+template <StringFixa Nome, typename T> class Campo { /* ... */ };
+
+Campo<"largura", int> largura{1920};
+static_assert(decltype(largura)::nome() == "largura");
+\end{lstlisting}
+
+O \texttt{operator==} padronizado não é decoração: a comparação estrutural é
+requisito para servir de NTTP, porque o compilador precisa decidir se duas
+instanciações são a mesma. O \texttt{N - 1} corta o
+\texttt{'\textbackslash 0'} do literal. E a consequência é que
+\texttt{Campo<"largura",int>} e \texttt{Campo<"altura",int>} são tipos
+\textbf{distintos}: trocá-los é erro de compilação, não erro de lógica. Vale
+mencionar ainda o \texttt{template <auto Valor>}, que aceita qualquer constante
+--- \texttt{int}, \texttt{double}, enumerador --- sem um \emph{template} por
+tipo de valor.
+
+\begin{armadilha}[cada valor distinto é uma instanciação nova]
+NTTP tem um custo que não aparece em \emph{benchmark} nenhum de execução:
+\texttt{BufferFixo<int,4>}, \texttt{<int,8>} e \texttt{<int,16>} são três
+classes completas, com todos os métodos gerados três vezes. As consequências são
+binário maior, compilação mais lenta e pressão sobre o cache de instruções num
+laço que alterne entre instanciações. Use quando os valores forem
+\textbf{poucos, fixos e conhecidos} e participarem da \textbf{correção} do
+programa --- dimensões, unidades. Não use quando o valor vier de configuração,
+arquivo ou entrada; e, se a intenção era apenas evitar uma alocação, o
+instrumento certo é \texttt{std::span}. A técnica clássica para conter a
+explosão é extrair para uma base não-\emph{template} tudo o que não depende do
+NTTP.
+\end{armadilha}
+
+% -----------------------------------------------------------------------------
+\subsubsection{Tabelas geradas na compilação}
+% -----------------------------------------------------------------------------
+
+Os recursos anteriores são mecanismo; este é o pagamento: substituir trabalho de
+inicialização por dados que já nascem prontos dentro do binário. O exemplo
+canônico é a tabela de 256 entradas do CRC-32, tradicionalmente gerada na
+inicialização do programa ou colada à mão a partir de um arquivo gerado.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A tabela do CRC-32 calculada pelo compilador, em
+             \texttt{src/compile\_time/demo\_tabelas.hpp}.}]
+constexpr std::array<std::uint32_t, 256> gerar_tabela_crc32() {
+    constexpr std::uint32_t polinomio = 0xEDB88320u;
+    std::array<std::uint32_t, 256> tabela{};
+    for (std::uint32_t i = 0; i < 256; ++i) {
+        std::uint32_t c = i;
+        for (int k = 0; k < 8; ++k)
+            c = (c & 1u) ? (polinomio ^ (c >> 1)) : (c >> 1);
+        tabela[i] = c;
+    }
+    return tabela;
+}
+
+// `inline constexpr` numa variável de header: uma única instância no
+// programa, sem violar a ODR. Antes do C++17 isso exigiria um .cpp.
+inline constexpr auto TABELA_CRC32 = gerar_tabela_crc32();
+
+static_assert(TABELA_CRC32[255] == 0x2D02EF8Du);
+\end{lstlisting}
+
+A ODR --- \emph{One Definition Rule} --- exige que cada entidade tenha
+exatamente uma definição no programa inteiro. Um \emph{header} incluído por dez
+\texttt{.cpp} definiria a variável dez vezes; \texttt{inline} instrui o
+\emph{linker} a fundir as definições numa só.
+
+\paragraph{A tabela vai mesmo para o binário --- verificado.} Em vez de afirmar
+que a tabela está no binário, o subprojeto manda inspecionar o binário:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Medição em \texttt{src/compile\_time/}: onde as tabelas foram parar
+             no executável.}]
+$ objdump -t dist/bin/compile_time | grep -i TABELA
+.rodata      0x400  TABELA_CRC32
+.data.rel.ro 0x0d8  TABELA_HTTP
+\end{lstlisting}
+
+O resultado contraria a expectativa ingênua de que as duas estariam no mesmo
+lugar, e a razão é instrutiva. \texttt{TABELA\_CRC32} contém apenas
+\texttt{uint32\_t} --- valores puros, gravados literalmente no arquivo e
+mapeados somente-leitura: vão para \texttt{.rodata}, ocupando
+$0x400 = 1024$ bytes, exatamente $256 \times 4$. \texttt{TABELA\_HTTP} contém
+\classe{std::string\_view}, que são \textbf{ponteiros}: o endereço final só é
+conhecido quando o \emph{loader} mapeia o binário, então ela precisa de correção
+em tempo de carga e vai para \texttt{.data.rel.ro} --- somente-leitura
+\emph{após} a relocação. O que mais importa é o que \emph{não} apareceu: nenhuma
+das duas está em \texttt{.bss}, a seção de dados zerados que seria preenchida
+por código de inicialização. Se estivessem lá, a promessa de ``calculado na
+compilação'' seria falsa.
+
+Desde o C++20 \texttt{std::sort} é \texttt{constexpr}, o que permite escrever a
+tabela fora de ordem, deixar o compilador ordenar, e usar busca binária em
+execução:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A pré-condição da busca binária, provada em vez de testada.}]
+constexpr auto gerar_tabela_http() {
+    std::array<EntradaHttp, 9> t{{ /* escrita fora de ordem */ }};
+    std::sort(t.begin(), t.end());          // constexpr desde C++20
+    return t;
+}
+inline constexpr auto TABELA_HTTP = gerar_tabela_http();
+
+static_assert(std::is_sorted(TABELA_HTTP.begin(), TABELA_HTTP.end()));
+static_assert(descrever_http(404) == "Not Found");
+static_assert(descrever_http(999) == "Unknown");
+\end{lstlisting}
+
+Aplicar busca binária a uma sequência não ordenada é \gls{ub} silencioso
+(\cref{sec:stl}). Aqui a pré-condição não é testada: é \emph{provada}. Essa
+diferença é o argumento inteiro da seção.
+
+\classe{std::map} não é \texttt{constexpr}, porque aloca nós. Para um mapeamento
+pequeno e fixo, um arranjo ordenado com busca binária ganha nas três dimensões
+(\cref{tab:mapa-fixo}) --- inclusive em velocidade, porque é contíguo, com a
+mesma lógica de cache do \cref{sec:stl}.
+
+\begin{table}[htbp]
+\centering
+\caption{Para poucas dezenas de entradas fixas, o arranjo ordenado ganha em tudo.}
+\label{tab:mapa-fixo}
+\footnotesize
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Estrutura} & \texttt{constexpr} & \textbf{Aloca} & \textbf{Busca} \\
+\midrule
+\texttt{std::map}            & não          & sim          & $O(\log n)$ \\
+\texttt{std::unordered\_map} & não          & sim          & $O(1)$ médio \\
+\textbf{arranjo ordenado}    & \textbf{sim} & \textbf{não} & $O(\log n)$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{armadilha}[uma API \texttt{constexpr} robusta usa índices, não ponteiros]
+Esta lição só aparece escrevendo o código. A forma natural de devolver ``achou
+ou não'' é um ponteiro, e depois \texttt{return p ? *p : padrao;}. Acontece que
+converter um ponteiro-para-membro-de-objeto-\texttt{constexpr} em \texttt{bool}
+\textbf{não é expressão constante} em todos os modos do GCC: o mesmo código
+compila normalmente e falha sob \texttt{-fsanitize}, com a avaliação constante
+recusada. O \texttt{MapaFixo} do subprojeto devolve, por isso, o
+\textbf{índice} --- ou \texttt{N}, se não achou. Aritmética de índice é sempre
+expressão constante, e por isso é a base mais robusta. É um caso em que a
+medição --- aqui, um \emph{build} que falha --- contrariou o que o projeto
+``natural'' recomendava.
+\end{armadilha}
+
+\begin{regra}[o custo é pago pelo compilador, e ele é lento]
+O interpretador de \texttt{constexpr} do GCC é ordens de grandeza mais lento que
+código nativo, e tem teto (\texttt{-fconstexpr-ops-limit}, 33,5 milhões de
+passos). \textbf{Não} vale a pena quando a tabela é grande e o \emph{build} fica
+lento, quando os dados mudam com frequência --- um arquivo lido em execução é
+mais fácil de manter --- ou quando o cálculo já era trivial na inicialização.
+\textbf{Vale muito} quando a tabela é pequena ou média e imutável (CRC, seno,
+códigos de erro), quando se quer \emph{provar} uma propriedade em vez de
+testá-la, em ambiente sem \emph{heap} (embarcado, \emph{kernel}), e para
+eliminar inicialização estática dinâmica. A forma de decidir é medir:
+\texttt{time g++ -std=c++23 -c src/compile\_time/main.cpp}.
+\end{regra}
+
+% =============================================================================
+\subsection{O inventário medido do C++23}
+\label{sec:cpp23-medido}
+% =============================================================================
+
+O subprojeto \projeto{cpp23} é diferente de todos os outros: além de
+\emph{ensinar} os recursos do C++23, ele \textbf{mede} quais estão disponíveis
+no compilador local e imprime o resultado. A tabela de suporte do
+\texttt{src/ROADMAP.md} é gerada a partir dessa saída.
+
+\begin{porque}[``o C++23'' não é algo que um compilador tem ou não tem]
+Cada recurso do padrão chega numa versão diferente do compilador, e a biblioteca
+costuma atrasar em relação à linguagem --- são equipes e cronogramas distintos.
+Perguntar ``este compilador suporta C++23?'' é uma pergunta mal formulada: a
+pergunta útil é ``suporta \emph{este recurso}?'', e ela tem resposta mecânica.
+\end{porque}
+
+Uma \textbf{\emph{feature-test macro}} é uma macro que o padrão obriga a
+implementação a definir quando um recurso está disponível, com valor igual à
+data de adoção no formato AAAAMM. Não são convenção de compilador --- são parte
+do padrão, o que as torna a única forma portátil de escrever código que se
+adapta. As de \textbf{linguagem} começam com \texttt{\_\_cpp\_} e são
+predefinidas pelo compilador; as de \textbf{biblioteca} começam com
+\texttt{\_\_cpp\_lib\_} e vivem em \cabecalho{version}, um \emph{header} que não
+declara nada além delas. O valor numérico importa, porque recursos ganham
+revisões: \texttt{\#if \_\_cpp\_lib\_optional >= 202110} testa especificamente
+se as operações monádicas estão presentes.
+
+\subsubsection{O inventário, e as seis entradas corrigidas}
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/cpp23/}: o que este GCC 13.3 tem de
+             \emph{linguagem}.}]
+if consteval                    ✓ 202106
+operator[](i, j, k)             ✓ 202211
+static operator()               ✓ 202207
+sufixo uz / z                   ✓ 202011
+\N{NOME DO CARACTERE}           ✓ 202207
+deducing this                   ✗ ausente     ← a mais sentida
+\end{lstlisting}
+
+Na biblioteca estão \textbf{presentes} \texttt{std::expected},
+\texttt{std::byteswap}, \texttt{std::to\_underlying}, \texttt{std::unreachable},
+\texttt{views::zip}, \texttt{string::contains} e \texttt{std::stacktrace} ---
+este último com uma ressalva grave, tratada adiante. Estão \textbf{ausentes}
+\texttt{std::print}/\texttt{println}, \texttt{std::mdspan},
+\texttt{std::generator}, \texttt{ranges::to<C>()}, \texttt{std::flat\_map},
+\texttt{views::enumerate}, \texttt{ranges::starts\_with} e
+\texttt{std::out\_ptr}.
+
+E aqui está o resultado que ensina método. A tabela de suporte do repositório
+foi escrita, antes da medição, a partir de leitura de documentação. Quando o
+programa passou a medir, \textbf{seis entradas estavam erradas}
+(\cref{tab:presumido-medido}) --- todas na mesma direção: a de
+\textbf{subestimar} o que já estava disponível. Ou seja, o repositório estava
+reimplementando à mão coisas que a biblioteca já oferecia. O viés tem
+explicação: documentação de terceiros e tabelas de compatibilidade envelhecem, e
+a memória de quando um recurso ``ainda não existia'' persiste anos depois de
+deixar de ser verdade. A macro não envelhece, porque é o próprio compilador
+respondendo.
+
+\begin{table}[htbp]
+\centering
+\caption{O que a documentação sugeria contra o que a medição encontrou no GCC 13.3.}
+\label{tab:presumido-medido}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Recurso} & \textbf{Presumido} & \textbf{Medido} \\
+\midrule
+\texttt{std::stacktrace}               & ausente & \textbf{presente} (com \texttt{-lstdc++\_libbacktrace}) \\
+\texttt{views::zip}                    & ausente & \textbf{presente} \\
+\texttt{ranges::fold\_left}            & ausente & \textbf{presente} \\
+\texttt{views::chunk} / \texttt{slide} & ausente & \textbf{presente} \\
+\texttt{std::move\_only\_function}     & ausente & \textbf{presente} \\
+\texttt{std::spanstream}               & ausente & \textbf{presente} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{regra}[não presuma: meça]
+Reproduzir o inventário em qualquer \emph{toolchain} custa duas linhas:
+\begin{lstlisting}[style=bt, language=bash, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+echo '#include <version>' > /tmp/v.cpp
+g++ -std=c++23 -dM -E /tmp/v.cpp | grep __cpp_lib | sort
+\end{lstlisting}
+Isso despeja todas as macros de biblioteca definidas, com os valores. É a
+resposta autoritativa, e é local.
+\end{regra}
+
+\begin{armadilha}[a macro diz que a API existe, não que ela linka]
+Esta é a lição mais útil do subprojeto inteiro. O
+\texttt{\_\_cpp\_lib\_stacktrace} está definido neste GCC, e o \emph{header}
+existe. Mesmo assim:
+\begin{lstlisting}[style=bt, language=bash, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+$ g++ -std=c++23 usa_stacktrace.cpp
+undefined reference to `__glibcxx_backtrace_simple'
+
+$ g++ -std=c++23 usa_stacktrace.cpp -lstdc++_libbacktrace
+frames=5   ✓
+\end{lstlisting}
+A \emph{feature-test macro} responde sobre a \textbf{interface}, que é o que o
+compilador enxerga; ela não sabe nada sobre bibliotecas de link. Sempre há um
+passo de verificação além da macro, e ele é \textbf{compilar de verdade}. O
+subprojeto opta por não usar \texttt{std::stacktrace} justamente porque
+\texttt{libstdc++\_libbacktrace} não está em toda distribuição, e exigi-la
+quebraria o \emph{build} de quem clonar o repositório.
+\end{armadilha}
+
+O padrão que permite usar um recurso novo sem quebrar em \emph{toolchains}
+antigos é o \texttt{\#if} sobre a macro, com um caminho alternativo equivalente:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Três implementações escolhidas em compilação, em
+             \texttt{src/cpp23/demo\_inventario.hpp}.}]
+constexpr std::uint32_t trocar_bytes(std::uint32_t v) {
+#if defined(__cpp_lib_byteswap) && __cpp_lib_byteswap >= 202110L
+    return std::byteswap(v);
+#elif defined(__GNUC__)
+    return __builtin_bswap32(v);
+#else
+    return ((v & 0x000000FFu) << 24) | ((v & 0x0000FF00u) << 8) |
+           ((v & 0x00FF0000u) >> 8)  | ((v & 0xFF000000u) >> 24);
+#endif
+}
+
+static_assert(trocar_bytes(0x12345678u) == 0x78563412u);
+\end{lstlisting}
+
+Três regras governam esse padrão. \textbf{Um:} teste a \emph{macro}, não a
+versão do compilador --- \texttt{\#if \_\_GNUC\_\_ >= 13} erra em Clang e em
+MSVC. \textbf{Dois:} compare com o \emph{valor}, não apenas \texttt{\#ifdef},
+porque recursos ganham revisões. \textbf{Três:} o caminho alternativo precisa
+ser \emph{equivalente}, não aproximado --- e o \texttt{static\_assert} da última
+linha é o que verifica isso.
+
+\subsubsection{O que a linguagem ganhou}
+
+Além do \texttt{if consteval} já tratado, quatro adições merecem registro.
+
+O \textbf{subscript multidimensional} --- \texttt{operator[](i, j, k)} ---
+finalmente existe, e funciona inclusive em \texttt{constexpr}. Mas vem com uma
+armadilha de compatibilidade rara: uma sintaxe reciclada.
+
+\begin{armadilha}[\texttt{a[i, j]} mudou de significado entre C++20 e C++23]
+Em C++20, \texttt{a[i, j]} era o operador \textbf{vírgula} dentro dos colchetes:
+avalia \texttt{i}, \textbf{descarta} o resultado, e indexa por \texttt{j}. O
+C++20 depreciou esse uso e o C++23 reciclou a sintaxe. A consequência é que
+código antigo com \texttt{a[i, j]} \textbf{muda de comportamento} ao ser
+recompilado em C++23 --- silenciosamente, se o tipo de \texttt{a} tiver o
+operador novo. Em arranjos crus a vírgula continua valendo, porque arranjos não
+podem ter \texttt{operator[]} próprio. Compile com \texttt{-Wcomma-subscript}
+para o GCC avisar.
+\end{armadilha}
+
+\texttt{static operator()} e \texttt{static operator[]} atendem ao caso do
+\emph{functor} sem estado, que não precisa do \texttt{this}: marcar a chamada
+como \texttt{static} remove o parâmetro implícito --- em código genérico muito
+quente, é um argumento a menos por invocação. É por isso que os adaptadores de
+\cabecalho{ranges} do C++23 usam essa forma: são chamados milhões de vezes e
+nenhum tem estado. Note que \texttt{static} e \texttt{const} são mutuamente
+exclusivos aqui: não há \texttt{this} para ser \texttt{const}.
+
+Os \textbf{sufixos \texttt{uz} e \texttt{z}} resolvem a ausência de sufixo de
+literal para \texttt{std::size\_t}, que obrigava a \texttt{static\_cast}
+decorativos ou gerava avisos de comparação com sinais diferentes. Agora
+\texttt{0uz} já é \texttt{size\_t} e \texttt{0z} é \texttt{std::ptrdiff\_t}:
+\texttt{for (auto i = 0uz; i < v.size(); ++i)} não gera
+\texttt{-Wsign-compare}.
+
+\texttt{[[assume]]} é uma promessa ao otimizador: ``esta condição é verdadeira,
+pode contar com isso''. Com ela, o compilador pode eliminar verificações,
+escolher instruções mais estreitas e remover ramos.
+
+\begin{armadilha}[\texttt{[[assume]]} é o oposto de \texttt{assert}]
+\texttt{assert(x > 0)} \emph{verifica} e aborta se for falso;
+\texttt{[[assume(x > 0)]]} \textbf{não verifica} e é \gls{ub} se for falso. E a
+expressão \textbf{não é avaliada}: \texttt{[[assume(++i > 0)]]} não incrementa
+\texttt{i}. Use com muita parcimônia, e sempre em par com um \texttt{assert} em
+\emph{debug} --- assim o \emph{build} de depuração \textbf{prova} o que o de
+\emph{release} \textbf{assume}.
+\end{armadilha}
+
+Por fim, os escapes nomeados:
+\texttt{"\textbackslash N\{RIGHTWARDS ARROW\}"} usa o nome oficial do caractere
+no Unicode em vez do número, e o compilador valida o nome --- um nome errado é
+erro de compilação, não um caractere errado descoberto na tela.
+
+\subsubsection{O que a biblioteca ganhou}
+
+\texttt{std::to\_underlying} substitui
+\texttt{static\_cast<std::underlying\_type\_t<Codigo>>(c)}. O ganho não é
+digitar menos: é \textbf{não repetir o tipo}. Se \texttt{Codigo} mudar de
+\texttt{uint16\_t} para \texttt{uint32\_t}, o \texttt{static\_cast} explícito
+continua compilando e \textbf{trunca}; o \texttt{to\_underlying} acompanha
+sozinho. Ele não faz o caminho de volta --- \texttt{int} para \texttt{enum
+class} continua exigindo \texttt{static\_cast}, e continua sem validar que o
+valor corresponde a um enumerador existente.
+
+\texttt{std::unreachable} resolve um aviso legítimo: um \texttt{switch} que
+cobre todos os enumeradores ainda faz o compilador dizer \emph{``control reaches
+end of non-void function''}, porque um \texttt{enum class} \emph{pode} guardar
+um valor fora da lista, obtido por \texttt{static\_cast}. Das três saídas, só
+uma diz a verdade: \texttt{return \{\};} esconde o defeito atrás de um valor
+falso; \texttt{throw} custa e trata um caso impossível;
+\texttt{std::unreachable()} informa o compilador do que realmente se sabe. Ele é
+equivalente a \texttt{[[assume(false)]]}, com a mesma consequência: se a
+premissa estiver errada, é \gls{ub}.
+
+\texttt{views::zip} preenche o buraco mais visível de \cabecalho{ranges} no
+C++20 --- percorrer sequências em paralelo:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{zip} de três sequências, com \emph{structured bindings}.}]
+for (const auto& [nome, idade, salario] : std::views::zip(nomes, idades, salarios))
+    fmt::print("{:<7} {:>3} anos  R$ {:>8.2f}\n", nome, idade, salario);
+\end{lstlisting}
+
+Ele para no \textbf{menor} \emph{range}, o que elimina o \texttt{min} das formas
+antigas com índice --- fácil de esquecer. Como \texttt{zip} referencia em vez de
+copiar, valem as mesmas regras de tempo de vida das \emph{views}
+(\cref{sec:ranges}). E o substituto para o \texttt{views::enumerate} ausente sai
+de graça: \texttt{views::zip(views::iota(0uz), v)} funciona porque
+\texttt{iota(0uz)} é infinito e o \texttt{zip} para no menor.
+
+\classe{std::function} exige que o chamável seja \textbf{copiável}, mesmo quando
+ninguém vai copiá-lo --- é uma exigência do tipo, não do uso. Isso impede
+guardar um \emph{lambda} que capturou um \classe{std::unique\_ptr}, uma
+\texttt{std::thread} ou um \texttt{std::promise}:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O chamável que possui um recurso.}]
+std::function<std::string()> f = [r = std::move(ptr)] { return *r; };            // ✗
+std::move_only_function<std::string()> f = [r = std::move(ptr)] { return *r; };  // ✓
+\end{lstlisting}
+
+Onde isso morde na prática é a fila de tarefas de um \emph{thread pool}: a
+tarefa captura um \texttt{promise}, que é \emph{move-only}
+(\cref{sec:concurrency}). E a API nova ainda qualifica a chamada ---
+\texttt{void() const}, \texttt{void() \&\&}, \texttt{void() noexcept} --- coisas
+que \texttt{std::function} nunca teve.
+
+\texttt{std::spanstream} é o \emph{stream} sobre um \emph{buffer} que já existe.
+Um \texttt{stringstream} sempre aloca; para analisar um \emph{buffer} pronto,
+isso é uma cópia inteira desnecessária. O antigo \texttt{strstream} resolvia e
+foi depreciado porque a API não deixava claro quem era dono do \emph{buffer}; o
+\texttt{span} resolve isso por construção, porque \textbf{nunca} é dono.
+
+\begin{armadilha}[o \texttt{- 1} do \texttt{span} sobre um \texttt{char[]} não é detalhe]
+\begin{lstlisting}[style=bt, language=C++, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+char dados[] = "42 3.14 texto";
+std::ispanstream entrada{std::span<char>{dados, std::size(dados) - 1}};
+\end{lstlisting}
+\texttt{std::span\{dados\}} sobre um \texttt{char[]} inclui o
+\texttt{'\textbackslash 0'} final --- o arranjo tem 14 bytes, não 13. Sem o
+\texttt{- 1}, o terminador vira um caractere de dado e a última \emph{string}
+lida sai com um byte a mais. O sintoma é um tamanho errado que \emph{parece}
+certo quando impresso.
+\end{armadilha}
+
+Por fim, duas \emph{views} de janela que parecem iguais e não são:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/cpp23/}: janelas disjuntas contra deslizantes.}]
+chunk(3): [1 2 3] [4 5 6] [7 8 9] [10]        ← disjuntos, o último pode ser menor
+slide(3): [1 2 3] [2 3 4] [3 4 5] ...          ← deslizante, todos do mesmo tamanho
+\end{lstlisting}
+
+\texttt{chunk} avança de $N$ em $N$ e serve para processar em lotes;
+\texttt{slide} avança de 1 em 1 e serve para média móvel --- que fica em uma
+linha, combinando \texttt{slide(3)} com \texttt{ranges::fold\_left}. Antes do
+C++23, os dois eram laços com índice e aritmética de fronteira fácil de errar no
+último bloco.
+
+\subsubsection{O que falta, e o substituto de cada coisa}
+
+Toda ausência vem com uma alternativa que funciona hoje
+(\cref{tab:cpp23-faltando}). O objetivo não é lamentar: é escrever código que já
+resolve o problema e que migra sem dor quando o \emph{toolchain} acompanhar. O
+caso do \texttt{std::print} merece nota: ele \textbf{nasceu} da biblioteca
+\texttt{fmt} --- a proposta P2093 foi escrita pelo autor dela, e a API é
+idêntica de propósito. É por isso que este repositório usa \texttt{fmt} em todos
+os subprojetos: quando o \texttt{std::print} chegar, a migração é trocar o
+prefixo.
+
+\begin{table}[htbp]
+\centering
+\caption{O que o GCC 13.3 não tem, e o que usar no lugar.}
+\label{tab:cpp23-faltando}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Ausente} & \textbf{Substituto que funciona hoje} \\
+\midrule
+\texttt{std::print} / \texttt{println} & \texttt{fmt::print} / \texttt{fmt::println} --- API idêntica \\
+\texttt{std::mdspan}          & \texttt{operator[](i,j)} próprio; ou \texttt{kokkos/mdspan} \\
+\texttt{ranges::to<C>()}      & \texttt{std::vector v(view.begin(), view.end())} \\
+\texttt{views::enumerate}     & \texttt{views::zip(views::iota(0uz), v)} \\
+\texttt{std::generator}       & \texttt{promise\_type} à mão (\cref{sec:coroutines}) \\
+\emph{deducing this}          & \emph{y-combinator} (\cref{sec:lambdas}); CRTP \\
+\texttt{std::flat\_map}       & arranjo ordenado (\cref{sec:ct-fundo}) \\
+\texttt{ranges::starts\_with} & \texttt{std::equal} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{armadilha}[o substituto de \texttt{ranges::to} exige um \emph{common range}]
+Construir um \texttt{vector} a partir de \texttt{view.begin()} e
+\texttt{view.end()} só funciona se os dois forem do \emph{mesmo tipo} --- um
+\emph{common range}. \emph{Views} que terminam em sentinela (\cref{sec:stl})
+precisam de \texttt{views::common} antes, ou de um auxiliar genérico de seis
+linhas que percorre o \emph{range} e empurra num \texttt{vector}.
+\end{armadilha}
+
+\begin{regra}[a régua para adotar um recurso novo]
+A pergunta não é ``o C++23 tem?'', é ``o meu \emph{toolchain} \textbf{mínimo}
+tem?''. Na ordem: (1)~qual é o compilador \textbf{mais antigo} que precisa
+compilar este código --- a integração contínua, a distribuição LTS, o cliente?
+(2)~a \emph{feature-test macro} está definida nele? (3)~ela \textbf{linka} sem
+\emph{flags} extras? Se as três respostas forem sim, use direto. Se a segunda ou
+a terceira falhar, o padrão é o \texttt{\#if} com caminho alternativo
+equivalente.
+\end{regra}
+
+% =============================================================================
+\subsection{Módulos nomeados}
+\label{sec:modulos}
+% =============================================================================
+
+O último subprojeto enfrenta a maior mudança estrutural que o C++20 propôs: a
+substituição do \texttt{\#include}.
+
+\begin{porque}[o \texttt{\#include} é uma cópia de texto, e todos os problemas vêm daí]
+O pré-processador não entende C++. Ele lê \texttt{\#include <vector>} e
+substitui a linha pelo \emph{conteúdo textual} do arquivo, recursivamente. Cinco
+consequências decorrem disso. \textbf{Compilação lenta:} o mesmo \emph{header} é
+reprocessado do zero em \emph{cada} \texttt{.cpp} --- um projeto com 200 arquivos
+que incluem \cabecalho{string} analisa \cabecalho{string} 200 vezes.
+\textbf{Macros vazando:} um \texttt{\#define} feito antes do \texttt{\#include}
+afeta o texto incluído, e vice-versa, sem barreira. \textbf{A ordem passa a
+importar:} o \emph{header} B só compila se A vier antes, e isso não está escrito
+em lugar nenhum. \textbf{\emph{Include guards}:} necessários porque a inclusão é
+textual. \textbf{Tudo é público:} quem inclui A recebe também tudo que A
+incluiu. Módulos resolvem os cinco de uma vez --- ao custo de uma \textbf{ordem
+de compilação obrigatória}, que é o que torna a adoção difícil.
+\end{porque}
+
+Uma \textbf{interface de módulo} é um arquivo cujo conteúdo significativo começa
+com \texttt{export module NOME;}. A extensão \texttt{.cppm} é convenção --- o
+Clang a reconhece, o GCC não.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A estrutura completa, em \texttt{src/modules/geometria.cppm}.}]
+module;                        // ← início do "global module fragment"
+#include <cmath>               //   o ÚNICO lugar para #include numa interface
+
+export module geometria;       // ← a declaração que define o módulo
+
+namespace detalhe {            // não exportado → invisível para quem importa
+    double quadrado(double x) { return x * x; }
+}
+
+export namespace geometria {   // exportado → a interface pública
+    struct Ponto { double x{}, y{}; };
+
+    double distancia(const Ponto& a, const Ponto& b) {
+        return std::sqrt(detalhe::quadrado(b.x - a.x) +
+                         detalhe::quadrado(b.y - a.y));
+    }
+
+    template <typename T>      // templates funcionam: o .gcm guarda a árvore
+    T maior(T a, T b) { return a > b ? a : b; }
+
+    inline constexpr double PI = 3.14159265358979323846;
+}
+\end{lstlisting}
+
+O \textbf{\emph{global module fragment}} é o trecho entre \texttt{module;} e
+\texttt{export module}: existe porque \emph{headers} antigos ainda precisam ser
+incluídos, e é o único lugar de uma interface onde um \texttt{\#include} pode
+aparecer. A diferença de fundo em relação a um \emph{header} é que o módulo é
+compilado \textbf{uma vez}, e o consumidor lê a forma binária do resultado ---
+no GCC, um arquivo \texttt{.gcm}. Templates funcionam normalmente, ao contrário
+do que a intuição sugere: o \texttt{.gcm} guarda a árvore sintática, não texto.
+
+\begin{table}[htbp]
+\centering
+\caption{O que muda entre \emph{header} e módulo.}
+\label{tab:header-modulo}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+ & \textbf{Header} & \textbf{Módulo} \\
+\midrule
+compilação            & reprocessado em cada TU         & compilado \textbf{uma} vez \\
+ordem                 & irrelevante                     & \textbf{obrigatória} \\
+isolamento            & tudo vaza                       & só o que tem \texttt{export} \\
+macros                & atravessam nos dois sentidos    & \textbf{não} atravessam \\
+\emph{include guards} & necessários                     & desnecessários \\
+templates             & precisam estar no \emph{header} & ficam no \texttt{.gcm} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O demo prova o isolamento com um erro provocado de propósito.
+\texttt{geometria.cppm} inclui \cabecalho{cmath} no \emph{global module
+fragment} e usa \texttt{std::sqrt} internamente; o \texttt{main.cpp}
+\textbf{não} inclui \cabecalho{cmath}:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Medição em \texttt{src/modules/}: o \texttt{\#include} do módulo
+             não atravessa o \texttt{import}.}]
+// em main.cpp:  double r = std::sqrt(16.0);
+error: 'sqrt' is not a member of 'std'
+\end{lstlisting}
+
+Com um \emph{header}, \texttt{std::sqrt} estaria disponível ali sem ninguém ter
+pedido --- e a poluição é \textbf{cumulativa}: um \emph{header} que inclui outro
+que inclui outro acaba trazendo milhares de nomes. O mesmo vale para
+\texttt{detalhe::quadrado}, definida sem \texttt{export}: é invisível no
+consumidor, e o nome não colide com nada dele.
+
+Um módulo pode ainda importar outro e repassá-lo:
+\texttt{export import geometria;} em \texttt{formatacao.cppm} faz com que
+\texttt{main.cpp}, que só escreve \texttt{import formatacao;}, enxergue
+\texttt{geometria} também. E a ordem passa a importar: o \texttt{geometria.gcm}
+precisa existir antes de \texttt{formatacao.cppm} compilar.
+
+\subsubsection{Dois defeitos do GCC 13, encontrados escrevendo o demo}
+
+Estas duas armadilhas custaram tempo real e não aparecem nos tutoriais. Ambas
+foram verificadas no GCC 13.3 com \texttt{-fmodules-ts}.
+
+\begin{armadilha}[\texttt{export} de variável global some com o \emph{global module fragment}]
+Reduzido ao mínimo:
+\begin{lstlisting}[style=bt, language=C++, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+module;
+#include <cmath>
+export module m;
+export constexpr double PI = 3.14;   // ← invisível no consumidor
+
+// no consumidor:
+import m;
+int main() { return (int)PI; }       // error: 'PI' was not declared
+\end{lstlisting}
+\textbf{Sem} o \emph{global module fragment} --- removendo o \texttt{module;} e
+o \texttt{\#include} do topo --- a mesma declaração funciona. Dentro de um
+\texttt{namespace} exportado, funciona nos dois casos. É por isso que o
+\texttt{PI} do subprojeto está dentro de \texttt{export namespace geometria}:
+não é estilo, é necessidade.
+\end{armadilha}
+
+\begin{armadilha}[\texttt{constexpr} em escopo de \emph{namespace} tem \emph{linkage} interna]
+\begin{lstlisting}[style=bt, language=C++, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+export namespace geometria {
+    constexpr double PI = 3.14;          // ✗ 'PI' is not a member of 'geometria'
+    inline constexpr double PI = 3.14;   // ✓
+}
+\end{lstlisting}
+\emph{Linkage} é a propriedade que determina se um nome pode ser referenciado de
+outra unidade de tradução. Uma variável \texttt{constexpr} em escopo de
+\emph{namespace} tem \emph{linkage} \textbf{interna} por padrão, como um
+\texttt{const}: cada TU teria a sua cópia, e o módulo não a exporta de verdade.
+A regra é a mesma que vale para \emph{headers} desde o C++17; o que muda é o
+sintoma. Num \emph{header}, a consequência é uma violação silenciosa da ODR ---
+cada TU com o seu endereço; num módulo, é erro de compilação no consumidor. O
+erro é preferível, mas só se souber lê-lo.
+\end{armadilha}
+
+\subsubsection{As armadilhas do \emph{toolchain}}
+
+\begin{armadilha}[\texttt{.cppm} precisa de \texttt{-x c++} no GCC]
+\begin{lstlisting}[style=bt, language=bash, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+g++ -fmodules-ts -c geometria.cppm          # ✗ "linker input file unused"
+g++ -fmodules-ts -x c++ -c geometria.cppm   # ✓
+\end{lstlisting}
+O GCC não reconhece a extensão \texttt{.cppm} e trata o arquivo como entrada de
+\emph{linker}. A mensagem de erro não sugere a causa. O Clang reconhece.
+\end{armadilha}
+
+Compilar uma interface produz \textbf{dois} artefatos: o \texttt{.o}, com o
+código, e o \texttt{.gcm}, com a interface, num diretório \texttt{gcm.cache/}
+criado automaticamente. O \texttt{.gcm} \textbf{não entra no link} --- é
+consumido em tempo de compilação pelos consumidores. E o tamanho dele é
+revelador:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Medição em \texttt{src/modules/}: os artefatos binários de módulo.}]
+$ make mostrar-cache
+-rw-r--r-- 3.3K  gcm.cache/geometria.gcm
+-rw-r--r-- 2.1M  gcm.cache/formatacao.gcm      ← inclui <string> transitivamente
+\end{lstlisting}
+
+A diferença de três ordens de grandeza tem explicação direta:
+\texttt{formatacao} incluiu \cabecalho{string} no seu \emph{global module
+fragment}, e o \texttt{.gcm} guarda a representação compilada de tudo aquilo. É
+o mesmo custo de sempre --- só que agora pago uma vez e visível num arquivo, em
+vez de pago em toda TU e invisível.
+
+Além dos módulos nomeados, o GCC 13 suporta \emph{header units}: pré-compilar um
+\emph{header} com
+\texttt{g++ -fmodules-ts -x c++-system-header vector} e depois escrever
+\texttt{import <vector>;} --- em linha própria, porque
+\texttt{import <vector>; int main()} na mesma linha não compila. O
+\texttt{import std;}, que traria a biblioteca padrão inteira como módulo,
+\textbf{não} está disponível no GCC 13.
+
+\subsubsection{Por que este subprojeto fica fora do Meson}
+
+Esta é a única exceção do repositório: \projeto{modules} tem um
+\texttt{Makefile} próprio e não participa do \texttt{make build}. A razão é
+conteúdo didático, não conveniência.
+
+\begin{porque}[a ordem de compilação é o problema não resolvido de módulos]
+Um sistema de \emph{build} precisa descobrir a ordem de compilação
+\textbf{antes} de compilar. Com \texttt{\#include} isso é fácil: o
+\texttt{-MMD} do GCC emite a lista de arquivos incluídos e o Make ou o Ninja
+constroem o grafo. Com \texttt{import}, não: a dependência é sobre o
+\texttt{.gcm}, que \emph{só existe depois de compilar} o módulo que o produz ---
+uma circularidade entre o planejamento e a execução do \emph{build}.
+
+A saída é um \emph{scanner} que lê os fontes e extrai as declarações
+\texttt{import} antes de qualquer compilação: o \texttt{-fdeps-format}
+padronizado, que chegou no GCC 14, ou o \texttt{clang-scan-deps}. O suporte do
+Meson a módulos com GCC 13 é experimental e frágil justamente porque o formato
+que o GCC 13 emite não é o que o Meson espera. \textbf{É exatamente esse
+problema de \emph{tooling} que atrasou a adoção de módulos por cinco anos}, e
+não qualquer defeito da ideia.
+\end{porque}
+
+O \texttt{Makefile} de 40 linhas do subprojeto demonstra melhor que a
+integração, porque a ordem fica explícita e escrita à mão:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={As dependências que o Make não descobre sozinho, em
+             \texttt{src/modules/Makefile}.}]
+# regra para interfaces de módulo: o -x c++ é obrigatório
+%.o: %.cppm
+	$(CXX) $(CXXFLAGS) -x c++ -c $< -o $@
+
+# um #include o Make rastreia com -MMD; um import NÃO
+formatacao.o: geometria.o
+main.o:       formatacao.o geometria.o
+\end{lstlisting}
+
+\begin{table}[htbp]
+\centering
+\caption{Estado da adoção de módulos, por \emph{toolchain}.}
+\label{tab:adocao-modulos}
+\footnotesize
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Compilador} & \textbf{Módulos nomeados} & \textbf{\emph{Header units}} & \texttt{import std;} \\
+\midrule
+GCC 13      & sim (\texttt{-fmodules-ts}) & sim & não \\
+GCC 14+     & sim                         & sim & não \\
+Clang 16+   & sim                         & sim & parcial \\
+MSVC 19.3x  & sim                         & sim & sim \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{regra}[quando adotar módulos]
+Só se o compilador mínimo \textbf{e} o sistema de \emph{build} suportarem --- e
+o segundo é o gargalo real, não o primeiro. Hoje isso significa CMake 3.28 ou
+superior com Ninja 1.11 ou superior. Para migrar um projeto grande, comece pelas
+\textbf{folhas} do grafo de dependências: os módulos que não importam ninguém
+são os únicos que podem ser convertidos sem tocar em mais nada. Constantes
+exportadas: sempre \texttt{inline constexpr}, dentro de um \emph{namespace}
+exportado. Para esconder um detalhe: simplesmente não o exporte.
+\end{regra}
+
+% =============================================================================
+\subsection{Síntese}
+\label{sec:vocab-ct-sintese}
+% =============================================================================
+
+As quatro seções defendem a mesma tese por caminhos diferentes:
+\textbf{informação que está no tipo é verificada; informação que está numa
+convenção, não}.
+
+Os tipos de vocabulário movem para o tipo aquilo que antes era combinado por
+comentário --- ``pode ser nulo'', ``o segundo parâmetro é o tamanho do
+primeiro'', ``só leia o membro que a etiqueta indicar''. O ganho é que o
+compilador passa a poder recusar o uso errado; o custo é aprender cinco tipos e
+as armadilhas de tempo de vida de dois deles.
+
+A computação em tempo de compilação move para o compilador aquilo que antes era
+feito na inicialização --- tabelas, validação de literais, ordenação. O ganho
+maior não é o tempo economizado na execução: é que o avaliador de expressões
+constantes recusa \gls{ub}, transformando uma classe inteira de defeitos em erro
+de \emph{build}. O custo é tempo de compilação, que é real e mensurável.
+
+O subprojeto de C++23 acrescenta uma lição de método que vale além do assunto:
+\textbf{meça em vez de supor}. Seis entradas de uma tabela escrita a partir de
+documentação estavam erradas, todas subestimando o que já existia. E a
+verificação não termina na \emph{feature-test macro}: o \texttt{std::stacktrace}
+está declarado, tem \emph{header}, e não linka.
+
+Os módulos são o único dos quatro assuntos em que a recomendação prática é
+esperar. A ideia resolve os cinco problemas do \texttt{\#include} de uma vez, e
+a implementação nos compiladores existe; o que ainda não existe, de forma
+madura, é o suporte dos sistemas de \emph{build} ao problema de descobrir a
+ordem de compilação antes de compilar. Os dois defeitos do GCC 13 documentados
+aqui --- o \texttt{export} que some com o \emph{global module fragment} e o
+\texttt{constexpr} sem \texttt{inline} --- são sintomas dessa juventude.

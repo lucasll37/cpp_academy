@@ -1,0 +1,238 @@
+% =============================================================================
+%  Bibliografia do relatorio.
+%  Duas familias de entradas: (a) as fontes normativas e canonicas do C++, e
+%  (b) as bibliotecas de terceiros que os subprojetos do repositorio integram.
+% =============================================================================
+
+% --- A linguagem -------------------------------------------------------------
+
+@misc{cppacademy,
+  author       = {{C++ Academy}},
+  title        = {{cpp\_academy}: subprojetos didáticos em {C++} moderno},
+  howpublished = {Repositório do projeto, \texttt{src/} e \texttt{src/ROADMAP.md}},
+  note         = {Compilado com GCC 13.3, Meson e Conan 2},
+  year         = {2026}
+}
+
+@misc{isocpp20,
+  author       = {{ISO/IEC}},
+  title        = {{ISO/IEC} 14882:2020 --- {Programming languages --- C++}},
+  howpublished = {\url{https://www.iso.org/standard/79358.html}},
+  note         = {O padrão da linguagem; os rascunhos públicos estão em \url{https://eel.is/c++draft/}},
+  year         = {2020}
+}
+
+@misc{isocpp23,
+  author       = {{ISO/IEC}},
+  title        = {{ISO/IEC} 14882:2024 --- {Programming languages --- C++} ({C++23})},
+  howpublished = {\url{https://www.iso.org/standard/83626.html}},
+  note         = {Origem de \texttt{std::expected}, \texttt{if consteval} e do subscript multidimensional},
+  year         = {2024}
+}
+
+@misc{cppreference,
+  author       = {{cppreference.com}},
+  title        = {{C++} reference},
+  howpublished = {\url{https://en.cppreference.com/w/cpp}},
+  note         = {A referência de consulta diária citada ao longo do relatório},
+  year         = {2026}
+}
+
+@misc{cppcoreguidelines,
+  author       = {Stroustrup, Bjarne and Sutter, Herb},
+  title        = {{C++} Core Guidelines},
+  howpublished = {\url{https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines}},
+  note         = {Origem das regras R.\*, C.\* e F.\* referidas nas caixas ``Regra''},
+  year         = {2025}
+}
+
+@book{meyers2014,
+  author    = {Meyers, Scott},
+  title     = {Effective Modern {C++}: 42 Specific Ways to Improve Your Use of
+               {C++11} and {C++14}},
+  publisher = {O'Reilly Media},
+  year      = {2014}
+}
+
+@book{stroustrup2013,
+  author    = {Stroustrup, Bjarne},
+  title     = {The {C++} Programming Language},
+  edition   = {4},
+  publisher = {Addison-Wesley},
+  year      = {2013}
+}
+
+@book{josuttis2012,
+  author    = {Josuttis, Nicolai M.},
+  title     = {The {C++} Standard Library: A Tutorial and Reference},
+  edition   = {2},
+  publisher = {Addison-Wesley},
+  year      = {2012}
+}
+
+@book{vandevoorde2017,
+  author    = {Vandevoorde, David and Josuttis, Nicolai M. and Gregor, Douglas},
+  title     = {{C++} Templates: The Complete Guide},
+  edition   = {2},
+  publisher = {Addison-Wesley},
+  year      = {2017}
+}
+
+@book{williams2019,
+  author    = {Williams, Anthony},
+  title     = {{C++} Concurrency in Action},
+  edition   = {2},
+  publisher = {Manning},
+  year      = {2019}
+}
+
+@book{gof1994,
+  author    = {Gamma, Erich and Helm, Richard and Johnson, Ralph and
+               Vlissides, John},
+  title     = {Design Patterns: Elements of Reusable Object-Oriented Software},
+  publisher = {Addison-Wesley},
+  year      = {1994}
+}
+
+@book{martin2017,
+  author    = {Martin, Robert C.},
+  title     = {Clean Architecture: A Craftsman's Guide to Software Structure
+               and Design},
+  publisher = {Prentice Hall},
+  year      = {2017},
+  note      = {Formulação dos cinco princípios SOLID usada no subprojeto \texttt{src/solid/}}
+}
+
+@article{liskov1994,
+  author  = {Liskov, Barbara H. and Wing, Jeannette M.},
+  title   = {A Behavioral Notion of Subtyping},
+  journal = {ACM Transactions on Programming Languages and Systems},
+  volume  = {16},
+  number  = {6},
+  pages   = {1811--1841},
+  year    = {1994},
+  doi     = {10.1145/197320.197383}
+}
+
+@techreport{itaniumabi,
+  author      = {{Itanium C++ ABI Committee}},
+  title       = {Itanium {C++} {ABI}},
+  institution = {\url{https://itanium-cxx-abi.github.io/cxx-abi/abi.html}},
+  note        = {Define a decoração de nomes e o \emph{layout} de vtable observados no subprojeto \texttt{src/oop/}},
+  year        = {2023}
+}
+
+@techreport{sysvabi,
+  author      = {Matz, Michael and Hubi\v{c}ka, Jan and Jaeger, Andreas and
+                 Mitchell, Mark},
+  title       = {System {V} Application Binary Interface --- {AMD64}
+                 Architecture Processor Supplement},
+  institution = {\url{https://gitlab.com/x86-psABIs/x86-64-ABI}},
+  note        = {A convenção de chamada usada no capítulo de baixo nível},
+  year        = {2024}
+}
+
+@manual{intelsdm,
+  organization = {Intel Corporation},
+  title        = {{Intel} 64 and {IA-32} Architectures Software Developer's Manual},
+  note         = {Referência de \texttt{CPUID}, \texttt{RDTSC} e das extensões SIMD},
+  year         = {2025}
+}
+
+@misc{gccdocs,
+  author       = {{GNU Project}},
+  title        = {Using the {GNU} Compiler Collection ({GCC}) --- Extended Asm
+                  and {C++} Status},
+  howpublished = {\url{https://gcc.gnu.org/onlinedocs/}},
+  note         = {Versão 13.3, o compilador de referência do repositório},
+  year         = {2024}
+}
+
+% --- Ferramentas de build ----------------------------------------------------
+
+@misc{meson,
+  author       = {Pakkanen, Jussi},
+  title        = {The {Meson} Build System},
+  howpublished = {\url{https://mesonbuild.com/}},
+  year         = {2025}
+}
+
+@misc{conan,
+  author       = {{JFrog}},
+  title        = {{Conan} 2: The {C} and {C++} Package Manager},
+  howpublished = {\url{https://docs.conan.io/2/}},
+  year         = {2024}
+}
+
+@misc{doxygen,
+  author       = {van Heesch, Dimitri},
+  title        = {{Doxygen}: Generate documentation from source code},
+  howpublished = {\url{https://www.doxygen.nl/}},
+  year         = {2025}
+}
+
+% --- Bibliotecas integradas pelos subprojetos --------------------------------
+
+@misc{fmt,
+  author       = {Zverovich, Victor},
+  title        = {\{fmt\}: A modern formatting library},
+  howpublished = {\url{https://fmt.dev/}},
+  note         = {A dependência comum a todos os subprojetos},
+  year         = {2024}
+}
+
+@misc{asio,
+  author       = {Kohlhoff, Christopher M.},
+  title        = {{Asio} {C++} Library},
+  howpublished = {\url{https://think-async.com/Asio/}},
+  year         = {2023}
+}
+
+@misc{eigen,
+  author       = {Guennebaud, Ga\"{e}l and Jacob, Beno\^{i}t and others},
+  title        = {{Eigen} v3},
+  howpublished = {\url{https://eigen.tuxfamily.org/}},
+  year         = {2021}
+}
+
+@misc{bullet,
+  author       = {Coumans, Erwin},
+  title        = {{Bullet} Physics {SDK}},
+  howpublished = {\url{https://github.com/bulletphysics/bullet3}},
+  year         = {2023}
+}
+
+@misc{jsbsim,
+  author       = {Berndt, Jon S. and {JSBSim Development Team}},
+  title        = {{JSBSim}: An Open Source Flight Dynamics Model},
+  howpublished = {\url{https://jsbsim.sourceforge.net/}},
+  year         = {2023}
+}
+
+@misc{pybind11,
+  author       = {Jakob, Wenzel and Rhinelander, Jason and Moldovan, Dean},
+  title        = {{pybind11}: Seamless operability between {C++11} and {Python}},
+  howpublished = {\url{https://github.com/pybind/pybind11}},
+  year         = {2024}
+}
+
+@misc{onnxruntime,
+  author       = {{ONNX Runtime developers}},
+  title        = {{ONNX} {Runtime}},
+  howpublished = {\url{https://onnxruntime.ai/}},
+  year         = {2024}
+}
+
+@misc{yolov10,
+  author       = {Wang, Ao and Chen, Hui and Liu, Lihao and others},
+  title        = {{YOLOv10}: Real-Time End-to-End Object Detection},
+  howpublished = {\url{https://arxiv.org/abs/2405.14458}},
+  year         = {2024}
+}
+
+@book{levine2009,
+  author    = {Levine, John},
+  title     = {flex \& bison: Text Processing Tools},
+  publisher = {O'Reilly Media},
+  year      = {2009}
+}

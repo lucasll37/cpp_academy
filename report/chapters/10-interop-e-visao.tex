@@ -1,0 +1,449 @@
+% =============================================================================
+%  Interop, tooling e visão
+%  Cobre a Etapa 9 da trilha: python, embed-python, parser, yolo.
+% =============================================================================
+
+% =============================================================================
+\section{Interoperação e visão computacional}
+\label{sec:interop}
+% =============================================================================
+
+Os quatro subprojetos deste capítulo têm em comum o fato de o C++ não estar
+sozinho. Em dois deles ele convive com Python --- uma vez como convidado
+(\ref{sec:python}) e outra como anfitrião (\ref{sec:embed-python}); no terceiro,
+ele é o produto de um gerador de código (\ref{sec:parser}); e no quarto, ele é a
+camada em volta de um modelo de rede neural treinado em outro lugar
+(\ref{sec:yolo}).
+
+O assunto técnico recorrente é a \textbf{fronteira}: quem é dono do quê, quem
+libera o quê, e o que acontece com uma exceção que tenta atravessar. É a mesma
+pergunta da \cref{sec:plugin-registry}, agora com um interpretador do outro lado
+em vez de um \texttt{.so}.
+
+% =============================================================================
+\subsection{Python importando C++}
+\label{sec:python}
+% =============================================================================
+
+O subprojeto \projeto{python} implementa o \emph{mesmo} módulo de extensão duas
+vezes --- uma com a API C do CPython, outra com pybind11~\cite{pybind11} --- e a
+comparação é o conteúdo. As duas versões exportam as mesmas funções, e a
+diferença de volume de código é de cerca de cinco para um.
+
+\subsubsection{pybind11: a lógica separada do \emph{binding}}
+
+O que pybind11 permite é escrever C++ que não sabe que Python existe, e depois
+declarar a exposição em um bloco separado:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A lógica não menciona Python; a declaração do módulo é
+             puramente descritiva.}]
+int somar(int a, int b) { return a + b; }
+
+PYBIND11_MODULE(academy_pb, m) {
+    m.doc() = "Módulo academy com PyBind11 + OpenMP";
+    m.def("somar",    &somar,    "Soma dois inteiros",    py::arg("a"), py::arg("b"));
+    m.def("fatorial", &fatorial, "Calcula fatorial de n", py::arg("n"));
+}
+\end{lstlisting}
+
+A conversão de tipos é automática --- \texttt{std::vector<double>} vira lista
+Python e volta --- e as exceções também: um \texttt{throw py::value\_error(...)}
+chega ao Python como um \texttt{ValueError} legítimo, com \emph{traceback}.
+
+\subsubsection{A API C, e o que ela obriga a escrever}
+
+A mesma função de fatorial, na API do CPython, mistura a lógica com a burocracia
+do \emph{binding}:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\emph{Parsing} manual dos argumentos, sinalização manual de erro,
+             conversão manual do retorno.}]
+static PyObject* py_fatorial(PyObject* self, PyObject* args) {
+    int n;
+    if (!PyArg_ParseTuple(args, "i:fatorial", &n))
+        return nullptr;
+
+    if (n < 0) {
+        PyErr_SetString(PyExc_ValueError, "fatorial não definido para negativos");
+        return nullptr;
+    }
+
+    long r = 1;
+    for (int i = 2; i <= n; i++) r *= i;
+
+    return PyLong_FromLong(r); // converte long C → Python int
+}
+\end{lstlisting}
+
+\begin{armadilha}[na API C, ``lançar'' é devolver \texttt{nullptr} depois de armar o erro]
+Não há exceção: o protocolo é \texttt{PyErr\_SetString} seguido de
+\texttt{return nullptr}, e o chamador precisa verificar. Devolver \texttt{nullptr}
+sem armar o erro produz um \texttt{SystemError} no Python; armar o erro e
+devolver algo diferente de \texttt{nullptr} deixa o erro pendente, que estoura
+na próxima chamada não relacionada --- num ponto arbitrário do programa. É a
+mesma classe de problema do \texttt{dlerror()} da \cref{sec:plugin-registry}:
+um protocolo de erro por convenção, sem apoio do tipo.
+\end{armadilha}
+
+\begin{table}[htbp]
+\centering
+\caption{As duas formas de escrever a mesma extensão.}
+\label{tab:pybind-cpython}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Aspecto} & \textbf{API CPython} & \textbf{pybind11} \\
+\midrule
+volume de código      & cerca de 5$\times$ maior      & conciso \\
+lógica e \emph{binding}& misturados                    & separados \\
+conversão de tipos    & manual                        & automática \\
+erros                 & \texttt{PyErr\_SetString} + \texttt{nullptr} & \texttt{throw} normal \\
+GIL                   & macro \texttt{Py\_BEGIN\_ALLOW\_THREADS} & \gls{raii} \\
+containers da STL     & manual                        & um \texttt{\#include} \\
+\emph{overhead}       & zero                          & mínimo \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{O GIL, e por que ele obriga a pensar}
+
+O \emph{Global Interpreter Lock} é um \emph{mutex} que serializa a execução de
+\emph{bytecode} Python: apenas uma \emph{thread} interpreta por vez. Enquanto o
+C++ está executando, ele segura o GIL --- e nenhuma outra \emph{thread} Python
+avança. Uma rotina longa em C++ que não o libere transforma um programa Python
+multithread em um programa sequencial.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Liberar o GIL durante o trabalho paralelo, e readquiri-lo pelo
+             destrutor.}]
+std::vector<double> multiplicar_vetor(const std::vector<double>& v, double escalar) {
+    std::vector<double> resultado(v.size());
+    {
+        py::gil_scoped_release release;  // libera GIL
+        #pragma omp parallel for
+        for (int i = 0; i < (int)v.size(); i++)
+            resultado[i] = v[i] * escalar;
+    } // destrutor → GIL readquirido automaticamente (RAII)
+    return resultado;
+}
+\end{lstlisting}
+
+\begin{regra}[nenhuma API do Python pode ser tocada com o GIL liberado]
+Dentro do bloco de \texttt{gil\_scoped\_release}, o código só pode mexer em
+dados C++ puros --- \texttt{std::vector}, ponteiros, aritmética. Tocar em
+qualquer \texttt{PyObject*} sem o GIL é corrupção de estado do interpretador, e
+o sintoma é um \emph{crash} sem relação com o ponto do erro. Note que isso é
+exatamente o que o exemplo faz certo: o \texttt{vector} de entrada já foi
+convertido antes de liberar, e o de saída só é convertido depois de readquirir.
+\end{regra}
+
+\begin{porque}[por que o C++ é uma saída legítima para o GIL]
+Não é apenas velocidade. Como uma extensão em C++ pode liberar o GIL durante o
+trabalho pesado, ela dá \emph{paralelismo real} a um programa Python --- o que
+\emph{threads} Python puras não dão. É por isso que NumPy, SciPy e todo o
+ecossistema numérico são, por baixo, C, C++ e Fortran: eles não estão ali só
+para serem rápidos, estão ali para poderem soltar o GIL.
+\end{porque}
+
+% =============================================================================
+\subsection{C++ hospedando Python}
+\label{sec:embed-python}
+% =============================================================================
+
+O subprojeto \projeto{embed-python} inverte a direção: o executável é C++, e o
+interpretador Python vive dentro dele. Os casos de uso são reconhecíveis ---
+motor de \emph{scripting} para o usuário final, recarga de lógica sem
+recompilar, configuração em Python em vez de YAML, \emph{plugins} escritos por
+quem não compila C++.
+
+\subsubsection{O ciclo de vida, e o \emph{guard} que o garante}
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A mesma técnica do \texttt{ThreadGuard} e do
+             \texttt{RedirectGuard}, aplicada ao interpretador.}]
+struct PythonGuard {
+    PythonGuard()  { Py_Initialize(); }
+    ~PythonGuard() { Py_Finalize();   }
+
+    PythonGuard(const PythonGuard&)            = delete;
+    PythonGuard& operator=(const PythonGuard&) = delete;
+};
+\end{lstlisting}
+
+A cópia é deletada porque o interpretador é único por processo --- é o tipo
+\emph{move-only} (aqui, nem isso) da \cref{sec:value-semantics} aplicado a um
+recurso genuinamente singular. E a regra que o \emph{guard} não garante sozinho:
+\textbf{todo \texttt{PyObject*} precisa ser liberado antes de
+\texttt{Py\_Finalize()}}, o que é o mesmo problema de ordem de destruição que a
+\cref{sec:aws} descreveu para o SDK da AWS.
+
+\subsubsection{A contagem de referências, e as duas espécies de ponteiro}
+
+O CPython gerencia memória por contagem de referências, e a API distingue dois
+tipos de \texttt{PyObject*} que \emph{têm o mesmo tipo estático}:
+
+\begin{table}[htbp]
+\centering
+\caption{Duas semânticas de posse com a mesma assinatura.}
+\label{tab:pyref}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Espécie} & \textbf{Quem libera} & \textbf{Exemplos} \\
+\midrule
+\emph{new reference}      & você, com \texttt{Py\_DECREF} & \texttt{PyImport\_ImportModule}, \texttt{PyLong\_FromLong} \\
+\emph{borrowed reference} & o dono; \textbf{não} decremente & \texttt{PyImport\_AddModule}, \texttt{PyList\_GetItem} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{armadilha}[a diferença entre vazar e derrubar o programa está na documentação, não no tipo]
+Decrementar uma referência emprestada libera um objeto que ainda tem dono, e o
+programa morre depois, num acesso a memória liberada. Esquecer de decrementar
+uma referência própria vaza. E \emph{nada} no código distingue os dois casos ---
+os dois são \texttt{PyObject*}. Pior ainda: algumas funções \textbf{roubam} a
+referência, como \texttt{PyList\_SetItem}, e chamar \texttt{Py\_DECREF} depois
+dela é um \emph{double free}. É o exemplo mais didático do repositório sobre por
+que posse deve estar no tipo --- e sobre o que \texttt{unique\_ptr} e
+\texttt{shared\_ptr} (\cref{sec:smart-pointers}) resolveram.
+\end{armadilha}
+
+\begin{regra}[envolva \texttt{PyObject*} num tipo com destrutor]
+Um \texttt{unique\_ptr<PyObject, decltype(\&Py\_DecRef)>} --- ou o
+\texttt{py::object} do pybind11, que faz exatamente isso --- transforma a
+disciplina manual em invariante do tipo. O subprojeto usa a API crua de
+propósito, para que a disciplina fique visível; em código de produção, ela deve
+ficar escondida atrás de um invólucro.
+\end{regra}
+
+\subsubsection{As três formas de conversar}
+
+O subprojeto percorre seis demonstrações que se reduzem a três padrões.
+\texttt{PyRun\_SimpleString} executa código e não devolve nada --- serve para
+efeito colateral, não para cálculo. Importar um módulo e chamar uma função
+(\texttt{PyImport\_ImportModule} $\rightarrow$ \texttt{PyObject\_GetAttrString}
+$\rightarrow$ \texttt{PyObject\_CallOneArg}) é o caminho para obter um valor de
+volta. E injetar dados no \emph{namespace} \texttt{\_\_main\_\_} é como se passa
+um \texttt{std::vector} para um trecho de análise escrito em Python.
+
+O sexto demo fecha a fronteira no sentido inverso: capturar uma exceção Python e
+transformá-la em algo tratável em C++, com \texttt{PyErr\_Fetch} e
+\texttt{PyErr\_NormalizeException}. Sem isso, um \texttt{ZeroDivisionError}
+dentro de um \emph{script} do usuário se manifesta apenas como um código de
+retorno $-1$.
+
+% =============================================================================
+\subsection{Análise léxica e sintática}
+\label{sec:parser}
+% =============================================================================
+
+O subprojeto \projeto{parser} usa Flex e Bison~\cite{levine2009} para avaliar
+expressões aritméticas --- a mesma gramática que o padrão \emph{Interpreter} da
+\cref{sec:patterns} resolve à mão, o que torna os dois diretamente comparáveis.
+
+\subsubsection{Duas fases, duas ferramentas}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=5mm and 9mm]
+  \node[folha] (txt) {\texttt{"2 + 3 * (4 - 1)"}};
+  \node[caixa, right=of txt] (lex) {\textbf{Flex}\\\scriptsize \texttt{lexer.l} → \texttt{yylex()}};
+  \node[folha, right=of lex] (tok) {\texttt{NUMBER PLUS}\\\texttt{NUMBER TIMES …}};
+  \node[caixa, right=of tok] (bis) {\textbf{Bison}\\\scriptsize \texttt{parser.y} → \texttt{yyparse()}};
+  \node[folha, right=of bis] (val) {\texttt{= 11}};
+  \draw[seta] (txt) -- (lex); \draw[seta] (lex) -- (tok);
+  \draw[seta] (tok) -- (bis); \draw[seta] (bis) -- (val);
+\end{tikzpicture}
+\caption{A separação clássica. O analisador léxico não conhece gramática --- só
+         reconhece padrões e emite \emph{tokens}; o analisador sintático não
+         conhece caracteres --- só consome \emph{tokens}. É a mesma divisão de
+         responsabilidade que o SRP (\cref{sec:solid}) recomendaria.}
+\label{fig:parser}
+\end{figure}
+
+\subsubsection{Precedência declarada, não codificada}
+
+O ponto mais instrutivo do subprojeto é como a precedência é expressa. A
+gramática das expressões é ambígua por escrito --- \texttt{expr : expr PLUS
+expr} não diz se \texttt{2 + 3 * 4} é 20 ou 14. Bison resolve por declaração:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Declaradas de baixo para cima: quem vem depois tem precedência maior.}]
+%left PLUS MINUS      /* menor precedência */
+%left TIMES DIVIDE    /* maior precedência */
+%right UMINUS         /* unário, maior precedência */
+\end{lstlisting}
+
+\texttt{\%left} declara também a associatividade, que resolve
+\texttt{a - b - c}. E \texttt{\%prec UMINUS} permite que a mesma
+\emph{regra} --- \texttt{MINUS expr} --- tenha precedência diferente da do
+\texttt{MINUS} binário: é como o menos unário fica mais forte que a
+multiplicação sem que o \emph{token} mude.
+
+\begin{porque}[a precedência é uma propriedade do parser, não da gramática]
+No \emph{Interpreter} escrito à mão (\cref{sec:patterns}), a precedência é
+estrutural: \texttt{expr} chama \texttt{term}, que chama \texttt{factor}, e a
+ordem das chamadas \emph{é} a precedência. Mudar a tabela de precedência exige
+reescrever a cadeia de funções. Com Bison, a gramática fica plana e ambígua de
+propósito, e a precedência é uma tabela declarativa --- muito mais fácil de
+ajustar, e muito mais fácil de errar sem perceber, porque a ambiguidade
+resolvida por declaração não aparece na leitura da gramática.
+\end{porque}
+
+\subsubsection{A fronteira com o C++}
+
+Flex e Bison geram C, e o \texttt{main.cpp} precisa de \texttt{extern "C"} para
+chamar o que eles produziram --- o mesmo mecanismo do \cref{sec:outline-asm} e
+do \cref{sec:plugin-registry}. E a integração no \emph{build} é por
+\texttt{custom\_target} do Meson, que declara ``deste arquivo, com este comando,
+sai aquele'' e deixa o Ninja resolver a ordem
+(\cref{sec:meson}).
+
+\begin{table}[htbp]
+\centering
+\caption{Gerador de \emph{parser} contra \emph{parser} escrito à mão.}
+\label{tab:parser-escolha}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+ & \textbf{Flex/Bison} & \textbf{Recursivo descendente} \\
+\midrule
+dependências        & \texttt{flex}, \texttt{bison} no sistema & nenhuma \\
+gramáticas grandes  & ideal                     & trabalhoso \\
+recuperação de erro & robusta                   & manual \\
+mensagens de erro   & genéricas                 & sob medida \\
+depuração           & o código gerado é ilegível& é código seu \\
+quando usar         & linguagem completa        & DSL com poucas regras \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =============================================================================
+\subsection{Inferência de rede neural em C++}
+\label{sec:yolo}
+% =============================================================================
+
+O subprojeto \projeto{yolo} carrega um modelo YOLOv10~\cite{yolov10} exportado
+para ONNX e o executa com ONNX Runtime~\cite{onnxruntime}, com OpenCV cuidando
+de imagem e câmera. Ele fecha o repositório porque é o único subprojeto que
+entrega um \emph{pipeline} de produção completo: entrada, pré-processamento,
+inferência, pós-processamento, saída --- e medição.
+
+\subsubsection{O trabalho está nas pontas}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=4mm and 7mm]
+  \node[folha] (img) {imagem\\\scriptsize qualquer tamanho};
+  \node[caixa, right=of img] (pre) {\textbf{pré}\\\scriptsize \emph{resize} + \emph{letterbox}\\\scriptsize BGR→RGB, /255\\\scriptsize HWC→CHW};
+  \node[caixaforte, right=of pre] (ort) {\textbf{ONNX}\\\scriptsize \texttt{Session::Run}};
+  \node[caixa, right=of ort] (pos) {\textbf{pós}\\\scriptsize filtra por \emph{score}\\\scriptsize mapeia coordenadas};
+  \node[folha, right=of pos] (det) {\texttt{vector<Detection>}};
+  \draw[seta] (img) -- (pre); \draw[seta] (pre) -- (ort);
+  \draw[seta] (ort) -- (pos); \draw[seta] (pos) -- (det);
+\end{tikzpicture}
+\caption{O \emph{pipeline}. A caixa do meio é uma chamada de biblioteca; as duas
+         caixas em volta são onde estão os erros --- e onde está boa parte do
+         tempo de execução.}
+\label{fig:yolo}
+\end{figure}
+
+\begin{armadilha}[quatro conversões, e cada uma tem uma convenção invisível]
+O pré-processamento faz quatro coisas, e errar qualquer uma produz detecções
+silenciosamente ruins em vez de erro:
+\begin{itemize}
+    \item \textbf{\emph{Letterbox}} --- redimensionar preservando a proporção e
+          preencher o resto. Um \texttt{resize} direto para 640$\times$640
+          distorce a imagem, e as caixas saem deslocadas.
+    \item \textbf{BGR $\rightarrow$ RGB} --- o OpenCV lê em BGR; o modelo foi
+          treinado em RGB. Trocar os canais não gera erro, só degrada a
+          confiança.
+    \item \textbf{Normalização} --- dividir por 255 para chegar a $[0,1]$, que é
+          a escala em que o modelo foi treinado.
+    \item \textbf{HWC $\rightarrow$ CHW} --- o OpenCV guarda os canais
+          entrelaçados por pixel; o tensor espera cada canal em um plano
+          contíguo.
+\end{itemize}
+E o pós-processamento tem a inversa da primeira: as coordenadas voltam do espaço
+de 640$\times$640 com preenchimento para o espaço da imagem original.
+\end{armadilha}
+
+\subsubsection{Medir latência com percentis, não com média}
+
+O terceiro modo do subprojeto é um \emph{benchmark}, e o formato dele é a lição:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/yolo/}: \emph{benchmark} do \texttt{yolov10n} em CPU.}]
+média:   28.50ms
+mediana: 27.80ms
+p95:     35.20ms
+p99:     42.10ms
+min:     25.30ms
+max:     55.10ms
+FPS teórico (média): 35.1
+\end{lstlisting}
+
+\begin{regra}[a média esconde exatamente o que importa]
+Numa aplicação interativa, o usuário não percebe a média --- percebe os quadros
+lentos. Entre a média de 28,5\,ms e o p99 de 42,1\,ms há quase 50\% de
+diferença, e é o p99 que determina se a experiência parece fluida. Some a isso a
+prática de \textbf{descartar as primeiras medições} (o \emph{warmup} de cinco
+inferências do subprojeto), que existe porque a primeira execução paga
+carregamento de página, alocação de \emph{arenas} internas e aquecimento de
+cache. Uma medição sem \emph{warmup} e sem percentis é, na prática, uma medição
+do carregamento do modelo.
+\end{regra}
+
+\subsubsection{A interface, e a decisão de projeto que ela revela}
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O tipo de domínio que atravessa a fronteira.}]
+struct Detection {
+    cv::Rect2f bbox;     // bounding box (x, y, w, h) em pixels
+    float      score;    // confiança (0.0 a 1.0)
+    int        class_id; // índice da classe (0-79 para COCO)
+    const char* label() const; // nome da classe
+};
+\end{lstlisting}
+
+Nada de \texttt{Ort::Value}, nada de tensores, nada de \emph{strides}: o que sai
+da classe \texttt{YOLOv10} é um \texttt{std::vector<Detection>} com coordenadas
+já em pixels da imagem original. É o mesmo invólucro sobre API estrangeira que
+apareceu em \texttt{http::get}, \texttt{db::Connection},
+\texttt{PhysicsWorld} e \texttt{FlightModel} --- a quinta ocorrência do mesmo
+padrão no relatório, e a evidência de que ele não é preferência de estilo.
+
+\begin{armadilha}[o modelo não vem no repositório]
+O \texttt{.onnx} precisa ser exportado antes (\texttt{export\_yolo.py}, ou
+\texttt{yolo export} do \emph{ultralytics}), o que faz o subprojeto depender de
+um \emph{pipeline} de Python para produzir a entrada do \emph{pipeline} de C++.
+É uma dependência realista --- treinar em Python e servir em C++ é o arranjo
+usual --- e vale registrar que ela existe: o binário compila sem o modelo e
+falha em tempo de execução.
+\end{armadilha}
+
+% =============================================================================
+\subsection{Síntese}
+% =============================================================================
+
+O capítulo tem uma pergunta recorrente, e vale enunciá-la como tal: \emph{quem é
+o dono, e o que acontece na fronteira?}
+
+Na extensão em Python, o dono da memória é o interpretador, e o C++ precisa
+liberar o GIL para não travar o processo. No interpretador embarcado, o dono é
+compartilhado, e a contagem de referências --- com suas referências próprias,
+emprestadas e roubadas --- é uma disciplina que o tipo não impõe. No
+\emph{parser}, o dono do código é o gerador, e a fronteira é \texttt{extern "C"}.
+No YOLO, o dono do tensor é o \emph{runtime}, e a fronteira é a conversão de
+\emph{layout}.
+
+\begin{regra}[toda fronteira merece um tipo de vocabulário próprio]
+\texttt{Detection} não é um tensor; \texttt{FlightState} não é um objeto do
+JSBSim; \texttt{HttpResponse} não é um \texttt{CURL*}. O padrão que atravessa os
+capítulos \ref{sec:rede} a \ref{sec:interop} é sempre o mesmo: definir tipos
+simples do domínio, converter uma vez na fronteira, e não deixar os tipos da
+biblioteca externa vazarem para o resto do programa. É a inversão de dependência
+da \cref{sec:solid} --- e o que a torna concreta é justamente esse punhado de
+\emph{structs} sem métodos.
+\end{regra}

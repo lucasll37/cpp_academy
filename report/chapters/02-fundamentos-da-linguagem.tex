@@ -1,0 +1,2753 @@
+% =============================================================================
+%  Fundamentos da linguagem
+%  Cobre a Etapa 1 da trilha: syntax, casts, value_semantics, operators,
+%  smart-pointers, oop, errors -- mais file_io, inserido depois de
+%  smart-pointers porque um stream e o primeiro recurso RAII com estado.
+% =============================================================================
+
+% =============================================================================
+\section{Fundamentos da linguagem}
+\label{sec:fundamentos}
+% =============================================================================
+
+Este é o capítulo mais longo do relatório, e o mais rentável: quase tudo o que
+vem depois --- containers, \emph{templates}, padrões de projeto, concorrência,
+integração com bibliotecas --- é aplicação do que está aqui. O assunto comum às
+oito seções é um só: \textbf{o que o compilador faz com o seu código}, e onde
+ele faz algo diferente do que a leitura ingênua sugere.
+
+A ordem interna reproduz a Etapa~1 da trilha do repositório, com duas
+inserções. \projeto{operators} entra logo depois de \projeto{value\_semantics},
+porque sobrecarregar um operador corretamente depende de saber quando um
+argumento é copiado e quando é movido. E \projeto{file\_io} entra logo depois de
+\projeto{smart-pointers}, porque um \emph{stream} é o primeiro recurso
+\gls{raii} que se encontra na prática --- e o único da biblioteca padrão que
+sinaliza erro por \emph{bit de estado} em vez de exceção, o que faz dele a
+ponte natural entre a \cref{sec:smart-pointers} e a \cref{sec:errors}.
+
+\begin{porque}[por que começar pelo que o compilador cala]
+As tabelas de armadilhas que abrem quase todas as seções deste capítulo não são
+folclore. Elas têm em comum a propriedade que torna o C++ difícil de aprender
+sozinho: \textbf{o programa compila, roda e dá a resposta certa} --- até o dia
+em que não dá. Um destrutor vazio não gera \emph{warning}; um
+\texttt{std::vector<Base>} não gera \emph{warning}; um \classe{const\_cast}
+seguido de escrita não gera \emph{warning}. Quem só lê a referência da
+linguagem nunca encontra esses casos, porque a referência descreve o que é
+válido, não o que é ilusório.
+\end{porque}
+
+% =============================================================================
+\subsection{O mapa da sintaxe}
+\label{sec:syntax}
+% =============================================================================
+
+O subprojeto \projeto{syntax} é o mapa: toda construção da linguagem ---
+declaração, seleção, iteração, função, tipo, classe, \emph{namespace},
+\emph{template}, exceção --- num só executável, comentada. É o subprojeto que se
+lê primeiro e ao qual se volta como referência; onde um tópico tem um
+subprojeto dedicado, ele mostra a \emph{forma} e aponta para lá.
+
+\subsubsection{Declarações e inicialização}
+
+Toda declaração em C++ tem a mesma forma --- especificadores, declarador,
+inicializador --- e o inicializador é onde mora a primeira armadilha. Existem
+seis maneiras de inicializar uma variável, e elas não são equivalentes:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={As seis formas de inicializar, e o que cada uma garante.}]
+int a = 42;      // copy-init
+int b(42);       // direct-init
+int c{42};       // list-init      ← a preferida
+int d = {42};    // copy-list-init
+int e{};         // value-init     → ZERO garantido
+int f;           // default-init   → LIXO indeterminado (ler é UB)
+\end{lstlisting}
+
+A forma com chaves venceu porque \textbf{proíbe \emph{narrowing}}: a conversão
+que perde informação deixa de ser silenciosa e passa a ser erro de compilação.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A diferença de uma chave.}]
+int t = 3.14159;   // compila, trunca em silêncio
+int s{3.14159};    // erro de compilação: narrowing conversion
+\end{lstlisting}
+
+\begin{armadilha}[com containers, \texttt{\{\}} muda o \emph{significado}]
+A preferência por chaves tem uma exceção que dói. Para os containers da
+biblioteca padrão existe um construtor que recebe
+\texttt{std::initializer\_list}, e ele \emph{vence} os demais na resolução de
+sobrecarga:
+\texttt{std::vector<int> v(3,0)} constrói três zeros;
+\texttt{std::vector<int> v\{3,0\}} constrói dois elementos, 3 e 0. As duas
+linhas compilam e nenhuma gera \emph{warning}.
+\end{armadilha}
+
+\paragraph{\texttt{const} e ponteiros.} A regra prática é ler a declaração da
+direita para a esquerda; o que muda é qual dos dois --- o alvo ou o ponteiro ---
+está congelado (\cref{tab:const-ponteiro}).
+
+\begin{table}[htbp]
+\centering
+\caption{As três combinações de \texttt{const} com ponteiro.}
+\label{tab:const-ponteiro}
+\footnotesize
+\begin{tabular}{@{}lcc@{}}
+\toprule
+\textbf{Declaração} & \texttt{*p = x} & \texttt{p = \&y} \\
+\midrule
+\texttt{const int* p}       & não & sim \\
+\texttt{int* const p}       & sim & não \\
+\texttt{const int* const p} & não & não \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Duração e visibilidade.} A \emph{storage class} decide quanto tempo
+o objeto vive; o \emph{linkage} decide quem enxerga o nome. As duas noções são
+independentes e costumam ser confundidas.
+
+\begin{table}[htbp]
+\centering
+\caption{\emph{Linkage} das construções que mais aparecem em cabeçalhos.}
+\label{tab:linkage}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Construção} & \textbf{\emph{Linkage}} \\
+\midrule
+\texttt{int x;} global                                   & externa \\
+\texttt{static int x;} / \texttt{namespace \{ int x; \}} & interna \\
+\texttt{inline int x = 1;} (C++17)                       & externa, uma instância \\
+\texttt{const int x = 1;} global                         & \textbf{interna} --- a surpresa comum \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A última linha é a que pega: uma constante global em um cabeçalho não viola a
+ODR porque cada unidade de tradução ganha a sua própria cópia --- o que também
+significa que o endereço dela é diferente em cada \texttt{.cpp}. O
+\texttt{inline} do C++17 é o que permite ter constante em cabeçalho com
+\emph{uma} instância só.
+
+\subsubsection{Controle de fluxo}
+
+São seis construções --- \texttt{if}, \texttt{switch}, \texttt{while},
+\texttt{do-while}, \texttt{for}, \texttt{range-for} --- e três saltos. O que o
+C++ moderno acrescentou não foi construção nova: foi \textbf{escopo menor}.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O \emph{init-statement}: a variável morre onde deixa de fazer sentido.}]
+if (auto it = m.find(k); it != m.end()) { /* usa it */ }      // C++17
+for (auto f = fn(); const auto& x : v) { /* usa f e x */ }     // C++20
+\end{lstlisting}
+
+\texttt{if constexpr} é diferente de tudo o mais nessa lista: ele não escolhe um
+caminho em tempo de execução, ele \textbf{descarta um galho na compilação}. O
+galho descartado nem precisa ser válido para aquele tipo --- é o que torna
+possível escrever uma função genérica que chama \texttt{.size()} só quando o
+tipo tem \texttt{.size()}.
+
+\begin{regra}[\texttt{switch} sobre \texttt{enum class} não leva \texttt{default}]
+Com um \texttt{enum} escopado e sem \texttt{default}, acrescentar um enumerador
+novo faz o compilador apontar todos os \texttt{switch} que deixaram de ser
+exaustivos. Escrever \texttt{default:} desliga esse alarme para sempre. A
+ausência do \texttt{default} é uma \emph{feature}, não um descuido --- e é a
+forma mais barata que a linguagem oferece de verificação de exaustividade.
+\end{regra}
+
+\subsubsection{Funções}
+
+A tabela de passagem de parâmetros (\cref{tab:passagem}) resolve a maioria das
+decisões de assinatura. Ela reaparece, refinada, na \cref{sec:value-semantics},
+quando a discussão incluir \emph{move}.
+
+\begin{table}[htbp]
+\centering
+\caption{Como passar um parâmetro, e o que cada forma comunica.}
+\label{tab:passagem}
+\footnotesize
+\begin{tabular}{@{}lcccl@{}}
+\toprule
+\textbf{Forma} & \textbf{Copia?} & \textbf{Modifica?} & \textbf{Aceita nulo?} & \textbf{Quando usar} \\
+\midrule
+\texttt{T}        & sim & não     & não & tipos baratos, \emph{sink} \\
+\texttt{T\&}      & não & sim     & não & saída, entrada-e-saída \\
+\texttt{const T\&}& não & não     & não & \textbf{leitura --- o padrão} \\
+\texttt{T*}       & não & sim     & sim & opcional, API C \\
+\texttt{T\&\&}    & não & consome & não & \emph{move}, \emph{forwarding} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A resolução de sobrecarga tenta, nesta ordem: correspondência exata, promoção,
+conversão padrão, conversão definida pelo usuário, reticências. E o
+\textbf{tipo de retorno não entra na assinatura} --- \texttt{int f(int)} e
+\texttt{bool f(int)} colidem.
+
+As variádicas têm duas formas, e a distância entre elas mede o que o C++ ganhou
+sobre o C:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Variádica à moda C e à moda C++.}]
+int soma(int n, ...);                     // sem tipos, contagem manual, UB fácil
+
+template <typename... A>
+auto soma(A... a) { return (a + ...); }   // fold expression: tipado, compile-time
+\end{lstlisting}
+
+\subsubsection{Tipos definidos pelo usuário}
+
+\texttt{struct} e \texttt{class} são a mesma construção: muda só o acesso
+padrão. As distinções que importam de verdade estão em outro lugar
+(\cref{tab:enum,tab:union}).
+
+\begin{table}[htbp]
+\centering
+\caption{\texttt{enum} contra \texttt{enum class}.}
+\label{tab:enum}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+ & \texttt{enum} & \texttt{enum class} \\
+\midrule
+escopo               & vaza para fora        & exige \texttt{Cor::Verde} \\
+converte para \texttt{int} & sozinho         & só com \classe{static\_cast} \\
+tipo subjacente      & escolha do compilador & sua (\texttt{: uint8\_t}) \\
+colisão de nomes     & acontece              & impossível \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{\texttt{union} contra \texttt{std::variant}.}
+\label{tab:union}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+ & \texttt{union} & \texttt{std::variant} \\
+\midrule
+quem guarda a etiqueta   & você                & ele \\
+ler o membro errado      & \gls{ub} silencioso & \texttt{std::bad\_variant\_access} \\
+tipos não triviais       & não                 & sim \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Do C++20 vieram os \emph{designated initializers}, a resposta tardia à falta de
+argumentos nomeados: \texttt{Config c\{.host = "api", .porta = 443, .tls =
+true\}}. A restrição a conhecer: a ordem dos campos escritos tem de seguir a
+ordem de \emph{declaração} dos membros --- o C é mais permissivo aqui, e código
+portado de C pode não compilar.
+
+\subsubsection{Classes: a lista de inicialização não é açúcar sintático}
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Inicializar e atribuir não são a mesma coisa.}]
+Classe(const T& r) : membro(r)  { }        // 1 construção
+Classe(const T& r) { membro = r; }         // 1 construção padrão + 1 atribuição
+\end{lstlisting}
+
+A segunda forma exige que o membro seja construível por padrão, e faz o dobro
+do trabalho. Para membros \texttt{const} ou de tipo referência ela nem é uma
+opção: eles só podem ser \emph{inicializados}.
+
+\begin{armadilha}[a ordem da lista escrita é ignorada]
+Os membros são construídos na ordem de \textbf{declaração} na classe, não na
+ordem em que aparecem na lista de inicialização. Escrever a lista fora de ordem
+compila, roda na ordem de declaração mesmo assim, e --- se um membro
+inicializar a partir de outro --- lê um membro ainda não construído. O GCC
+avisa com \texttt{-Wreorder}, que não vem em \texttt{-Wall}.
+\end{armadilha}
+
+\subsubsection{Organização: \emph{namespaces}, ADL e o pré-processador}
+
+A busca de nome do C++ considera também os \emph{namespaces} dos
+\emph{argumentos} da chamada --- é a \emph{Argument-Dependent Lookup}, e é o que
+faz \texttt{std::cout << x} e o idioma \texttt{using std::swap; swap(a,b)}
+funcionarem sem qualificação explícita. É também o mecanismo que torna os
+\emph{hidden friends} da \cref{sec:operators} eficientes.
+
+Sobre macros, a regra é curta: quase toda uma tem substituto melhor
+(\cref{tab:macros}). Sobram os casos que \emph{exigem} manipulação de texto ---
+guardas de inclusão, \texttt{\_\_LINE\_\_}, portabilidade condicional.
+
+\begin{table}[htbp]
+\centering
+\caption{O que usar no lugar de cada macro.}
+\label{tab:macros}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Macro} & \textbf{Substituto} \\
+\midrule
+\texttt{\#define PI 3.14}   & \texttt{constexpr double pi = 3.14;} \\
+\texttt{\#define MAX(a,b)}  & \texttt{template <class T> T max(T, T)} \\
+\texttt{\#define DEBUG\_ON} & \texttt{constexpr bool} + \texttt{if constexpr} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{regra}[nunca \texttt{using namespace} no escopo global de um cabeçalho]
+A diretiva impõe a decisão a \emph{todo} arquivo que incluir aquele cabeçalho,
+direta ou indiretamente, e a consequência típica --- uma ambiguidade nova que
+aparece em um \texttt{.cpp} que ninguém tocou --- é praticamente impossível de
+diagnosticar a partir da mensagem de erro.
+\end{regra}
+
+\subsubsection{Expressões: precedência não é ordem de avaliação}
+
+Duas armadilhas de expressão aparecem em produção com frequência
+desproporcional ao quanto são discutidas.
+
+A primeira é a comparação com sinais misturados. Numa comparação entre
+\texttt{int} e \texttt{unsigned}, o \texttt{int} é convertido --- e $-1$ vira
+$4\,294\,967\,295$:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A comparação que inverte de resultado.}]
+int a = -1;  unsigned b = 1;
+a < b        // FALSE
+\end{lstlisting}
+
+É daí que vem o \texttt{-Wsign-compare} ao escrever \texttt{int i; i <
+v.size()}, e é por isso que o índice de um laço sobre container deve ser
+\texttt{std::size\_t} --- ou, melhor, não existir, substituído por um
+\emph{range-for}.
+
+A segunda é confundir precedência com ordem de avaliação. \texttt{1 << 2 + 3} é
+\texttt{1 << 5}, porque \texttt{+} tem precedência maior que \texttt{<<}. E,
+independentemente disso, a ordem em que os operandos de uma expressão são
+avaliados é, em geral, não especificada.
+
+\subsubsection{As armadilhas silenciosas, reunidas}
+
+A \cref{tab:armadilhas-syntax} recolhe o núcleo do argumento do subprojeto
+\projeto{syntax}: cada linha é uma construção que compila, e a última coluna diz
+se você fica sabendo.
+
+\begin{table}[htbp]
+\centering
+\caption{Construções que não significam o que parecem --- e se o compilador
+         avisa. Cada uma tem demonstração executável em \texttt{src/syntax/}.}
+\label{tab:armadilhas-syntax}
+\footnotesize
+\begin{tabular}{@{}llc@{}}
+\toprule
+\textbf{Escrito assim} & \textbf{O que acontece} & \textbf{Avisa?} \\
+\midrule
+\texttt{Widget w();}                  & declara uma \emph{função}          & não \\
+\texttt{int x;} local                 & lixo indeterminado; ler é \gls{ub} & não \\
+\texttt{if (a) f(); g();}             & \texttt{g()} roda sempre           & às vezes \\
+\texttt{052}                          & é octal, vale 42                   & não \\
+\texttt{\#define Q(x) x*x}, \texttt{Q(1+2)} & vira \texttt{1+2*1+2} = 5    & não \\
+\texttt{a < b}, \texttt{int} e \texttt{unsigned} & $-1$ vira $4\,294\,967\,295$ & \texttt{-Wsign-compare} \\
+\texttt{int t = 3.99;}                & trunca em silêncio                 & não \\
+\texttt{delete p} para \texttt{new T[n]} & \gls{ub}                        & não \\
+\texttt{[=]} num método               & captura \texttt{this} por ponteiro & não \\
+\texttt{case} sem \texttt{break}      & cai para o seguinte                & \texttt{-Wimplicit-fallthrough} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =============================================================================
+\subsection{O sistema de tipos e as conversões explícitas}
+\label{sec:casts}
+% =============================================================================
+
+O subprojeto \projeto{casts} é o menor pré-requisito da trilha, e ensina uma
+coisa que a sintaxe esconde: os quatro \emph{casts} do C++ \textbf{não são
+quatro sinônimos com nomes diferentes}. Cada um é uma operação distinta, com
+verificações distintas e riscos distintos --- e o \emph{cast} à moda C é o
+apagador dessa distinção.
+
+\subsubsection{Os quatro, em ordem de segurança}
+
+\begin{table}[htbp]
+\centering
+\caption{Os quatro \emph{casts} do C++: o que fazem e o que verificam.}
+\label{tab:casts}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Cast} & \textbf{Faz} & \textbf{Verifica} \\
+\midrule
+\texttt{static\_cast}      & conversões relacionadas   & compilação \\
+\classe{dynamic\_cast}     & desce na hierarquia       & \textbf{execução} (exige \texttt{virtual}) \\
+\texttt{const\_cast}       & remove/adiciona \texttt{const} & nada --- escrever pode ser \gls{ub} \\
+\classe{reinterpret\_cast} & reinterpreta os bits      & nada \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{\texttt{static\_cast} --- o padrão.} Pede ao compilador que confira,
+\emph{em compilação}, se a conversão faz sentido. Se não fizer, o programa não
+compila --- que é o comportamento desejável. Serve para conversões numéricas
+explícitas, para subir na hierarquia (sempre seguro) e para descer quando você
+\emph{sabe} o tipo real. Não serve entre tipos não relacionados, e é justamente
+por recusá-los que ele é o \emph{cast} padrão.
+
+\paragraph{\texttt{dynamic\_cast} --- descer com verificação.} Usa \gls{rtti}
+para conferir em tempo de execução se o objeto realmente é do tipo pedido. Exige
+que a base tenha ao menos uma função virtual, e falha de duas maneiras
+diferentes conforme a forma usada: com ponteiro devolve \texttt{nullptr}; com
+referência lança \classe{std::bad\_cast}.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={As duas formas de falha do \texttt{dynamic\_cast}.}]
+Animal* animal = new Cachorro();
+
+if (Cachorro* c = dynamic_cast<Cachorro*>(animal)) {   // nullptr se falhar
+    c->buscar();
+}
+
+try {
+    Cachorro& cc = dynamic_cast<Cachorro&>(*animal);   // lança se falhar
+    cc.buscar();
+} catch (const std::bad_cast& e) {
+    fmt::print("não é um Cachorro: {}\n", e.what());
+}
+\end{lstlisting}
+
+O custo não é desprezível: \texttt{dynamic\_cast} percorre a árvore de herança
+em tempo de execução e não é $O(1)$. A \cref{sec:oop} traz a medição, e a
+\cref{sec:oop-rtti} traz as alternativas --- que, quase sempre, se resumem a
+uma função virtual que não foi escrita.
+
+\paragraph{\texttt{const\_cast} --- a única aplicação legítima.} Remover
+\texttt{const} é aceitável em exatamente um cenário: atravessar uma interface
+antiga que esqueceu de declarar o parâmetro como \texttt{const}, sabendo que ela
+não modifica o objeto.
+
+\begin{armadilha}[modificar um objeto genuinamente \texttt{const} é sempre \gls{ub}]
+\begin{lstlisting}[style=bt, language=C++, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+const int x = 42;              // pode estar em memória somente-leitura
+int* p = const_cast<int*>(&x);
+*p = 100;                      // UB: pode falhar, pode ser ignorado,
+                               // pode "funcionar" e mudar em -O2
+\end{lstlisting}
+A regra é sobre a \emph{origem} do objeto, não sobre o tipo do ponteiro: se ele
+foi declarado \texttt{const}, escrever nele é \gls{ub} independentemente de
+quantos \emph{casts} houver no caminho.
+\end{armadilha}
+
+\paragraph{\texttt{reinterpret\_cast} --- e por que \classe{std::bit\_cast} o
+substitui.} Tratar os bytes de um tipo como se fossem outro é legítimo em
+interoperação com C, em aritmética de endereços e ao inspecionar a
+representação. O que não é legítimo é \emph{ler pelo tipo errado}: acessar um
+\texttt{float} através de um \texttt{int*} viola \emph{strict aliasing}, e o
+compilador tem permissão para supor que os dois ponteiros nunca apontam para a
+mesma memória.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A forma errada e as duas formas corretas de ver os bits de um \texttt{float}.}]
+float f = 1.0f;
+
+int* i = reinterpret_cast<int*>(&f);
+*i = 42;                                  // UB: viola strict aliasing
+
+int bits;
+std::memcpy(&bits, &f, sizeof(bits));     // correto, e o compilador otimiza
+auto bits2 = std::bit_cast<std::uint32_t>(f);   // C++20: correto e constexpr
+\end{lstlisting}
+
+\subsubsection{Por que o \emph{cast} à moda C é o pior dos cinco}
+
+\texttt{(Tipo)valor} tenta, em ordem, cinco combinações --- \texttt{static\_cast},
+\texttt{const\_cast}, \texttt{reinterpret\_cast} e duas composições. Quem
+escolhe é o compilador, e o programador não fica sabendo qual foi.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O mesmo \gls{ub}, uma vez escondido e outra vez visível.}]
+const int x = 42;
+int* p1 = (int*)&x;                 // faz const_cast em silêncio
+int* p2 = const_cast<int*>(&x);     // a intenção fica escrita
+\end{lstlisting}
+
+Há um segundo argumento, mais prático que teórico: \texttt{static\_cast} é
+\emph{pesquisável}. Auditar um projeto atrás de todas as conversões perigosas é
+um \texttt{grep} quando os \emph{casts} têm nome, e é impossível quando eles são
+um par de parênteses. O compilador ajuda a manter a disciplina com
+\texttt{-Wold-style-cast}.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=5mm and 12mm]
+  \node[caixaforte] (q) {preciso converter};
+  \node[caixa, below left=8mm and 14mm of q]  (num) {conversão\\numérica};
+  \node[caixa, below=of q]                    (hier) {desce na\\hierarquia};
+  \node[caixa, below right=8mm and 14mm of q] (bits) {reinterpretar\\bytes};
+  \node[caixaok, below=of num]  (sc) {\texttt{static\_cast}};
+  \node[caixa, below=of hier]   (sabe) {sei o tipo\\real?};
+  \node[caixaok, below=of bits] (bc) {\texttt{bit\_cast}\\ou \texttt{memcpy}};
+  \node[caixaok, below left=6mm and 2mm of sabe]  (sc2) {\texttt{static\_cast}};
+  \node[caixa, below right=6mm and 2mm of sabe]   (dc) {\texttt{dynamic\_cast}};
+  \draw[seta] (q) -- (num);  \draw[seta] (q) -- (hier);  \draw[seta] (q) -- (bits);
+  \draw[seta] (num) -- (sc); \draw[seta] (hier) -- (sabe); \draw[seta] (bits) -- (bc);
+  \draw[seta] (sabe) -- node[rotulo,left] {sim} (sc2);
+  \draw[seta] (sabe) -- node[rotulo,right] {não} (dc);
+\end{tikzpicture}
+\caption{A árvore de decisão de \texttt{src/casts/}. Nenhum galho termina em
+         \emph{cast} à moda C, e apenas um termina em \texttt{dynamic\_cast} ---
+         que, ao aparecer numa cadeia de \texttt{if}, quase sempre indica uma
+         função virtual faltando.}
+\label{fig:arvore-casts}
+\end{figure}
+
+% =============================================================================
+\subsection{Semântica de valor: cópia, \emph{move} e elisão}
+\label{sec:value-semantics}
+% =============================================================================
+
+O subprojeto \projeto{value\_semantics} sustenta todos os outros. \classe{std::move}
+aparece em dezenas de arquivos do repositório; é aqui que se explica o que ele
+realmente faz --- um \texttt{static\_cast}, e nada mais.
+
+O que torna esta seção urgente é a natureza dos erros que ela previne: nenhum
+deles gera \emph{warning}, e todos custam desempenho ou correção
+(\cref{tab:erros-valor}). O programa do subprojeto roda com contadores
+instrumentados, de modo que cada afirmação da tabela é \emph{medida}, não
+alegada.
+
+\begin{table}[htbp]
+\centering
+\caption{Cinco erros de semântica de valor. Nenhum é apontado pelo compilador
+         com os avisos padrão.}
+\label{tab:erros-valor}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Erro} & \textbf{Consequência} \\
+\midrule
+declarar \texttt{\textasciitilde T() \{\}} vazio        & suprime os \emph{moves} --- todo ``\emph{move}'' vira cópia \\
+esquecer \texttt{noexcept} no \emph{move ctor}          & \texttt{std::vector} passa a copiar ao realocar \\
+\texttt{return std::move(x)}                            & desliga o NRVO: de zero operações para uma \\
+\texttt{std::move} onde cabia \classe{std::forward}     & rouba o objeto do chamador sem avisar \\
+repassar \texttt{T\&\&} sem \texttt{forward}            & vira \emph{lvalue} no caminho; o \emph{move} se perde \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Categorias de valor}
+
+Toda expressão tem um tipo \textbf{e} uma \gls{categoriadevalor}. A categoria
+responde a duas perguntas independentes: \emph{tem identidade?} e \emph{pode ser
+movida?} (\cref{fig:categorias}).
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=6mm and 6mm]
+  \node[caixaforte] (e) {expressão};
+  \node[caixa, below left=8mm and 6mm of e]  (gl) {glvalue\\\scriptsize tem identidade};
+  \node[caixa, below right=8mm and 6mm of e] (rv) {rvalue\\\scriptsize pode ser movida};
+  \node[folha, below=8mm of gl, xshift=-14mm] (lv) {\textbf{lvalue}\\\scriptsize \texttt{x}, \texttt{*p}, \texttt{arr[0]}};
+  \node[folha, below=8mm of e]                (xv) {\textbf{xvalue}\\\scriptsize \texttt{std::move(x)}};
+  \node[folha, below=8mm of rv, xshift=14mm]  (pv) {\textbf{prvalue}\\\scriptsize \texttt{42}, \texttt{f()}, \texttt{T\{\}}};
+  \draw[aresta] (e) -- (gl); \draw[aresta] (e) -- (rv);
+  \draw[aresta] (gl) -- (lv); \draw[aresta] (gl) -- (xv);
+  \draw[aresta] (rv) -- (xv); \draw[aresta] (rv) -- (pv);
+\end{tikzpicture}
+\caption{As categorias de valor. O \emph{xvalue} é o único que pertence aos dois
+         ramos: tem identidade \emph{e} pode ser movido --- é exatamente o que
+         \texttt{std::move} produz.}
+\label{fig:categorias}
+\end{figure}
+
+\begin{armadilha}[tudo o que tem nome é \emph{lvalue}]
+\begin{lstlisting}[style=bt, language=C++, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+void recebe(std::string&& s) {
+    alvo(s);              // → escolhe o overload de LVALUE
+    alvo(std::move(s));   // → escolhe o overload de rvalue
+}
+\end{lstlisting}
+O parâmetro \texttt{s} foi \emph{declarado} como referência a \emph{rvalue},
+mas a \emph{expressão} \texttt{s} tem nome --- e tudo o que tem nome é
+\emph{lvalue}. É por isso que repassar um \texttt{T\&\&} sem
+\texttt{std::move}/\texttt{std::forward} produz uma cópia. A regra existe por
+segurança: sem ela, usar o parâmetro duas vezes esvaziaria o objeto na primeira.
+\end{armadilha}
+
+\paragraph{\texttt{std::move} é um \emph{cast}.} A implementação cabe em três
+linhas, e nenhum byte é copiado ao chamá-la:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O que \texttt{std::move} faz, escrito por extenso.}]
+template <typename T>
+constexpr std::remove_reference_t<T>&& meu_move(T&& t) noexcept {
+    return static_cast<std::remove_reference_t<T>&&>(t);
+}
+\end{lstlisting}
+
+O \gls{move} de fato só acontece quando alguém \emph{constrói ou atribui} a
+partir do \emph{rvalue} resultante. \texttt{std::move} apenas autoriza.
+
+\paragraph{\texttt{decltype} preserva a categoria.} O detalhe dos parênteses
+surpreende, mas é consistente: \texttt{decltype(x)} pergunta pelo tipo
+\emph{declarado} de \texttt{x}, enquanto \texttt{decltype((x))} pergunta pelo
+tipo da \emph{expressão} \texttt{(x)}, que é um \emph{lvalue} e portanto
+\texttt{int\&}.
+
+\subsubsection{Rule of 0 / 3 / 5}
+
+Um tipo tem seis operações que o compilador pode gerar sozinho: construtor
+padrão, destrutor, construtor e atribuição de cópia, construtor e atribuição de
+\emph{move}. As regras de geração são interligadas, e a consequência prática é
+a armadilha mais cara do capítulo.
+
+\begin{armadilha}[um destrutor vazio custa todos os \emph{moves}]
+\begin{lstlisting}[style=bt, language=C++, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+struct ComDestrutor {
+    std::vector<int> dados;
+    ~ComDestrutor() {}      // isto sozinho suprime os DOIS moves
+};
+\end{lstlisting}
+Declarar o destrutor --- ainda que vazio --- impede a geração implícita do
+construtor e da atribuição de \emph{move}. O código continua compilando e
+rodando; só fica mais lento, porque todo ``\emph{move}'' cai silenciosamente na
+cópia. Saída real do subprojeto:
+\begin{lstlisting}[style=bt, language=bash, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+ComDestrutor  — move real disponível? NÃO — cai silenciosamente na cópia
+SemDestrutor  — move real disponível? sim
+\end{lstlisting}
+Note que \texttt{std::is\_move\_constructible\_v} responderia \texttt{true} nos
+dois casos, porque \texttt{const T\&} também aceita \emph{rvalue}. O
+discriminador honesto é \texttt{std::is\_nothrow\_move\_constructible\_v}.
+\end{armadilha}
+
+\paragraph{\texttt{noexcept} decide se o \texttt{vector} move ou copia.} Ao
+realocar, \texttt{std::vector} precisa oferecer a garantia forte: se algo falhar
+no meio da transferência, o vetor original tem de continuar íntegro. Um
+construtor de \emph{move} que pode lançar não permite essa promessa --- depois
+de mover metade dos elementos, não há como voltar atrás. Por isso o container
+consulta \texttt{std::move\_if\_noexcept} e, na dúvida, copia:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/value\_semantics/}: a única diferença entre os
+             dois tipos é a palavra \texttt{noexcept}.}]
+MoveNoexcept    → 7 moves, 0 cópias
+MovePodeLancar  → 0 moves, 7 cópias
+\end{lstlisting}
+
+\paragraph{\emph{Copy-and-swap}.} Uma única atribuição, recebida \textbf{por
+valor}, cobre cópia e \emph{move} de uma vez --- e ganha de graça a garantia
+forte e o tratamento correto da autoatribuição:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\emph{Copy-and-swap} em \texttt{src/value\_semantics/demo\_rule\_of\_five.hpp}
+             (condensado).}]
+class Cofre {
+public:
+    explicit Cofre(std::size_t n) : tamanho_(n), dados_(new int[n]{}) {}
+    ~Cofre() { delete[] dados_; }
+
+    Cofre(const Cofre& o) : tamanho_(o.tamanho_), dados_(new int[o.tamanho_]) {
+        for (std::size_t i = 0; i < tamanho_; ++i) dados_[i] = o.dados_[i];
+    }
+
+    Cofre(Cofre&& o) noexcept : tamanho_(o.tamanho_), dados_(o.dados_) {
+        o.dados_ = nullptr;
+        o.tamanho_ = 0;
+    }
+
+    // A única atribuição declarada — cobre os dois casos.
+    Cofre& operator=(Cofre outro) noexcept {
+        trocar(*this, outro);
+        return *this;
+    }
+
+    friend void trocar(Cofre& a, Cofre& b) noexcept {
+        std::swap(a.tamanho_, b.tamanho_);
+        std::swap(a.dados_,   b.dados_);
+    }
+
+private:
+    std::size_t tamanho_ = 0;
+    int*        dados_   = nullptr;
+};
+\end{lstlisting}
+
+Chamada com \emph{lvalue}, o parâmetro é construído por cópia; com
+\emph{rvalue}, por \emph{move}. Um corpo para os dois casos.
+
+\begin{regra}[declare apenas a versão por valor]
+Ter \texttt{operator=(T)} e \texttt{operator=(T\&\&)} ao mesmo tempo é ambíguo
+para argumentos \emph{rvalue}, e o programa não compila. O \emph{copy-and-swap}
+é uma escolha exclusiva, não uma adição.
+\end{regra}
+
+\subsubsection{Elisão de cópia}
+
+Desde o C++17, retornar um \emph{prvalue} não cria temporário nenhum: o objeto é
+construído diretamente no destino. Isso deixou de ser otimização e passou a ser
+\emph{regra da linguagem} --- e a prova é um tipo que não pode ser copiado nem
+movido:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A elisão obrigatória, em
+             \texttt{src/value\_semantics/demo\_copy\_elision.hpp}.}]
+struct Imovel {
+    int v;
+    explicit Imovel(int x) : v(x) {}
+    Imovel(const Imovel&)            = delete;
+    Imovel(Imovel&&)                 = delete;
+    Imovel& operator=(const Imovel&) = delete;
+    Imovel& operator=(Imovel&&)      = delete;
+};
+Imovel faz_imovel() {
+    return Imovel(42);          // compila: nenhuma cópia/move é sequer considerada
+}
+\end{lstlisting}
+
+\begin{armadilha}[\texttt{return std::move(local)} é uma pessimização]
+A NRVO --- elisão para uma variável local nomeada --- continua sendo opcional e
+depende de o compilador enxergar o \emph{nome} da variável no \texttt{return}.
+Envolvê-lo em \texttt{std::move} produz um \emph{xvalue}, que já não é um nome:
+a elisão deixa de se aplicar e o que era zero operação vira um \emph{move}.
+\begin{center}\footnotesize
+\begin{tabular}{@{}lcc@{}}
+\toprule
+\textbf{Versão} & \textbf{Cópias} & \textbf{\emph{Moves}} \\
+\midrule
+\texttt{return local;} (NRVO)     & 0 & 0 \\
+\texttt{return std::move(local);} & 0 & \textbf{1} \\
+\bottomrule
+\end{tabular}
+\end{center}
+O GCC avisa com \texttt{-Wpessimizing-move}. Retornar uma variável local já
+trata a expressão como \emph{rvalue} quando a elisão não se aplica --- por
+exemplo quando há dois candidatos em ramos diferentes --- de modo que o
+\emph{fallback} natural já é o \emph{move}, sem ajuda.
+\end{armadilha}
+
+\subsubsection{\emph{Perfect forwarding}}
+
+Repassar um argumento preservando tipo, constância e categoria exige duas peças
+que só funcionam \emph{juntas}: o parâmetro \texttt{T\&\&} deduzido e o
+\texttt{std::forward<T>} no repasse.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={As duas peças do \gls{forwarding}.}]
+template <typename T>
+void repassa(T&& arg) {          // 1. referência universal (T é DEDUZIDO)
+    alvo(std::forward<T>(arg));  // 2. forward condicional
+}
+\end{lstlisting}
+
+O mecanismo é o \emph{colapso de referências}: quando \texttt{T} é deduzido em
+\texttt{T\&\&}, um argumento \emph{lvalue} de tipo \texttt{X} deduz \texttt{T =
+X\&} e o parâmetro colapsa para \texttt{X\&}; um \emph{rvalue} deduz \texttt{T =
+X} e o parâmetro fica \texttt{X\&\&}. Das quatro combinações possíveis, apenas
+\texttt{\&\& \&\&} sobrevive como \emph{rvalue}.
+
+\begin{armadilha}[nem todo \texttt{T\&\&} é referência universal]
+\begin{lstlisting}[style=bt, language=C++, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+void f(std::string&&);                          // rvalue ref pura
+template<class T> void f(std::vector<T>&&);     // rvalue ref pura: T não está
+                                                // na posição do parâmetro
+template<class T> void f(T&&);                  // referência universal
+\end{lstlisting}
+A forma só é universal quando o parâmetro é exatamente \texttt{T\&\&} com
+\texttt{T} deduzido naquela posição. Nos outros dois casos, aplicar
+\texttt{std::forward} não faz sentido --- e aplicar \texttt{std::move} está
+correto.
+\end{armadilha}
+
+\begin{regra}[\texttt{move} em tipo concreto, \texttt{forward} em tipo deduzido]
+\texttt{std::move} é incondicional: rouba sempre. \texttt{std::forward<T>} é
+condicional: rouba só se o chamador ofereceu um \emph{rvalue}. Trocar um pelo
+outro num \emph{template} esvazia silenciosamente o objeto de quem chamou ---
+o programa continua correto para o primeiro uso e falha no segundo.
+\end{regra}
+
+\subsubsection{\emph{Move-only}, \emph{ref-qualifiers} e \emph{sink parameters}}
+
+Alguns recursos não podem ser duplicados: descritor de arquivo, \emph{lock},
+\emph{socket}, \emph{thread}. Para eles, copiar não é caro --- é \emph{errado},
+e a forma de dizer isso é \texttt{= delete}, que torna o erro incompilável em
+vez de detectável em produção.
+
+Os \emph{ref-qualifiers} permitem que um método pergunte se \texttt{*this} é
+descartável, e portanto se pode roubar o próprio conteúdo:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O mesmo método, duas implementações conforme a categoria de \texttt{*this}.}]
+const std::string& texto() const&  { return texto_; }             // lvalue: empresta
+std::string        texto() &&      { return std::move(texto_); }  // rvalue: rouba
+\end{lstlisting}
+
+Servem também para \emph{proibir}: declarar \texttt{T\& operator[](int) \&\& =
+delete;} impede devolver uma referência para dentro de um temporário que morre
+na mesma expressão --- um \emph{dangling} que, sem isso, compila.
+
+Quando a função vai \textbf{guardar} uma cópia, a assinatura correta é por valor
+seguida de \texttt{std::move} --- o \emph{sink parameter}:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Um \emph{overload} que atende \emph{lvalue} e \emph{rvalue} de
+             forma ótima.}]
+void adicionar(std::string nome) {          // por valor
+    nomes_.push_back(std::move(nome));      // o move é obrigatório aqui
+}
+\end{lstlisting}
+
+Com \emph{lvalue} há uma cópia --- inevitável, porque o chamador quer manter o
+seu objeto; com \emph{rvalue} há um \emph{move}, que é barato. A alternativa de
+escrever \texttt{const T\&} \emph{e} \texttt{T\&\&} explodiria em $2^n$
+\emph{overloads} para $n$ parâmetros.
+
+\begin{table}[htbp]
+\centering
+\caption{A tabela de assinaturas, agora completa.}
+\label{tab:assinaturas}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Intenção} & \textbf{Assinatura} \\
+\midrule
+só ler o argumento                & \texttt{const T\&} \\
+ler e modificar o do chamador     & \texttt{T\&} \\
+guardar uma cópia                 & \texttt{T} por valor + \texttt{std::move} dentro \\
+repassar em \emph{template}       & \texttt{T\&\&} + \texttt{std::forward<T>} \\
+tipo pequeno e trivial            & \texttt{T} por valor \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =============================================================================
+\subsection{Sobrecarga de operadores}
+\label{sec:operators}
+% =============================================================================
+
+O subprojeto \projeto{operators} responde à pergunta de quando fazer um tipo se
+comportar como um tipo embutido --- e, mais importante, quando não fazer. A
+regra que resolve a maioria das decisões é uma só:
+
+\begin{regra}[não surpreenda]
+Se \texttt{+} não for comutativo, associativo e barato, escreva um método com
+nome. \texttt{a.concatenar(b)} nunca confundiu ninguém; \texttt{a + b} com
+semântica inesperada confunde todo mundo, inclusive o autor, seis meses depois.
+\end{regra}
+
+\subsubsection{Membro ou função livre}
+
+A diferença prática está na \textbf{conversão implícita do operando da
+esquerda}. Um operador membro não converte o próprio \texttt{this}:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A assimetria que decide a forma.}]
+m + 5.0   // funciona com operador membro (o double vira Dinheiro)
+5.0 + m   // NÃO COMPILA: o `this` não converte
+\end{lstlisting}
+
+Daí a divisão da \cref{tab:forma-operador}. O caso dos operadores de
+\emph{stream} não é escolha: \texttt{operator<<} tem de ser livre porque o
+operando da esquerda é o \texttt{std::ostream}, que não é seu.
+
+\begin{table}[htbp]
+\centering
+\caption{Qual forma usar para cada família de operadores.}
+\label{tab:forma-operador}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Operador} & \textbf{Forma} \\
+\midrule
+simétrico (\texttt{+ - * / ==})      & função \textbf{livre} \\
+modifica o objeto (\texttt{+=})      & \textbf{membro} \\
+\texttt{= [] () -> ->*}              & \textbf{membro} (exigido pela linguagem) \\
+\texttt{<< >>} de \emph{stream}      & \textbf{livre} (exigido) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O idioma que reconcilia as duas primeiras linhas é a \textbf{forma canônica}:
+a lógica vive no membro que modifica, e o operador simétrico é um
+\emph{hidden friend} que a reaproveita.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A forma canônica --- e o motivo de \texttt{a} vir por valor.}]
+Tipo& operator+=(const Tipo& o);                    // membro: aqui mora a lógica
+friend Tipo operator+(Tipo a, const Tipo& b)        // livre: `a` por VALOR
+    { return a += b; }
+\end{lstlisting}
+
+O parâmetro \texttt{a} por valor é a cópia de trabalho --- e, se o chamador
+passou um temporário, ele é \emph{movido} para lá em vez de copiado
+(\cref{sec:value-semantics}). Definir o \texttt{friend} \emph{dentro} do corpo
+da classe tem três ganhos: o \emph{namespace} não é poluído, a resolução de
+sobrecarga considera menos candidatos --- o que se nota no tempo de compilação
+de projetos grandes --- e os dois operandos continuam podendo converter.
+
+\begin{armadilha}[quatro operadores que não devem ser sobrecarregados]
+\texttt{\&\&} e \texttt{||} sobrecarregados \textbf{perdem o curto-circuito}:
+ambos os lados passam a ser avaliados, sempre. \texttt{,} perde a ordem de
+avaliação garantida. \texttt{\&} unário quebra código genérico que espera obter
+o endereço. Os três casos compilam sem reclamação e mudam o significado de
+expressões escritas por terceiros.
+\end{armadilha}
+
+\subsubsection{\classe{operator<=>}: seis operadores viram um}
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Comparação total em uma linha, em
+             \texttt{src/operators/demo\_comparacao.hpp}.}]
+struct Versao {
+    int maior, menor, patch;
+
+    // UMA linha. O compilador compara os membros na ordem de DECLARAÇÃO e
+    // gera <, <=, >, >=, == e != a partir daqui.
+    auto operator<=>(const Versao&) const = default;
+};
+\end{lstlisting}
+
+A comparação gerada é lexicográfica na ordem de \emph{declaração} dos membros
+--- trocar a ordem dos campos na classe muda a semântica da comparação sem que
+nenhuma linha do \texttt{operator<=>} mude.
+
+O valor devolvido não é um \texttt{int}: é uma \textbf{categoria de ordenação},
+e a escolha entre as três (\cref{tab:ordenacao}) é uma afirmação sobre o tipo.
+
+\begin{table}[htbp]
+\centering
+\caption{As três categorias de ordenação e o que cada uma promete.}
+\label{tab:ordenacao}
+\footnotesize
+\begin{tabular}{@{}lcc@{}}
+\toprule
+\textbf{Categoria} & \textbf{Ordem total} & \textbf{Equivalente = igual} \\
+\midrule
+\texttt{strong\_ordering}  & sim & \textbf{sim} \\
+\texttt{weak\_ordering}    & sim & não \\
+\texttt{partial\_ordering} & \textbf{não} & não \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Os dois casos-limite medidos pelo subprojeto explicam a tabela. Numa comparação
+de \emph{strings} sem distinguir maiúsculas, \texttt{"ABC"} e \texttt{"abc"} são
+\emph{equivalentes} mas não \emph{iguais} --- isso é \texttt{weak\_ordering}. E
+com ponto flutuante, \texttt{1.0 < NaN}, \texttt{1.0 > NaN} e \texttt{1.0 == NaN}
+são \textbf{os três falsos} --- é o que \texttt{partial\_ordering} significa, e é
+por isso que ordenar um \texttt{vector<double>} com \texttt{NaN} dentro é
+\gls{ub}. Prefira a categoria mais forte que for verdadeira: quanto mais forte,
+mais os containers podem otimizar.
+
+\begin{regra}[escreveu \texttt{<=>} à mão, escreva o \texttt{==} também]
+A ordenação precisa comparar campo a campo; a igualdade quase sempre tem um
+atalho barato --- comparar o tamanho primeiro, por exemplo. Por isso o padrão
+deriva \texttt{==} de um \texttt{<=>} apenas quando ele é \texttt{= default}.
+Um \texttt{<=>} escrito à mão sem \texttt{==} deixa o tipo comparável por ordem
+e não comparável por igualdade.
+\end{regra}
+
+\paragraph{Candidatos reescritos e revertidos.} O C++20 deriva as comparações
+que faltam invertendo os operandos. Declarando apenas duas funções, o compilador
+gera oito operações:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Comparação heterogênea, em
+             \texttt{src/operators/demo\_comparacao.hpp}.}]
+struct Metros {
+    double valor;
+
+    // Comparação HOMOGÊNEA
+    auto operator<=>(const Metros&) const = default;
+
+    // Comparação HETEROGÊNEA: só declaramos Metros <=> double.
+    // O compilador deriva `double < Metros` invertendo (candidato revertido).
+    std::partial_ordering operator<=>(double d) const { return valor <=> d; }
+    bool operator==(double d) const { return valor == d; }
+};
+\end{lstlisting}
+
+\texttt{m < 7.0} é \emph{reescrito} como \texttt{(m <=> 7.0) < 0}; \texttt{7.0 >
+m} é \emph{revertido} para \texttt{0 < (m <=> 7.0)}. Antes do C++20, o mesmo
+resultado exigia doze funções escritas à mão.
+
+\subsubsection{Conversões e \texttt{explicit}}
+
+Um construtor de um único argumento \emph{já é} uma conversão implícita, esteja
+isso na intenção ou não:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Uma palavra separa o tipo forte do tipo decorativo.}]
+Metros(double v);            // implícito: qualquer double vira Metros
+explicit Metros(double v);   // explícito: só se alguém pedir
+\end{lstlisting}
+
+Sem \texttt{explicit}, uma função que espera metros aceita alegremente um valor
+em segundos, e compila. É a mesma razão pela qual
+\texttt{std::vector<int> v(10)} cria dez zeros e \texttt{std::vector<int> v = 10}
+não compila.
+
+A linguagem limita o encadeamento a \textbf{uma} conversão definida pelo
+usuário: dado \texttt{struct A \{ A(int); \};} e \texttt{struct B \{ B(const
+A\&); \};}, a chamada \texttt{recebe\_b(A\{1\})} compila e
+\texttt{recebe\_b(1)} não, porque exigiria duas. Conversões \emph{padrão} não
+contam para esse limite --- \texttt{int} para \texttt{double}, derivado para
+base, \texttt{T*} para \texttt{const T*}, \emph{enum} para \texttt{int}.
+
+\paragraph{\classe{explicit operator bool}.} É a exceção que confirma a regra:
+o único operador de conversão que se marca \texttt{explicit} \textbf{e} ainda
+funciona implicitamente, nos contextos ditos \emph{contextualmente
+convertíveis} --- \texttt{if}, \texttt{while}, \texttt{for}, \texttt{!},
+\texttt{\&\&}, \texttt{||}, \texttt{?:}, \texttt{static\_assert}.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O que \texttt{explicit} impede sem impedir o uso pretendido.}]
+if (c)      // funciona
+int n = c;  // NÃO COMPILA
+c + 1;      // NÃO COMPILA
+\end{lstlisting}
+
+\begin{porque}[por que os \emph{streams} adotaram \texttt{explicit operator bool}]
+Até o C++03, os \emph{streams} convertiam para \texttt{void*} para permitir
+\texttt{if (arquivo)}. A consequência era que \texttt{std::cout << std::cin}
+compilava --- imprimia um endereço. Sem \texttt{explicit}, um tipo
+\texttt{Conexao} com \texttt{operator bool} faria \texttt{conexao + 41} valer 42,
+e \texttt{conexaoA == conexaoB} compararia dois \texttt{bool}: duas conexões
+fechadas seriam ``iguais''.
+\end{porque}
+
+\subsubsection{\texttt{operator()}, \texttt{operator[]} e o \emph{drill-down} de \texttt{operator->}}
+
+Um \emph{functor} --- objeto com \texttt{operator()} --- ganha do ponteiro para
+função em tudo o que importa, e a razão é uma só: ele tem \textbf{tipo próprio},
+então o compilador sabe exatamente qual código será chamado e pode fazer
+\emph{inline}. Um \emph{lambda} \emph{é} um \emph{functor}: o compilador gera
+uma classe anônima cujo \texttt{operator()} é \texttt{const} por padrão, e as
+capturas viram membros (\cref{sec:lambdas}).
+
+\begin{table}[htbp]
+\centering
+\caption{As quatro formas de ``algo chamável''.}
+\label{tab:chamaveis}
+\footnotesize
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Forma} & \textbf{Tem estado} & \textbf{Inlinável} & \textbf{Tipo próprio} \\
+\midrule
+ponteiro para função & não & \textbf{não} & não \\
+\emph{functor}       & sim & \textbf{sim} & sim \\
+\emph{lambda}        & sim & \textbf{sim} & sim (anônimo) \\
+\texttt{std::function} & sim & não & apagado \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O \texttt{operator[]} multidimensional do C++23 fecha um buraco antigo: até
+então, uma matriz tinha três saídas e todas com defeito --- \texttt{m(i,j)}
+parece chamada de função, \texttt{m[i][j]} exige uma classe \emph{proxy} por
+dimensão, e \texttt{m[\{i,j\}]} constrói um par a cada acesso. Agora
+\texttt{vol[i, j, k]} é legítimo.
+
+\begin{armadilha}[\texttt{a[i, j]} mudou de significado entre C++20 e C++23]
+Em C++20, \texttt{a[i, j]} era o operador \emph{vírgula} dentro dos colchetes:
+avaliava \texttt{i}, descartava, e indexava por \texttt{j}. O C++20 deprecou a
+forma e o C++23 reciclou a sintaxe --- de modo que código antigo muda de
+comportamento em silêncio ao ser recompilado. O aviso é
+\texttt{-Wcomma-subscript}.
+\end{armadilha}
+
+O \texttt{operator->} tem uma regra que não existe em nenhum outro ponto da
+linguagem: se o que ele devolve \textbf{não} é um ponteiro cru, o compilador
+chama \texttt{operator->} de novo no resultado, recursivamente, até chegar a um
+ponteiro. É o mecanismo por trás de \texttt{unique\_ptr},
+\texttt{optional}, dos iteradores e de qualquer \emph{proxy} de acesso.
+
+\subsubsection{Literais definidos pelo usuário}
+
+Os sufixos de literal permitem que uma grandeza chegue ao código com a unidade
+embutida no tipo. O caso mais interessante do subprojeto usa parâmetros de
+\emph{template} inteiros para representar as dimensões físicas:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Dimensões como expoentes no tipo.}]
+template <int Comprimento, int Massa, int Tempo> class Grandeza;
+using Velocidade = Grandeza<1, 0, -1>;    // comprimento / tempo
+\end{lstlisting}
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/operators/}: o tipo do resultado é derivado
+             pelo compilador, e o erro dimensional é de compilação.}]
+100_km / 2_h      = 13.89 m/s   ← tipo Velocidade, DERIVADO
+70_kg * 9.81 m/s² = 686.70 N    ← tipo Forca, derivado
+5_km + 300_m      = 5300 m      ✓
+5_km + 2_s        → NÃO COMPILA ✗ dimensões incompatíveis
+\end{lstlisting}
+
+E o custo é zero: \texttt{sizeof(Comprimento) == sizeof(double)}. É assim que
+funcionam as bibliotecas de unidades --- e o próprio \texttt{std::chrono}, que é
+um sistema de unidades de tempo com verificação dimensional.
+
+\begin{regra}[todo sufixo de usuário começa com \texttt{\_}]
+Sufixos sem \emph{underscore} inicial são reservados para a biblioteca padrão.
+\texttt{operator""km} compila hoje e pode colidir com uma adição futura do
+padrão amanhã --- e a colisão aparece como um erro incompreensível num arquivo
+que ninguém alterou.
+\end{regra}
+
+% =============================================================================
+\subsection{Ponteiros inteligentes e RAII}
+\label{sec:smart-pointers}
+% =============================================================================
+
+O subprojeto \projeto{smart-pointers} é \gls{raii} aplicado, e só faz sentido
+depois de destrutores e \emph{move} (\cref{sec:value-semantics}). Antes de
+mostrar as ferramentas, convém enunciar com precisão o problema que elas
+resolvem --- porque quem só viu a solução tende a usá-la como sinônimo de
+``ponteiro moderno'', e a errar por excesso.
+
+\subsubsection{O problema, enunciado com precisão}
+
+Chame de \textbf{recurso} qualquer coisa que o programa \emph{adquire} e depois
+precisa \emph{devolver}: um bloco de memória, um arquivo aberto, um
+\emph{socket}, um \emph{mutex} travado, uma conexão de banco, uma textura na
+placa de vídeo. E chame de \textbf{posse} (\emph{ownership}) a resposta à
+pergunta ``quem é o responsável por devolver isto, e quando?''.
+
+\begin{porque}[por que a posse precisa estar no tipo, e não no comentário]
+Em C, a posse é uma convenção documentada: a página de manual do
+\texttt{strdup} diz que quem chama deve dar \texttt{free}. A convenção não é
+verificável --- o compilador não a lê, o \emph{linker} não a checa e o teste
+não a exercita, porque um vazamento não muda a resposta do programa. É por isso
+que os quatro erros da \cref{tab:erros-posse} atravessaram trinta anos de
+código: todos eles \emph{compilam}, e três dos quatro passam pelo teste.
+\end{porque}
+
+A memória do programa se divide, para este assunto, em duas regiões. A
+\textbf{pilha} (\emph{stack}) guarda as variáveis locais; o compilador sabe
+onde cada uma nasce e morre, e emite a destruição sozinho. O \textbf{monte}
+(\emph{heap}) guarda o que é criado com \texttt{new} e cujo tempo de vida o
+compilador \emph{não} consegue deduzir --- e é exatamente aí que a
+responsabilidade volta para o programador, com os resultados da
+\cref{tab:erros-posse}.
+
+\begin{table}[htbp]
+\centering
+\caption{Os quatro modos de errar a posse, e por que nenhum deles aparece no
+         teste.}
+\label{tab:erros-posse}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Erro} & \textbf{O que acontece} & \textbf{Sintoma} \\
+\midrule
+vazamento (\emph{leak})     & ninguém devolve     & nenhum --- só a memória cresce \\
+\emph{double free}          & dois devolvem       & aborto, às vezes \\
+\emph{use-after-free}       & usa depois de devolver & lixo, às vezes \\
+\emph{dangling pointer}     & aponta para o nada  & \gls{ub} silencioso \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O argumento inteiro cabe num par de funções:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O mesmo recurso, com e sem RAII (\texttt{src/smart-pointers/README.md}).}]
+void ruim() {
+    Widget* w = new Widget();
+    if (condicao) return;        // LEAK
+    throw SomeException();       // LEAK
+    delete w;                    // só chega aqui no caso feliz
+}
+
+void bom() {
+    auto w = std::make_unique<Widget>();
+    if (condicao) return;        // destrutor chamado
+    throw SomeException();       // destrutor chamado
+}                                // destrutor chamado
+\end{lstlisting}
+
+O que muda não é a quantidade de código: é que na segunda versão \textbf{não
+existe caminho de saída que esqueça a liberação}, porque a liberação deixou de
+ser um comando e passou a ser uma consequência do escopo. Como o destrutor roda
+também durante o desenrolamento da pilha (\cref{sec:errors}), o mesmo mecanismo
+cobre o caminho da exceção sem uma linha a mais.
+
+\begin{regra}[a definição operacional de RAII]
+\emph{Resource Acquisition Is Initialization}: o construtor adquire o recurso e
+o destrutor o devolve, de modo que \textbf{um objeto vivo é um recurso válido}.
+A consequência prática é a que interessa: como o compilador garante que o
+destrutor de todo objeto automático roda --- em \texttt{return}, em
+\texttt{break}, em \texttt{throw} --- ele passa a garantir também a devolução.
+O nome é ruim (o que importa é a \emph{destruição}), mas o mecanismo é o
+alicerce de metade deste livro.
+\end{regra}
+
+\subsubsection{Os três ponteiros}
+
+\begin{table}[htbp]
+\centering
+\caption{Qual ponteiro para qual relação de posse.}
+\label{tab:smart-pointers}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Situação} & \textbf{Use} & \textbf{Custo} \\
+\midrule
+único dono do objeto         & \classe{std::unique\_ptr} & zero sobre o ponteiro cru \\
+posse compartilhada          & \classe{std::shared\_ptr} & bloco de controle + contagem atômica \\
+observar sem possuir         & \classe{std::weak\_ptr}   & idem, sem manter vivo \\
+acesso sem posse             & \texttt{T*} ou \texttt{T\&} & zero \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{\texttt{unique\_ptr}.} Não é copiável --- a tentativa é erro de
+compilação, não bug em produção --- e a transferência de posse é explícita, via
+\texttt{std::move}. Depois do \emph{move}, o ponteiro de origem vale
+\texttt{nullptr}; usá-lo é \gls{ub}. O \emph{deleter} customizado é o que o
+torna um invólucro genérico de recurso, e não apenas de memória:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{unique\_ptr} como guarda de qualquer recurso
+             (\texttt{demo\_unique.hpp}, seção 1.5).}]
+auto fechar = [](FILE* f){ if (f) std::fclose(f); };
+std::unique_ptr<FILE, decltype(fechar)> arq(std::fopen("/dev/null","w"), fechar);
+\end{lstlisting}
+
+Duas operações do \texttt{unique\_ptr} parecem sinônimas e não são
+(\cref{tab:release-reset}). A distinção é a fronteira entre ``continuo
+protegido'' e ``voltei ao C''.
+
+\begin{table}[htbp]
+\centering
+\caption{\texttt{release()} contra \texttt{reset()} --- a diferença de uma
+         chamada de destrutor.}
+\label{tab:release-reset}
+\footnotesize
+\begin{tabular}{@{}lccl@{}}
+\toprule
+\textbf{Chamada} & \textbf{Destrói?} & \textbf{Fica nulo?} & \textbf{Depois disso} \\
+\midrule
+\texttt{p.release()} & \textbf{não} & sim & \emph{você} deve dar \texttt{delete} \\
+\texttt{p.reset()}   & sim          & sim & nada a fazer \\
+\texttt{p.reset(q)}  & sim (o antigo) & não & passa a possuir \texttt{q} \\
+\texttt{p.get()}     & não          & não & empréstimo; não guarde \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{armadilha}[\texttt{release()} é o botão que desliga a proteção]
+A linha \texttt{Recurso* raw = p.release();} do \texttt{demo\_unique.hpp} é
+seguida, no subprojeto, de um \texttt{delete raw;} explícito e de um comentário
+dizendo ``obrigatório --- senão vaza''. Isso não é estilo: \texttt{release()}
+existe para entregar o ponteiro a uma API C que vai assumir a posse, e em
+qualquer outro uso ele apenas reintroduz os quatro erros da
+\cref{tab:erros-posse}. Quando a intenção é só \emph{emprestar}, o certo é
+\texttt{get()} --- ou, melhor ainda, passar \texttt{*p} por referência.
+\end{armadilha}
+
+Existe também \texttt{std::unique\_ptr<T[]>}, que chama \texttt{delete[]} em vez
+de \texttt{delete} --- e essa é a única razão para ele existir, porque trocar um
+pelo outro é \gls{ub}. Ainda assim, ele quase nunca é a resposta certa: não
+guarda o tamanho, não tem \texttt{begin()}/\texttt{end()} e não cresce.
+\classe{std::vector} faz tudo isso pelo mesmo preço.
+
+\paragraph{\texttt{shared\_ptr}.} Contagem de referências: o objeto morre quando
+o último \texttt{shared\_ptr} morre. O que ele carrega além do ponteiro é o
+\textbf{bloco de controle}, um objeto separado com duas contagens --- quantos
+\emph{shared} e quantos \emph{weak} apontam para o alvo --- e o \emph{deleter}.
+\texttt{make\_shared} funde esse bloco com o objeto numa alocação só, contra as
+duas de \texttt{std::shared\_ptr<T> p(new T)}, e é também seguro em face de
+exceções.
+
+\paragraph{\texttt{weak\_ptr}.} Observa sem possuir, e existe por causa de um
+problema que a contagem de referências não resolve sozinha: o \textbf{ciclo}.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O ciclo, e a mudança de uma palavra que o quebra
+             (\texttt{demo\_weak.hpp}, seções 3.2 e 3.3).}]
+struct No { std::shared_ptr<No> proximo; };   // a → b → a: use_count nunca zera
+struct No { std::weak_ptr<No>   proximo; };   // não incrementa a contagem
+\end{lstlisting}
+
+O subprojeto roda os dois casos em sequência, e a saída é a prova: no caso do
+ciclo os destrutores \emph{não} aparecem.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{dist/bin/smart\_pointers}, seções 3.2 e 3.3.
+             Note quais destrutores faltam.}]
+── 3.2 Ciclo com shared_ptr → MEMORY LEAK ──
+  [NodoComCiclo 'A-ciclo'] construído
+  [NodoComCiclo 'B-ciclo'] construído
+  use_count(a) = 2
+  use_count(b) = 2
+                              ← nenhum destrutor: os dois vazaram
+
+── 3.3 Ciclo com weak_ptr → SEM LEAK ──
+  [NodoSemCiclo 'A-ok'] construído
+  [NodoSemCiclo 'B-ok'] construído
+  use_count(a) = 1
+  use_count(b) = 1
+  a->proximo = 'B-ok'
+  [NodoSemCiclo 'B-ok'] destruído
+  [NodoSemCiclo 'A-ok'] destruído
+\end{lstlisting}
+
+Para usar o objeto é preciso \texttt{lock()}, que devolve um
+\texttt{shared\_ptr} vazio se ele já morreu --- e é essa obrigação de verificar
+que torna o \texttt{weak\_ptr} seguro. \texttt{expired()} responde a mesma
+pergunta sem produzir o \texttt{shared\_ptr}, e por isso \textbf{não} serve como
+teste antes do uso: entre o \texttt{expired()} e a desreferência, outra
+\emph{thread} pode ter soltado a última referência. O idioma correto é um só,
+e já traz o resultado consigo:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O único uso seguro de um \texttt{weak\_ptr}.}]
+if (auto p = w.lock()) { p->usar(); }   // p mantém vivo enquanto durar o if
+\end{lstlisting}
+
+\begin{armadilha}[\texttt{use\_count()} não conta os \texttt{weak\_ptr}]
+Criar um \texttt{weak\_ptr} a partir de um \texttt{shared\_ptr} não altera
+\texttt{use\_count()} --- ele continua respondendo 1, como imprime a seção 3.1
+do subprojeto. Isso é intencional (o \texttt{weak\_ptr} não mantém o objeto
+vivo), mas contraria a leitura ingênua do nome. O que os \emph{weak} mantêm
+vivo é o \emph{bloco de controle}, não o objeto --- consequência que a
+\cref{sec:sp-medido} mede em bytes.
+\end{armadilha}
+
+\subsubsection{O custo, medido}
+\label{sec:sp-medido}
+
+\begin{aviso}
+Todos os números desta seção foram medidos neste repositório, em
+\texttt{AMD Ryzen 9 5900X}, GCC 13.3.0, libstdc++ 13, glibc 2.39,
+\texttt{-O2 -std=c++20}. Números de desempenho não são propriedades da
+linguagem: são propriedades de uma combinação de compilador, biblioteca,
+máquina e carga. O que se transporta de uma medição para outra é a
+\emph{ordem de grandeza} e, sobretudo, o \emph{método}.
+\end{aviso}
+
+A afirmação ``\texttt{unique\_ptr} tem custo zero'' é repetida em todo lugar e
+quase nunca demonstrada. Demonstrar é fácil: basta comparar o código de máquina
+das duas versões da mesma função.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={As duas funções comparadas.}]
+struct W { int a; W(int x):a(x){} ~W(); };
+int cru()   { W* p = new W(7); int v = p->a; delete p; return v; }
+int smart() { auto p = std::make_unique<W>(7); return p->a; }
+\end{lstlisting}
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={\texttt{g++ -O2 -S}: a sequência de instruções das duas funções é
+             idêntica, instrução por instrução --- 14 cada.}]
+_Z3cruv:                 _Z5smartv:
+  endbr64                  endbr64
+  pushq  %rbx              pushq  %rbx
+  movl   $4, %edi          movl   $4, %edi
+  call   _Znwm@PLT         call   _Znwm@PLT      ← operator new
+  movl   $7, (%rax)        movl   $7, (%rax)
+  movq   %rax, %rbx        movq   %rax, %rbx
+  movq   %rax, %rdi        movq   %rax, %rdi
+  call   _ZN1WD1Ev@PLT     call   _ZN1WD1Ev@PLT  ← ~W()
+  movq   %rbx, %rdi        movq   %rbx, %rdi
+  movl   $4, %esi          movl   $4, %esi
+  call   _ZdlPvm@PLT       call   _ZdlPvm@PLT    ← operator delete
+  movl   $7, %eax          movl   $7, %eax
+  popq   %rbx              popq   %rbx
+  ret                      ret
+\end{lstlisting}
+
+Não é ``quase igual'': é a mesma sequência. O \texttt{unique\_ptr} desaparece
+por completo na compilação, e o que sobra é o \texttt{new}/\texttt{delete} que
+você teria escrito à mão --- com a diferença de que o \texttt{delete} agora é
+emitido pelo compilador em \emph{todos} os caminhos de saída, inclusive nos que
+você esqueceria.
+
+O tamanho segue a mesma lógica: o que não é usado não é pago
+(\cref{tab:sp-sizeof}).
+
+\begin{table}[htbp]
+\centering
+\caption{\texttt{sizeof} medido com \texttt{g++ -std=c++20} e libstdc++ 13.}
+\label{tab:sp-sizeof}
+\footnotesize
+\begin{tabular}{@{}lrl@{}}
+\toprule
+\textbf{Tipo} & \textbf{bytes} & \textbf{Por quê} \\
+\midrule
+\texttt{int*}                              &  8 & referência \\
+\texttt{std::unique\_ptr<W>}               &  8 & \emph{deleter} sem estado, elidido \\
+\texttt{std::unique\_ptr<W[]>}             &  8 & idem \\
+\texttt{std::unique\_ptr<W, lambda>}       &  8 & \emph{lambda} sem captura é vazia \\
+\texttt{std::unique\_ptr<W, void(*)(W*)>}  & \textbf{16} & o ponteiro de função \emph{tem} estado \\
+\texttt{std::shared\_ptr<W>}               & 16 & alvo + bloco de controle \\
+\texttt{std::weak\_ptr<W>}                 & 16 & idem \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{armadilha}[o \emph{deleter} pode dobrar o tamanho do ponteiro]
+As duas formas de guardar um \texttt{FILE*} parecem equivalentes e não são.
+Com uma \emph{lambda} sem captura, o \emph{deleter} é um tipo vazio e a
+\emph{empty base optimization} o faz sumir: 8 bytes. Com
+\texttt{decltype(\&std::fclose)}, o \emph{deleter} é um ponteiro de função ---
+um dado real, guardado em cada instância: 16 bytes, o dobro, e um campo a mais
+para copiar em cada \emph{move}. Num \texttt{std::vector} de um milhão desses
+guardas, a diferença é 8~MB de nada.
+\end{armadilha}
+
+O \texttt{shared\_ptr}, esse, custa. A \cref{tab:sp-aloc} conta as chamadas a
+\texttt{operator new} substituindo-o globalmente por uma versão que incrementa
+um contador --- técnica que reaparece no \cref{sec:memory}.
+
+\begin{table}[htbp]
+\centering
+\caption{Alocações e bytes por criação, medidos com \texttt{operator new}
+         instrumentado sobre um objeto de 64~bytes.}
+\label{tab:sp-aloc}
+\footnotesize
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+\textbf{Expressão} & \textbf{Alocações} & \textbf{Bytes} & \textbf{Sobrecusto} \\
+\midrule
+\texttt{std::make\_unique<Big>()}          & 1 & 64 & nenhum \\
+\texttt{std::make\_shared<Big>()}          & 1 & 80 & +16 (bloco embutido) \\
+\texttt{std::shared\_ptr<Big>(new Big())}  & \textbf{2} & 88 & +24 e uma segunda \texttt{malloc} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+E a contagem custa tempo. Vinte milhões de iterações de cada laço, tempo médio
+por operação:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Custo por operação, 20 milhões de iterações, \texttt{-O2}.}]
+copia de shared_ptr (incr + decr atomico) : 4,43 ns/op
+weak_ptr::lock()                          : 5,27 ns/op
+copia de ponteiro cru                     : 0,00 ns/op   ← ver a armadilha abaixo
+\end{lstlisting}
+
+\begin{armadilha}[o ``0,00 ns'' não é velocidade: é ausência]
+O laço do ponteiro cru mediu zero porque o compilador o \emph{apagou}: copiar um
+ponteiro e somar um campo que ninguém observa não tem efeito colateral, e
+\texttt{-O2} remove o laço inteiro. O laço do \texttt{shared\_ptr} sobreviveu
+justamente porque a contagem atômica \textbf{é} um efeito observável, que o
+compilador não tem licença para eliminar. Toda medição de microbenchmark tem
+esse risco, e o sintoma é sempre o mesmo: um número absurdamente bom. O hábito
+que evita a conclusão errada é conferir o assembly antes de acreditar --- ou
+usar \texttt{benchmark::DoNotOptimize}. A conclusão honesta desta medição é
+``copiar \texttt{shared\_ptr} custa cerca de 4~ns e copiar ponteiro cru custa
+menos que a resolução do experimento'', não ``é infinitamente mais rápido''.
+\end{armadilha}
+
+\subsubsection{A medição que contrariou o conselho: \texttt{make\_shared} e o \texttt{weak\_ptr}}
+
+Todo material sobre \texttt{shared\_ptr} --- inclusive o
+\texttt{README.md} deste subprojeto --- diz para preferir
+\texttt{make\_shared}, e a \cref{tab:sp-aloc} confirma a razão: uma alocação em
+vez de duas. Mas a fusão do bloco de controle com o objeto tem uma consequência
+que o conselho não menciona, e que só aparece quando se \emph{mede a memória
+liberada} em vez de contar as alocações.
+
+O experimento: um objeto de 1~KB, um \texttt{weak\_ptr} que sobrevive ao último
+\texttt{shared\_ptr}, e \texttt{operator delete} instrumentado para contar as
+liberações.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Liberações contadas com \texttt{operator delete} instrumentado,
+             objeto de 1024 bytes, um \texttt{weak\_ptr} vivo.}]
+[make_shared]      dentro do escopo:            alocacoes=1  liberacoes=0
+[make_shared]      ~Grande() rodou
+[make_shared]      apos o ultimo shared morrer: liberacoes=0   ← 1 KB retido!
+[make_shared]      apos o weak_ptr morrer:      liberacoes=1
+
+[shared_ptr(new)]  dentro do escopo:            alocacoes=2
+[shared_ptr(new)]  ~Grande() rodou
+[shared_ptr(new)]  apos o ultimo shared morrer: liberacoes=1   ← 1 KB devolvido
+[shared_ptr(new)]  apos o weak_ptr morrer:      liberacoes=2
+\end{lstlisting}
+
+Os dois destroem o objeto na hora certa --- \texttt{\~{}Grande()} roda nos dois
+casos assim que o último \texttt{shared\_ptr} morre. O que muda é a
+\emph{memória}: com \texttt{make\_shared} o bloco é um só, e enquanto houver um
+\texttt{weak\_ptr} vivo o alocador não pode devolver nada, nem o quilobyte do
+objeto já destruído. Com \texttt{shared\_ptr(new)}, o objeto tem alocação
+própria e volta imediatamente; só os 24~bytes do bloco de controle esperam pelo
+\emph{weak}.
+
+\begin{regra}[\texttt{make\_shared} por padrão, \texttt{shared\_ptr(new)} quando o \emph{weak} sobrevive]
+Prefira \texttt{make\_shared}: uma alocação em vez de duas, melhor localidade e
+segurança em face de exceções. \textbf{Exceto} quando o objeto for grande e
+houver \texttt{weak\_ptr} com expectativa de vida maior que a dele --- caches,
+tabelas de observadores, grafos com arestas fracas. Nesse caso a alocação extra
+compra a devolução imediata do objeto, e é o negócio certo. Este é o formato
+típico de um conselho bom: verdadeiro no caso comum, falso num caso nomeável, e
+decidível por medição.
+\end{regra}
+
+\subsubsection{A contagem é atômica --- e não dá mais para desligá-la}
+
+Durante anos valeu o seguinte folclore: a libstdc++ detecta em tempo de execução
+se o programa é \emph{single-threaded} e, nesse caso, usa incrementos comuns em
+vez de instruções atômicas; logo, quem não liga \texttt{-pthread} não paga pela
+atomicidade. Isso era verdade, e deixou de ser. A verificação era
+\texttt{\_\_gthread\_active\_p()}, que perguntava se o símbolo
+\texttt{pthread\_create} havia sido resolvido; desde a glibc~2.34 a
+\texttt{libpthread} foi fundida na \texttt{libc}, e o símbolo está sempre lá.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Contagem de prefixos \texttt{lock} numa cópia de
+             \texttt{shared\_ptr}, glibc 2.39.}]
+$ g++ -O2 -S copia.cpp          && grep -c 'lock ' copia.s
+3
+$ g++ -O2 -pthread -S copia.cpp && grep -c 'lock ' copia.s
+3
+\end{lstlisting}
+
+Os mesmos três \texttt{lock xaddl} nos dois casos. A consequência prática: os
+4,43~ns por cópia da seção anterior são o preço real, mesmo em programa de uma
+\emph{thread} só. E a consequência didática é mais importante que a técnica ---
+\textbf{um conselho de desempenho tem prazo de validade}, e o único modo de
+saber se o dele venceu é remedir.
+
+\begin{regra}[passe \texttt{shared\_ptr} por \texttt{const\&} quando não for compartilhar]
+Cada passagem por valor é um par de operações atômicas: incremento na entrada,
+decremento na saída. Numa função chamada em laço, isso é o custo dominante.
+Passe por valor \emph{só} quando a função for de fato guardar uma referência
+nova; para apenas usar o objeto, o parâmetro certo é \texttt{const T\&} ---
+ou \texttt{T\&}, que nem menciona posse.
+\end{regra}
+
+\subsubsection{\texttt{enable\_shared\_from\_this} e o construtor de \emph{aliasing}}
+
+Duas facilidades do \texttt{shared\_ptr} que o subprojeto cobre e que costumam
+faltar em material introdutório --- ambas resolvem problemas reais, e ambas têm
+uma armadilha de mão dupla.
+
+\paragraph{Um objeto que precisa de um \texttt{shared\_ptr} de si mesmo.} O
+caso aparece sempre que um método precisa se registrar em algum lugar
+(\emph{callback} assíncrono, lista de observadores). A tentação é
+\texttt{return std::shared\_ptr<T>(this)} --- e isso cria um \textbf{segundo
+bloco de controle} para o mesmo endereço. Dois blocos, duas contagens, duas
+chegadas a zero: \emph{double free}. A solução é herdar de
+\texttt{std::enable\_shared\_from\_this<T>}, que guarda um \texttt{weak\_ptr}
+para o bloco existente e o promove sob demanda:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{shared\_from\_this} devolve uma referência ao \emph{mesmo}
+             bloco (\texttt{demo\_shared.hpp}, seção 2.5).}]
+struct Observavel : std::enable_shared_from_this<Observavel> {
+    std::shared_ptr<Observavel> get_self() { return shared_from_this(); }
+};
+// medido: use_count 1 → 2 dentro do escopo de get_self() → 1 de volta
+\end{lstlisting}
+
+\begin{armadilha}[\texttt{shared\_from\_this} num objeto que não é de um \texttt{shared\_ptr}]
+O mecanismo só funciona se o objeto \emph{já} for gerenciado por um
+\texttt{shared\_ptr} --- é dele que vem o bloco de controle. Chamar
+\texttt{shared\_from\_this()} numa variável de pilha, ou dentro do próprio
+construtor (quando o \texttt{shared\_ptr} externo ainda não existe), lança
+\texttt{std::bad\_weak\_ptr}. É por isso que classes assim costumam ter
+construtor privado e uma \emph{factory} estática que devolve
+\texttt{make\_shared}: a fábrica torna a pré-condição impossível de violar.
+\end{armadilha}
+
+\paragraph{Um ponteiro para dentro do objeto.} O \emph{alias constructor}
+\texttt{std::shared\_ptr<U>(dono, \&dono->membro)} produz um
+\texttt{shared\_ptr} que \emph{aponta} para o membro mas \emph{conta} no bloco
+do objeto inteiro. Serve para entregar uma parte sem entregar o todo:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída medida de \texttt{dist/bin/smart\_pointers}, seção 2.6.}]
+  [Carro 'Fusca'] construído
+  carro.use_count() = 2 (carro + motor_ptr)
+  motor_ptr->rpm = 3000
+  carro.use_count() após reset: 1
+  motor_ptr->rpm ainda acessível: 3000     ← o Carro continua vivo
+  [Carro 'Fusca'] destruído                ← só agora, com motor_ptr saindo
+\end{lstlisting}
+
+\begin{armadilha}[um \emph{alias} pequeno segura um objeto grande]
+Exatamente a propriedade que torna o \emph{alias constructor} seguro --- o
+membro nunca sobrevive ao dono --- é a que causa retenção acidental: um
+\texttt{shared\_ptr<int>} de 16~bytes apontando para um campo de uma imagem de
+40~MB mantém os 40~MB vivos. É o mesmo fenômeno do \texttt{make\_shared} com
+\texttt{weak\_ptr} da seção anterior, e o mesmo remédio: saber que existe, e
+copiar o valor quando o que se quer é só o valor.
+\end{armadilha}
+
+\subsubsection{Como passar um ponteiro inteligente para uma função}
+
+A assinatura de uma função é onde a posse fica \emph{documentada pelo
+compilador}. A \cref{tab:sp-passagem} traduz cada forma; ela é a versão para
+recursos da \cref{tab:passagem}.
+
+\begin{table}[htbp]
+\centering
+\caption{O que cada assinatura comunica (\texttt{demo\_patterns.hpp},
+         ``regras de ouro'').}
+\label{tab:sp-passagem}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Assinatura} & \textbf{Significado} \\
+\midrule
+\texttt{f(Widget\&)}                 & só usa; posse não é assunto da função \\
+\texttt{f(const Widget\&)}           & só lê --- \textbf{o padrão} \\
+\texttt{f(Widget*)}                  & só usa, e pode não haver objeto \\
+\texttt{f(unique\_ptr<W>)}           & \textbf{toma} a posse exclusiva \\
+\texttt{f(unique\_ptr<W>\&)}         & pode \emph{trocar} o ponteiro de quem chamou \\
+\texttt{f(shared\_ptr<W>)}           & passa a compartilhar (custa duas atômicas) \\
+\texttt{f(const shared\_ptr<W>\&)}   & pode vir a compartilhar; não paga se não vier \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{regra}[a maioria das funções não deveria ver um ponteiro inteligente]
+Se a função apenas \emph{usa} o objeto, ela não tem opinião sobre posse e o
+parâmetro certo é \texttt{const Widget\&}. Receber \texttt{const
+shared\_ptr<Widget>\&} onde bastava uma referência acopla a função a uma
+política de posse que ela não precisa conhecer --- e impede chamá-la com um
+objeto de pilha, ou com um membro de outro objeto. Ponteiro inteligente em
+assinatura é para quem \emph{vai mexer na posse}.
+\end{regra}
+
+\subsubsection{Três padrões que dependem de \texttt{unique\_ptr}}
+
+\paragraph{Guarda genérico.} Qualquer recurso com função de fechamento vira
+RAII com um \emph{deleter}: \texttt{FILE*}, \emph{socket}, \emph{mutex},
+\emph{handle} do sistema operacional. É o mesmo mecanismo que o
+\cref{sec:plugin-registry} usa para \texttt{dlclose}.
+
+\paragraph{Pimpl.} Um \texttt{unique\_ptr} para uma \texttt{struct Impl} apenas
+declarada no cabeçalho quebra a dependência de compilação entre a interface e o
+que ela usa: mudar os campos de \texttt{Impl} deixa de obrigar a recompilar
+quem inclui o cabeçalho. O detalhe que faz o idioma funcionar --- e que é a
+causa de metade dos erros de quem o tenta pela primeira vez --- é que o
+destrutor precisa ser \emph{declarado} no cabeçalho e \emph{definido} no
+\texttt{.cpp}, onde \texttt{Impl} já é um tipo completo. A razão é mecânica: o
+destrutor implícito instancia \texttt{default\_delete<Impl>}, que faz
+\texttt{sizeof(Impl)} para verificar que o tipo não é incompleto.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Erro real do GCC 13.3 ao esquecer o destrutor fora de linha ---
+             note que ele aponta para dentro do \texttt{<memory>}, não para o
+             seu código.}]
+/usr/include/c++/13/bits/unique_ptr.h:97:23: error:
+    invalid application of 'sizeof' to incomplete type 'Widget::Impl'
+\end{lstlisting}
+
+\begin{armadilha}[o Pimpl que ``compila em um \texttt{.cpp} e quebra no outro'']
+Enquanto o único \texttt{.cpp} que destrói o objeto for aquele em que
+\texttt{Impl} está definido, tudo funciona. O erro aparece no primeiro
+\emph{outro} arquivo que deixe um \texttt{Widget} sair de escopo --- muitas
+vezes semanas depois, num arquivo que ninguém tocou. A profilaxia é declarar os
+cinco (\cref{sec:value-semantics}) no cabeçalho e defini-los, mesmo que com
+\texttt{= default}, no \texttt{.cpp}.
+\end{armadilha}
+
+\paragraph{\emph{Factory}.} Devolver \texttt{std::unique\_ptr<Base>} torna a
+posse inequívoca no tipo de retorno: quem chamou é dono, e o compilador não
+deixa esquecer. É a assinatura que aparece em \cref{sec:patterns} e
+\cref{sec:plugin-registry}.
+
+\begin{regra}[\texttt{new} e \texttt{delete} crus não aparecem em código de aplicação]
+Eles pertencem ao interior de um tipo que gerencia recurso --- e, na prática, ao
+interior da biblioteca padrão. Código de aplicação usa \texttt{make\_unique},
+\texttt{make\_shared} ou um container. O \cref{sec:memory} mostra o que acontece
+dentro de \texttt{new}, e é a exceção que justifica a regra.
+\end{regra}
+
+% =============================================================================
+\subsection{Arquivos e \emph{streams}: RAII com estado}
+\label{sec:streams-raii}
+% =============================================================================
+
+O subprojeto \projeto{file\_io} entra aqui, e não no capítulo da biblioteca
+padrão, por um motivo de assunto: um \emph{stream} é o primeiro recurso RAII
+que o leitor encontra na prática, e é o único da biblioteca padrão que
+\textbf{carrega estado de erro em vez de lançar}. Quem entendeu
+\texttt{unique\_ptr} tem metade do modelo; a outra metade --- por que
+\texttt{ifs >> x} não lança quando falha, e o que exatamente acontece então ---
+é o que esta seção fecha. O catálogo das classes, com a hierarquia desenhada,
+está na \cref{sec:file-io}; aqui interessa o mecanismo e o que ele custa.
+
+\begin{porque}[por que um arquivo é mais difícil que um bloco de memória]
+Memória tem um dono e uma operação de devolução. Um arquivo tem quatro coisas a
+mais, e cada uma é uma fonte de bug distinta. \textbf{(1)}~Um
+\emph{descritor} --- um número inteiro que o núcleo do sistema entrega no
+\texttt{open} e cobra de volta no \texttt{close}; o processo tem uma cota deles,
+e vazá-los derruba o programa muito antes de a memória acabar.
+\textbf{(2)}~Um \emph{buffer}: o que você escreveu ainda não chegou ao disco, e
+só chega no \emph{flush}. \textbf{(3)}~Um \emph{cursor}, a posição corrente de
+leitura e a de escrita, que são duas e independentes. \textbf{(4)}~Um
+\emph{estado}: a operação anterior pode ter falhado, e o \emph{stream} guarda
+isso em vez de avisar. Ignorar qualquer um dos quatro produz um programa que
+funciona no teste e perde dados em produção.
+\end{porque}
+
+\subsubsection{O \emph{stream} como objeto RAII}
+
+\texttt{std::ofstream} adquire no construtor e devolve no destrutor, exatamente
+como o \texttt{unique\_ptr}: abre o arquivo, e no fim do escopo faz
+\emph{flush} do \emph{buffer} e fecha o descritor. É a razão pela qual o
+\texttt{demo\_fstream.hpp} abre cada arquivo dentro de um bloco próprio ---
+o fechamento acontece na chave, não numa chamada que se possa esquecer.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O bloco \emph{é} o \texttt{close} (\texttt{demo\_fstream.hpp},
+             seção 1).}]
+{
+    std::ofstream ofs(path);              // abre
+    ofs << "Linha 1: Hello, C++!\n";
+}                                         // flush + close, inclusive se lançar
+\end{lstlisting}
+
+\begin{armadilha}[o destrutor fecha, mas não conta se deu errado]
+O destrutor do \texttt{ofstream} faz \emph{flush} e engole qualquer falha ---
+disco cheio, cota estourada, sistema de arquivos remoto que caiu. Como o
+destrutor não pode lançar (\cref{sec:errors}), o erro simplesmente não é
+reportado, e o programa termina com código de saída zero tendo escrito um
+arquivo truncado. Quando a gravação \emph{importa}, chame \texttt{close()}
+explicitamente e teste o \emph{stream} depois --- é a única forma de saber.
+\end{armadilha}
+
+\subsubsection{Os quatro bits de estado}
+
+Um \emph{stream} não lança por padrão. Ele acende bits, e continua aceitando
+operações que, a partir dali, não fazem nada. Os bits são quatro
+(\cref{tab:stream-bits}), e a confusão entre \texttt{fail} e \texttt{eof} é a
+origem do erro mais comum de todo o assunto.
+
+\begin{table}[htbp]
+\centering
+\caption{Os bits de estado de um \emph{stream}, e o que cada um significa.}
+\label{tab:stream-bits}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Consulta} & \textbf{Aceso quando} & \textbf{Recuperável?} \\
+\midrule
+\texttt{good()} & nenhum dos outros está aceso & --- \\
+\texttt{eof()}  & a última leitura tocou o fim do arquivo & sim \\
+\texttt{fail()} & a conversão falhou, ou o arquivo não abriu & sim, com \texttt{clear()} \\
+\texttt{bad()}  & erro de integridade do \emph{stream} & \textbf{não} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O subprojeto imprime os quatro para um arquivo que não existe, e o resultado
+esclarece a diferença entre ``acabou'' e ``deu errado'':
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída medida de \texttt{dist/bin/file\_io}, demo 2, seção 5.}]
+── abrindo /tmp/nao_existe.txt ──
+  arquivo não abriu (is_open() = false)
+  good()=false fail()=true bad()=false eof()=false
+\end{lstlisting}
+
+\texttt{fail()} está aceso, \texttt{eof()} não: não se chegou ao fim de coisa
+alguma, a abertura é que falhou. O mesmo par aparece ao ler um \texttt{int} de
+onde há a palavra \texttt{abc} --- \texttt{fail()=true}, \texttt{eof()=false},
+e o \texttt{int} fica \textbf{inalterado}, não zerado. Só depois de
+\texttt{clear()} o \emph{stream} volta a funcionar; note, na saída do demo, que
+o texto \texttt{abc} continua no \emph{buffer} e é lido em seguida como
+\texttt{std::string}.
+
+\begin{armadilha}[\texttt{while (!ifs.eof())} lê a última linha duas vezes]
+\texttt{eof()} só acende \emph{depois} de uma leitura que tentou passar do fim.
+No laço \texttt{while (!ifs.eof()) \{ std::getline(ifs, l); usa(l); \}}, a
+última iteração lê nada, falha, e ainda assim entra no corpo com o valor antigo
+de \texttt{l}. A forma correta põe a leitura na condição ---
+\texttt{while (std::getline(ifs, l))} --- porque o \emph{stream} converte para
+\texttt{bool} testando \texttt{!fail()}, que é a pergunta certa: ``a leitura que
+eu acabei de pedir funcionou?''.
+\end{armadilha}
+
+Quem prefere exceções pode pedi-las com \texttt{exceptions(std::ios::failbit |
+std::ios::badbit)}, e aí a abertura malsucedida lança
+\texttt{std::ios\_base::failure}. O subprojeto faz as duas coisas para
+comparar --- e a mensagem que sai, \texttt{basic\_ios::clear: iostream error},
+ilustra bem por que a via das exceções é pouco usada aqui: ela não diz qual
+arquivo, nem por quê. Para saber isso é preciso o \texttt{errno}, ou o
+\texttt{std::error\_code} do \cabecalho{filesystem}.
+
+\subsubsection{Bytes não são caracteres}
+
+O demo escreve quatro linhas de texto e pergunta o tamanho ao sistema de
+arquivos. O número que volta não é o número de caracteres:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={\texttt{dist/bin/file\_io}, demo 2, seção 1, confrontado com
+             \texttt{wc}.}]
+  tamanho final: 89 bytes          ← fs::file_size()
+$ wc -m -c /tmp/cpp_academy_texto.txt
+     87      89                    ← 87 caracteres, 89 bytes
+\end{lstlisting}
+
+A diferença de dois bytes está numa linha só: o travessão de
+\texttt{"Linha 2: 42 --- 3.14"}. U+2014 ocupa \textbf{três} bytes em UTF-8, e
+todas as APIs de arquivo contam bytes.
+
+\begin{armadilha}[o caractere de três bytes entre aspas simples]
+Esta não é uma preocupação acadêmica: foi um bug real deste repositório, em
+\texttt{src/http-client/main.cpp}. A linha escrevia
+\texttt{std::string(n, '─')} para desenhar uma régua --- e U+2500, como U+2014,
+tem três bytes. Entre \emph{aspas simples} isso não é um \texttt{char}: é uma
+\emph{multi-character constant}, cujo valor é definido pela implementação e que
+o construtor trunca para um byte, produzindo lixo. A mesma função continha o
+segundo bug clássico do assunto: \texttt{40 - title.size()}, com
+\texttt{size()} devolvendo \texttt{std::size\_t} --- aritmética \textbf{sem
+sinal}, que para um título de 41 caracteres não dá $-1$, dá
+\texttt{18446744073709551615}. Os dois compilavam sem um \emph{warning} sequer.
+Para repetir uma sequência multibyte, o certo é
+\texttt{std::string} concatenada em laço, ou uma \texttt{std::string\_view}
+com o literal.
+\end{armadilha}
+
+\subsubsection{Texto, binário e o cursor}
+
+Em modo texto o \emph{stream} formata: \texttt{ofs << 42} escreve dois
+caracteres. Em modo binário ele copia bytes: \texttt{ofs.write(ptr, n)} despeja
+a representação de memória tal como está. O demo grava três registros e mede:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={\texttt{dist/bin/file\_io}, demo 2, seção 4.}]
+  3 registros escritos (24 bytes cada, total=72 bytes)
+  [ 1] id=  1 valor=3.14 nome='alpha'
+  [ 2] id=  2 valor=2.71 nome='beta'
+  [ 3] id=  3 valor=1.41 nome='gamma'
+  gcount()=0 (bytes lidos na última operação)
+  acesso aleatório → 2º registro: id=2 nome='beta'
+\end{lstlisting}
+
+Os 24 bytes por registro são \texttt{uint32\_t} + \texttt{float} +
+\texttt{char[16]} --- 4 + 4 + 16, sem preenchimento, porque o alinhamento mais
+restritivo da estrutura é 4 e o tamanho já é múltiplo dele. Não conte com isso:
+é uma coincidência aritmética desta estrutura, não uma regra
+(\cref{sec:layout} trata do assunto).
+
+\begin{armadilha}[\texttt{gcount()} depois do laço vale zero]
+A saída acima diz \texttt{gcount()=0} logo depois de ter lido três registros de
+24 bytes. Não é bug: \texttt{gcount()} devolve os bytes da \emph{última}
+operação de entrada não formatada, e a última foi a que encerrou o laço --- a
+leitura que encontrou o fim do arquivo e leu zero bytes. Para saber quanto veio
+de um \texttt{read} parcial, é preciso consultar \texttt{gcount()}
+\textbf{dentro} do laço, imediatamente após cada leitura. É um caso exemplar da
+classe de erro deste capítulo: o programa está certo, a saída está certa, e a
+leitura ingênua está errada.
+\end{armadilha}
+
+Gravar uma \texttt{struct} com \texttt{reinterpret\_cast} congela o
+preenchimento, o tamanho dos tipos e a ordem dos bytes (\emph{endianness}) da
+máquina que gravou: o arquivo de 72 bytes acima não é legível por um programa
+compilado com outro alinhamento, nem por uma máquina \emph{big-endian}. A
+\cref{sec:io-streams} volta ao ponto; dentro de uma máquina, para \emph{cache}
+de curta duração, a técnica é legítima.
+
+Um \texttt{fstream} aberto com \texttt{ios::in | ios::out} tem dois cursores
+independentes --- o de leitura (\texttt{tellg}/\texttt{seekg}) e o de escrita
+(\texttt{tellp}/\texttt{seekp}) --- e uma propriedade que costuma surpreender:
+escrever em um \emph{offset} \textbf{substitui} os bytes que estavam lá. No
+demo, cinco caracteres gravados no início transformam a linha
+\texttt{ITEM\_0} em \texttt{MODIF0}: ``MODIF'' cobriu ``ITEM\_'' e o
+\texttt{0} sobreviveu. Não existe ``inserir no meio de um arquivo''; inserir é
+reescrever o resto --- e é por isso que editores de texto carregam o arquivo
+inteiro na memória.
+
+\subsubsection{O que os \emph{streams} custam, medido}
+
+Três conselhos circulam sobre desempenho de \emph{streams}. Medidos nesta
+máquina (mesmas condições da \cref{sec:sp-medido}), um se confirma com folga,
+um se inverte e um encolhe.
+
+\begin{table}[htbp]
+\centering
+\caption{200\,000 linhas escritas, lidas ou concatenadas; média de duas
+         execuções, \texttt{-O2}, disco local.}
+\label{tab:io-bench}
+\footnotesize
+\begin{tabular}{@{}llrl@{}}
+\toprule
+\textbf{Operação} & \textbf{Forma} & \textbf{Tempo} & \textbf{Veredito} \\
+\midrule
+escrever & \texttt{ofs << ... << '\textbackslash n'} &   8,8~ms & --- \\
+escrever & \texttt{ofs << ... << std::endl}          & 280~ms   & \textbf{32$\times$ mais lento} \\
+\midrule
+ler      & \texttt{getline} linha a linha            &   2,9~ms & --- \\
+ler      & \texttt{oss << ifs.rdbuf()}               &   2,4~ms & 1,2$\times$ mais rápido \\
+\midrule
+montar   & \texttt{std::string} com \texttt{+=}      &   3,6~ms & \textbf{mais rápido} \\
+montar   & \texttt{std::ostringstream}               &   6,6~ms & 1,8$\times$ mais lento \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{O conselho que se confirmou.} \texttt{std::endl} não é ``quebra de
+linha'': é quebra de linha \textbf{mais \emph{flush}}, e cada \emph{flush} é
+uma chamada de sistema. Trinta e duas vezes mais lento é a diferença entre
+escrever um \emph{log} de 200 mil linhas em 9~ms e em 0,28~s.
+
+\begin{regra}[\texttt{'\textbackslash n'} sempre; \texttt{std::endl} só quando o \emph{flush} for o objetivo]
+Use \texttt{std::endl} apenas quando a mensagem precisa estar no disco
+\emph{agora} --- a última linha antes de um aborto previsto, por exemplo. Para
+qualquer outra coisa, \texttt{'\textbackslash n'}. O \texttt{Logger} do
+subprojeto faz a escolha oposta de propósito, e a
+\cref{sec:log-idempotente} explica por quê.
+\end{regra}
+
+\paragraph{O conselho que se inverteu.} O \texttt{README.md} do subprojeto
+apresenta o \texttt{ostringstream} como ``concatenação eficiente (evita $N$
+alocações do \texttt{+} com \texttt{string})''. A medição diz o contrário: o
+\texttt{std::string} com \texttt{+=} foi 1,8 vez \emph{mais rápido}. A
+explicação é que o conselho envelheceu junto com a implementação. Ele era
+verdadeiro contra \texttt{a + b + c}, que constrói temporários; contra
+\texttt{+=}, não é --- \texttt{std::string} cresce com capacidade
+geométrica, e o \emph{amortizado} de \texttt{+=} é uma cópia de bytes, enquanto
+cada \texttt{<<} do \emph{stream} atravessa a maquinaria de formatação,
+\emph{locale} e \emph{sentry}. O valor do \texttt{ostringstream} é a
+\emph{formatação} (\texttt{setw}, \texttt{setprecision}, tabelas alinhadas),
+não a velocidade de emenda.
+
+\paragraph{O conselho que encolheu.} O terceiro é
+\texttt{std::ios\_base::sync\_with\_stdio(false)}, que a folclore das maratonas
+de programação vende como ganho de ordem de grandeza. Medido aqui, com 300 mil
+linhas em \texttt{std::cout} redirecionado para \texttt{/dev/null}:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={A mesma carga com e sem sincronização com o \texttt{stdio} do C.}]
+sync=true  : 12,3 ms
+sync=false : 10,1 ms      ← 1,2×, não 10×
+\end{lstlisting}
+
+Não é que a folclore esteja errada; é que ela mede outra coisa. O ganho grande
+aparece em \emph{leitura} caractere a caractere com \texttt{std::cin}, em que a
+sincronização custa uma ida ao \emph{buffer} do C por caractere. Na escrita em
+lote, o tempo é dominado pela formatação, e a sincronização some no ruído.
+
+\begin{regra}[um número de \emph{benchmark} pertence a uma carga, não a uma API]
+As três medições acima ensinam o mesmo método. Antes de repetir um conselho de
+desempenho, pergunte três coisas: \emph{qual carga} foi medida, \emph{em que
+versão} da biblioteca, e \emph{o que o compilador pode ter apagado}. Um conselho
+que não responde às três é folclore --- inclusive quando é verdadeiro.
+\end{regra}
+
+\subsubsection{Redirecionamento: \texttt{rdbuf} e o que ele não captura}
+
+Todo \emph{stream} é uma fachada de formatação sobre um \texttt{std::streambuf},
+que é quem de fato move os bytes. Trocar o \emph{buffer} redireciona a saída sem
+tocar em nenhuma das chamadas que escrevem nela --- mecanismo que a
+\cref{sec:file-io} apresenta e que a \cref{sec:io-streams} detalha, com o
+\texttt{RedirectGuard} e o \texttt{TeeBuf} do subprojeto transcritos. O que cabe
+acrescentar aqui são duas armadilhas de tempo de vida, ambas da natureza deste
+capítulo: erros que compilam.
+
+A primeira explica por que o \texttt{RedirectGuard} declara \emph{deletados} o
+construtor de cópia e a atribuição. Copiá-lo faria dois objetos restaurarem o
+mesmo \emph{buffer}, e o segundo restauraria sobre um estado já restaurado ---
+exatamente a razão pela qual \texttt{unique\_ptr} também não é copiável
+(\cref{sec:value-semantics}). Um guarda de recurso é, por construção,
+\emph{move-only}.
+
+\begin{armadilha}[o \emph{buffer} redirecionado não pode morrer antes do \emph{stream}]
+\texttt{std::cout.rdbuf(arquivo.rdbuf())} guarda em \texttt{std::cout} um
+ponteiro para um \texttt{streambuf} que pertence ao \texttt{ofstream}. Se o
+\texttt{ofstream} sair de escopo antes da restauração, \texttt{std::cout} fica
+com um ponteiro pendurado --- e o próximo \texttt{<<} é \gls{ub}, possivelmente
+milhares de linhas depois. O comentário em maiúsculas no
+\texttt{demo\_logging.hpp} (``IMPORTANTE: restaurar antes de qualquer
+\texttt{fmt::print} ou destruição'') existe por isso. Com o
+\texttt{RedirectGuard}, a ordem correta é consequência da ordem de declaração:
+o arquivo é declarado antes do guarda, e destruído depois dele.
+\end{armadilha}
+
+Há um segundo detalhe, e este é o que mais surpreende num repositório em que
+quase toda saída passa por \texttt{fmt::print}. O experimento: redirecionar
+\texttt{std::cout} para um arquivo e escrever por três vias diferentes.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O experimento --- três escritas, um redirecionamento.}]
+std::ofstream f("/tmp/redir_test.txt");
+std::streambuf* orig = std::cout.rdbuf(f.rdbuf());
+std::cout   << "via std::cout\n";
+fmt::print("via fmt::print\n");
+std::printf("via printf\n");
+std::cout.rdbuf(orig);
+\end{lstlisting}
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Resultado medido: só uma das três foi capturada.}]
+--- conteudo do arquivo ---
+  via std::cout
+
+--- o que continuou saindo no terminal ---
+via fmt::print
+via printf
+\end{lstlisting}
+
+\begin{armadilha}[trocar o \texttt{rdbuf} de \texttt{cout} não redireciona \texttt{fmt::print}]
+\texttt{std::cout.rdbuf()} mexe em um objeto C++; \texttt{fmt::print} e
+\texttt{printf} escrevem no \emph{descritor} 1, sem passar por ele. Quem captura
+saída para teste trocando o \emph{buffer} de \texttt{std::cout} capturará
+exatamente nada num programa que usa \texttt{fmt}. Para redirecionar de verdade
+é preciso descer um nível: \texttt{freopen} (nível C, global e difícil de
+desfazer) ou \texttt{dup2} (nível POSIX, reversível guardando o \emph{fd}
+antigo com \texttt{dup}). É por isso que o \texttt{Logger} do subprojeto recebe
+o \emph{stream} de destino como parâmetro em vez de confiar em
+redirecionamento: injetar a dependência é mais simples do que interceptá-la.
+\end{armadilha}
+
+Na direção oposta está o \texttt{TeeBuf} do subprojeto: em vez de trocar um
+destino por outro, escreve nos dois, implementando em C++ o que a \emph{shell}
+faria com \texttt{./prog 2>\&1 | tee log.txt}. Ele é um \texttt{std::streambuf}
+próprio, e a \cref{sec:io-streams} o transcreve --- vale antecipar apenas que o
+contrato mínimo de um \texttt{streambuf} de saída são dois métodos,
+\texttt{overflow} e \texttt{xsputn}, e que ele herda a mesma armadilha de tempo
+de vida: o \texttt{TeeBuf} aponta para dois \emph{buffers} que precisam
+sobreviver a ele.
+
+\subsubsection{O \emph{Logger}, e a lição de idempotência}
+\label{sec:log-idempotente}
+
+O \texttt{Logger} do subprojeto reúne o capítulo inteiro num objeto de sessenta
+linhas: níveis (\texttt{TRACE} a \texttt{FATAL}), \emph{timestamp} montado com
+\texttt{ostringstream} e \texttt{put\_time}, cor ANSI no terminal e texto limpo
+no arquivo, \texttt{std::mutex} para ser utilizável de várias \emph{threads}, e
+\texttt{ERROR}/\texttt{FATAL} desviados para \texttt{std::cerr}. Esse desvio é
+verificável na hora, e vale fazê-lo: rodando com \texttt{1> /dev/null}, restam
+na tela apenas as duas últimas linhas; com \texttt{2> /dev/null}, restam todas
+as outras.
+
+Há, porém, uma observação que só aparece rodando o programa duas vezes. O
+arquivo é aberto com \texttt{std::ios::app}, e o demo imprime o conteúdo
+\emph{inteiro} do arquivo ao final:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Sétima execução consecutiva de \texttt{dist/bin/file\_io}: a saída
+             do demo cresce a cada rodada.}]
+  conteúdo:
+    [11:33:57.270] [INFO ] Logger iniciado → /tmp/cpp_academy_logger.log
+    ...
+    [12:44:22.471] [INFO ] Logger iniciado → /tmp/cpp_academy_logger.log
+    ...
+    [14:24:39.785] [INFO ] Logger iniciado → /tmp/cpp_academy_logger.log
+    ...                                     ← oito sessões acumuladas
+\end{lstlisting}
+
+Para um \emph{log} de verdade, \texttt{ios::app} é a escolha certa --- perder o
+histórico a cada reinício seria pior. Para um \emph{demo}, é um defeito: a
+saída do programa depende de quantas vezes ele já rodou, o que impede compará-la
+com uma saída de referência e, portanto, testá-la.
+
+\begin{regra}[um programa de demonstração deve ser idempotente]
+Rodar duas vezes tem de produzir a mesma saída. Onde o assunto exige estado
+persistente, o programa deve começar limpando o que ele mesmo criou. Este
+repositório aprendeu a regra do jeito difícil: ao habilitar os alvos que antes
+não eram compilados, o demo de \texttt{src/database/} passou na primeira
+execução e falhou na segunda com violação de restrição \texttt{UNIQUE}, porque
+inseria as mesmas linhas de novo. A correção --- apagar a tabela antes de
+popular --- é de uma linha; achar o problema exigiu \emph{rodar duas vezes},
+que é justamente o que ninguém faz com um alvo que acabou de compilar.
+\end{regra}
+
+\subsubsection{\texttt{std::filesystem}: a API dupla e a corrida}
+
+O \cabecalho{filesystem} do C++17 fecha a seção. A \cref{sec:file-io} já
+apresenta o \texttt{fs::path} e os iteradores de diretório; o que cabe aqui,
+enquanto o assunto ainda é tratamento de erro, são duas propriedades da API.
+
+A primeira é que \textbf{toda função tem duas assinaturas}: uma que lança
+\texttt{fs::filesystem\_error} e outra que recebe um \texttt{std::error\_code\&}
+e não lança. O demo executa as duas sobre o mesmo arquivo inexistente, e a
+diferença de qualidade da mensagem é visível:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={\texttt{dist/bin/file\_io}, demo 5, seção 5.}]
+  exceção: filesystem error: cannot get file size:
+           No such file or directory [/tmp/nao_existe_absolutamente.xyz]
+  path1:   /tmp/nao_existe_absolutamente.xyz
+  code:    No such file or directory
+  error_code: No such file or directory (valor=2)
+\end{lstlisting}
+
+A exceção carrega o \emph{caminho} --- \texttt{path1()} e, em operações de dois
+argumentos, \texttt{path2()} --- que o \texttt{error\_code} sozinho não tem. O
+critério de escolha é a frequência esperada do erro: um arquivo de configuração
+que deveria existir e não existe é excepcional; percorrer um diretório em que
+arquivos podem sumir no meio do caminho, não.
+
+A segunda propriedade é uma armadilha de concorrência que a API não tem como
+evitar.
+
+\begin{armadilha}[\texttt{exists()} responde sobre o passado]
+\texttt{if (fs::exists(p)) abrir(p);} é uma corrida: entre a pergunta e a
+abertura, outro processo pode apagar, criar ou substituir \texttt{p} por um
+\emph{link} simbólico. O padrão tem nome --- TOCTOU, \emph{time of check to time
+of use} --- e é uma classe inteira de vulnerabilidades de segurança. O remédio é
+não perguntar: tente a operação e trate a falha, que é o que o par
+\texttt{ifstream} + \texttt{is\_open()} já faz naturalmente. Use
+\texttt{exists()} para relatar, nunca para decidir.
+\end{armadilha}
+
+Vale registrar ainda que \texttt{fs::permissions} manipula os bits POSIX com
+\texttt{perm\_options::add} e \texttt{::remove}, e que o demo os usa para
+remover a permissão de escrita do dono --- e depois restaurá-la, sem o que o
+\texttt{fs::remove} final falharia. O detalhe é pequeno e ensina algo geral: um
+demo que altera permissões precisa desfazer o que fez, pela mesma razão da
+regra de idempotência acima.
+
+\begin{aviso}
+O \texttt{README.md} do \projeto{file\_io} ainda instrui a ``ativar o
+subprojeto em \texttt{src/meson.build}'' descomentando um \texttt{subdir}. Essa
+instrução está obsoleta: \textbf{não há mais nenhum \texttt{subdir()}
+comentado} --- os 57 subprojetos são construídos, e a compilação instala 98
+binários em \texttt{dist/bin}, sem um \emph{warning} sob
+\texttt{-Wall -Wextra -Wpedantic}. A mudança não foi cosmética: ao habilitar os
+alvos que estavam desligados, apareceram quatro \texttt{\#include} faltando ---
+entre eles o \texttt{<fmt/core.h>} de \texttt{src/aws/s3/main.cpp} --- e dois
+bugs de ABI em \texttt{src/asm\_course/} que estavam ali havia meses.
+\textbf{Um alvo que não é construído é um alvo que apodrece}: o compilador é o
+único leitor que nunca se distrai, e desligá-lo de um diretório equivale a
+parar de revisar aquele diretório.
+\end{aviso}
+
+% =============================================================================
+\subsection{O modelo de objeto}
+\label{sec:oop}
+% =============================================================================
+
+Herança e \texttt{virtual} aparecem em quase todo subprojeto do repositório ---
+\projeto{design-of-pattern}, \projeto{plugin\_registry}, \projeto{ecs} --- mas
+sempre \emph{usados}, nunca \emph{explicados}. O subprojeto \projeto{oop} fecha
+essa lacuna: o que o compilador gera por baixo do \texttt{virtual}, e os quatro
+modos clássicos de o polimorfismo desaparecer sem que ninguém perceba.
+
+\subsubsection{Herança}
+
+Das três formas de herdar, apenas a pública cria substituibilidade
+(\cref{tab:heranca}). As outras duas são composição com sintaxe diferente --- e
+composição costuma ser a escolha melhor, com a vantagem de não convidar ninguém
+a fazer \emph{upcast}.
+
+\begin{table}[htbp]
+\centering
+\caption{As três formas de herança.}
+\label{tab:heranca}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Forma} & \textbf{Significado} & \textbf{Converte para a base?} \\
+\midrule
+\texttt{public}    & ``é um''                        & sim \\
+\texttt{protected} & ``é implementado em termos de'' & não \\
+\texttt{private}   & ``é implementado em termos de'' & não \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A ordem de construção é base, depois membros na ordem de \emph{declaração},
+depois o corpo do construtor; a destruição é o inverso exato.
+
+\begin{armadilha}[declarar um membro esconde \emph{todos} os \emph{overloads} do mesmo nome]
+\begin{lstlisting}[style=bt, language=C++, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+struct Base    { void f(int); void f(const std::string&); };
+struct Ruim : Base { void f(double); };          // escondeu os dois
+
+Ruim r;
+r.f(42);          // chama f(double) — 42 vira 42.0, em silêncio
+r.f("texto");     // nem compila
+\end{lstlisting}
+A busca de nome para assim que encontra o nome, \emph{antes} da resolução de
+sobrecarga: os \emph{overloads} da base nem chegam a ser candidatos. A correção
+é uma linha --- \texttt{using Base::f;}.
+\end{armadilha}
+
+\subsubsection{Funções virtuais e a \emph{vtable}}
+
+O mecanismo é conhecido, mas convém dizê-lo com precisão: cada classe
+polimórfica ganha uma \gls{vtable} --- um vetor de ponteiros de função --- e cada
+\emph{objeto} ganha um \emph{vptr} apontando para a tabela da sua classe real.
+A chamada \texttt{p->f()} vira, aproximadamente,
+\texttt{(*p->vptr[índice\_de\_f])(p)}. O subprojeto mede as consequências:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/oop/}: a \emph{vtable} é por classe, o
+             \emph{vptr} é por objeto.}]
+sizeof(SemVirtual) = 8 bytes (2 ints)
+sizeof(ComVirtual) = 16 bytes (2 ints + vptr + padding)
+vptr de dois Círculos são iguais? true    ← vtable é POR CLASSE
+vptr de Círculo == vptr de Forma?  false  ← vptr é POR OBJETO
+\end{lstlisting}
+
+O custo em memória é um ponteiro por objeto. O custo maior, quase sempre, é
+outro: a chamada virtual \textbf{não pode sofrer \emph{inline}}, e com isso se
+perdem as otimizações que dependiam de ver o corpo da função.
+
+\paragraph{\texttt{override} e o bug silencioso.} Uma assinatura ligeiramente
+diferente não sobrescreve nada --- cria um \emph{overload} novo, e as chamadas
+pela base continuam indo para a base:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O bug que \texttt{override} previne, em
+             \texttt{src/oop/demo\_virtual.hpp}.}]
+struct Sensor {
+    virtual double ler(int /*canal*/) const { fmt::print("      Sensor::ler(int)\n"); return 0.0; }
+    virtual ~Sensor() = default;
+};
+
+struct SensorQuebrado : Sensor {
+    // Repare no `double` em vez de `int`: assinatura diferente.
+    // Isto NÃO sobrescreve nada — cria um novo overload.
+    double ler(double canal) const { fmt::print("      SensorQuebrado::ler(double)\n");
+                                     return canal; }
+};
+
+struct SensorCerto : Sensor {
+    // `override` faz o compilador VERIFICAR que existe um virtual com esta
+    // assinatura na base. Se não existir, é erro de compilação.
+    double ler(int canal) const override { fmt::print("      SensorCerto::ler(int)\n");
+                                           return canal; }
+};
+\end{lstlisting}
+
+\begin{regra}[\texttt{override} sempre; \texttt{final} quando a classe não é para herdar]
+\texttt{override} custa zero em tempo de execução e transforma um bug silencioso
+em erro de compilação. \texttt{final} vai além: impede herdar a classe ou
+sobrescrever o método, e permite ao compilador \emph{devirtualizar} chamadas ---
+o que devolve a possibilidade de \emph{inline}.
+\end{regra}
+
+\paragraph{Destrutor virtual.} \texttt{delete ptr\_base} com destrutor não
+virtual é \gls{ub}: o destrutor do derivado simplesmente não roda, e o que ele
+liberaria vaza. O GCC recusa com \texttt{-Wdelete-non-virtual-dtor} e o
+AddressSanitizer aborta o programa --- razão pela qual a linha correspondente
+está comentada no subprojeto, de propósito.
+
+\paragraph{Virtual dentro do construtor.} Durante o construtor da base, o
+\emph{vptr} ainda é o da base: a chamada não desce para o derivado. Faz sentido
+--- os membros do derivado ainda não existem --- e é exatamente por isso que a
+construção em duas fases (``construtor chama \texttt{inicializar()} virtual'')
+não funciona em C++.
+
+\begin{armadilha}[argumento padrão em função virtual]
+\begin{lstlisting}[style=bt, language=C++, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+struct BaseArg {
+    virtual void f(int x = 10) const { fmt::print("      BaseArg::f(x={})\n", x); }
+    virtual ~BaseArg() = default;
+};
+struct DerivadaArg : BaseArg {
+    void f(int x = 20) const override { fmt::print("      DerivadaArg::f(x={})\n", x); }
+};
+\end{lstlisting}
+O \emph{corpo} é escolhido dinamicamente, mas o \emph{argumento padrão} é
+escolhido estaticamente, pelo tipo do ponteiro. Chamado por
+\texttt{Derivada d; d.f()} imprime \texttt{x=20}; chamado por
+\texttt{Base\& b = d; b.f()} imprime \texttt{x=10} --- corpo do derivado, valor
+padrão da base. A solução é o idioma NVI: um método público não virtual aplica
+o padrão e delega a um virtual privado.
+\end{armadilha}
+
+\subsubsection{\emph{Object slicing}}
+
+Copiar um derivado para uma variável do tipo base não é conversão: é
+\textbf{amputação}. O que não cabe em \texttt{sizeof(Base)} é descartado, e com
+ele o \emph{vptr} --- ou seja, o polimorfismo.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Os tipos de \texttt{src/oop/demo\_slicing.hpp}: o estado extra é
+             o que some no corte.}]
+struct Animal {
+    std::string nome;
+
+    explicit Animal(std::string n) : nome(std::move(n)) {}
+    virtual ~Animal() = default;
+
+    virtual std::string falar() const { return "..."; }
+    virtual std::string descrever() const { return fmt::format("Animal '{}'", nome); }
+};
+
+struct Cachorro : Animal {
+    int  numero_de_truques;         // ← estado extra, some no corte
+
+    Cachorro(std::string n, int truques)
+        : Animal(std::move(n)), numero_de_truques(truques) {}
+
+    std::string falar() const override { return "Au!"; }
+    std::string descrever() const override {
+        return fmt::format("Cachorro '{}' com {} truques", nome, numero_de_truques);
+    }
+};
+\end{lstlisting}
+
+O caso que aparece em produção não é a atribuição explícita: é o
+\textbf{parâmetro}. A diferença entre \texttt{void f(Animal a)} e \texttt{void
+f(const Animal\& a)} é um caractere, e nenhum \emph{warning} separa as duas.
+
+\begin{armadilha}[\texttt{std::vector<Base>} é sempre errado]
+O container reserva \texttt{sizeof(Base)} por posição. Não existe espaço físico
+para um derivado maior --- não é uma questão de política, é de aritmética:
+\begin{lstlisting}[style=bt, language=bash, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+sizeof(Animal)   = 40 bytes
+sizeof(Cachorro) = 48 bytes
+→ dois Cachorros entraram no vector<Animal>, dois Animals saíram
+\end{lstlisting}
+A correção é guardar indireção: \texttt{std::vector<std::unique\_ptr<Animal>>}.
+\end{armadilha}
+
+O corte pode ser tornado incompilável, e vale escolher a receita conforme a
+intenção: base abstrata (um \texttt{= 0}) é a mais forte, porque nem instancia;
+cópia \texttt{= delete} na base tira a cópia também dos derivados; cópia
+\texttt{protected} deixa derivados copiarem entre si e impede o mundo externo de
+cortar.
+
+\subsubsection{Herança múltipla e o diamante}
+
+Herdar de várias \emph{interfaces} puras --- só virtuais puros, sem estado ---
+não tem o problema do diamante, porque não há dados a duplicar. Mas há um efeito
+de \emph{layout} que surpreende: os subobjetos ficam em \emph{offsets}
+diferentes, e converter o ponteiro \textbf{ajusta o endereço}.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/oop/}: o mesmo objeto, três endereços.}]
+&b            = 0x7ffc2c9a4700
+(Desenhavel*) = 0x7ffc2c9a4700
+(Salvavel*)   = 0x7ffc2c9a4708   ← mesmo objeto, endereço diferente
+\end{lstlisting}
+
+Comparar ponteiros de bases diferentes, portanto, não responde se são o mesmo
+objeto. Quem responde é \texttt{dynamic\_cast<void*>}, que devolve o endereço do
+objeto mais derivado.
+
+Quando as bases têm estado, o diamante aparece: sem \texttt{virtual}, a classe
+final contém \emph{duas} cópias da base comum, com estados independentes, e a
+conversão para ela é ambígua --- nem compila. Com herança virtual, contém uma,
+e o \texttt{sizeof} cai (96 para 64 bytes, no exemplo do subprojeto).
+
+\begin{armadilha}[quem inicializa a base virtual é a classe \emph{mais derivada}]
+Numa hierarquia em diamante com herança virtual, as chamadas ao construtor da
+base virtual escritas nas classes intermediárias são simplesmente
+\textbf{ignoradas}. Quem escolhe com que argumentos a base virtual é construída
+é a classe mais derivada --- e isso significa que toda classe concreta da
+hierarquia precisa saber inicializar uma base da qual talvez nem se considere
+responsável.
+\end{armadilha}
+
+Quando a variação é conhecida em compilação, nada disso é necessário: o
+\gls{crtp} dá polimorfismo estático sem \emph{vtable} e sem \emph{vptr}, e
+\emph{mixins} vazios desaparecem por otimização de base vazia
+(\cref{sec:templates}).
+
+\subsubsection{RTTI e o seu custo}
+\label{sec:oop-rtti}
+
+\texttt{typeid} aplicado a um objeto \textbf{polimórfico} é avaliado em tempo de
+execução e devolve o tipo \emph{dinâmico}; aplicado a um não polimórfico, é
+resolvido em compilação e devolve o tipo \emph{estático}. A diferença entre as
+duas situações é uma função virtual na base.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/oop/}: o nome cru vem no formato do
+             Itanium ABI~\cite{itaniumabi} e precisa de
+             \texttt{abi::\_\_cxa\_demangle}.}]
+typeid(c).name() cru      = N9demo_rtti7CirculoE
+demanglado                = demo_rtti::Circulo
+typeid(f) via Forma&      = demo_rtti::Circulo          ← dinâmico
+não-polimórfica via base& = demo_rtti::NaoPolimorfica   ← estático
+\end{lstlisting}
+
+\texttt{typeid} testa igualdade \emph{exata} de tipo; \texttt{dynamic\_cast}
+aceita derivados. São perguntas diferentes: um quadrado que herda de retângulo
+falha no primeiro teste e passa no segundo.
+
+A medição do subprojeto, sobre 200\,000 iterações de cada operação, ordena os
+custos: chamada virtual é a mais barata, comparação de \texttt{typeid} vem
+depois, e \texttt{dynamic\_cast} é a mais cara por boa margem --- porque
+percorre a árvore de herança e não é $O(1)$.
+
+\begin{regra}[uma cadeia de \texttt{if (dynamic\_cast<X>)} é uma função virtual que não foi escrita]
+As três alternativas, em ordem de preferência: (a) um método virtual, e o objeto
+responde por si; (b) o padrão \emph{Visitor}, que faz despacho duplo sem RTTI
+(\cref{sec:patterns}); (c) \texttt{std::variant} com \texttt{std::visit}, quando
+a hierarquia é fechada --- sem herança nenhuma, e com verificação de
+exaustividade pelo compilador (\cref{sec:vocabulary}).
+\end{regra}
+
+% =============================================================================
+\subsection{Tratamento de erro}
+\label{sec:errors}
+% =============================================================================
+
+O subprojeto \projeto{errors} trata do mecanismo das exceções, dos quatro níveis
+de garantia que toda função oferece --- escolhendo-os ou não --- e das duas
+alternativas baseadas em valor. Ele compila com C++23 por causa de
+\texttt{std::expected} (\cref{sec:ambiente}).
+
+A decisão entre exceção e valor de retorno não é questão de gosto. O subprojeto
+mede:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/errors/}: 20\,000 iterações.}]
+sem exceção        :      12 µs
+lançando+capturando:   12716 µs      ← ~1000×
+\end{lstlisting}
+
+Exceções são \textbf{zero-cost no caminho feliz} e caríssimas no caminho de
+erro. É isso, e não a estética, que decide quando usá-las: para o que é
+excepcional e raro, exceção; para o que é esperado e frequente, valor.
+
+\subsubsection{O mecanismo, e por que ele é o mesmo assunto que RAII}
+
+Um \texttt{throw} faz quatro coisas: copia ou move o objeto lançado para uma
+área controlada pelo \emph{runtime}; desenrola a pilha até o primeiro
+\emph{handler} compatível; \textbf{roda todo destrutor de objeto local} durante o
+desenrolamento; executa o \emph{handler}. O terceiro passo é o que torna
+\gls{raii} e exceções indissociáveis:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/errors/}: três destrutores rodaram sem uma
+             linha de limpeza escrita à mão.}]
++ nível-1 construído
++ nível-2 construído
++ nível-3 construído
+nível-3 vai lançar...
+- nível-3 DESTRUÍDO (durante o unwinding)
+- nível-2 DESTRUÍDO (durante o unwinding)
+- nível-1 DESTRUÍDO (durante o unwinding)
+handler alcançado: erro originado no nível 3
+\end{lstlisting}
+
+Os \emph{handlers} são testados \textbf{em ordem}, de cima para baixo, e o
+primeiro compatível vence --- não há ``melhor correspondência'' como na
+resolução de sobrecarga. Por isso o \emph{handler} mais derivado vem primeiro.
+
+\begin{armadilha}[capturar por valor \emph{fatia} a exceção]
+\texttt{catch (std::runtime\_error e)} sofre \gls{slicing} exatamente como
+qualquer outra cópia para o tipo base (\cref{sec:oop}): o objeto derivado chega
+degradado, e o \texttt{what()} vira genérico. O GCC pega com
+\texttt{-Wcatch-value}. Lançar, por outro lado, é sempre por valor:
+\texttt{throw T(...)}, nunca \texttt{throw new T(...)} --- este último vaza.
+\end{armadilha}
+
+A mesma armadilha reaparece no repasse. \texttt{throw;} relança \emph{o mesmo}
+objeto, com tipo dinâmico intacto; \texttt{throw e;} lança uma \textbf{cópia}
+cortada para o tipo estático da variável do \texttt{catch}:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/errors/}: a diferença de um caractere.}]
+com `throw;'     → chegou como ErroDeRede: [HTTP 404] não encontrado
+com `throw e;'   → chegou degradado como std::exception: 'std::exception'
+\end{lstlisting}
+
+\subsubsection{As quatro garantias}
+
+Toda função oferece uma das garantias da \cref{tab:garantias}, tenha o autor
+pensado nisso ou não. A escolha razoável é mirar na básica sempre, e na forte
+quando o custo permitir.
+
+\begin{table}[htbp]
+\centering
+\caption{As quatro garantias de segurança em face de exceções.}
+\label{tab:garantias}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Garantia} & \textbf{Promessa} \\
+\midrule
+nenhuma  & nada --- pode vazar ou corromper \\
+básica   & não vaza, invariantes valem, valores não especificados \\
+forte    & ou completou, ou nada mudou (\emph{commit-or-rollback}) \\
+\emph{nothrow} & não lança, ponto \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Subir de nível costuma custar menos do que parece --- às vezes apenas
+\textbf{reordenar as operações}, deixando o que pode lançar antes do que muda
+estado:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A mesma função, com garantia diferente.}]
+void ruim(const std::string& k) {
+    ++contador_;                                    // estado já mudou
+    itens_.push_back(std::make_unique<Item>(k));    // e isto pode lançar
+}
+
+void bom(const std::string& k) {
+    auto novo = std::make_unique<Item>(k);          // o arriscado primeiro
+    itens_.push_back(std::move(novo));
+    ++contador_;                                    // o nothrow por último
+}
+\end{lstlisting}
+
+Para a garantia forte, o instrumento é o mesmo \emph{copy-and-swap} da
+\cref{sec:value-semantics}: faça o trabalho arriscado numa cópia e, só quando
+tudo tiver dado certo, troque --- porque \texttt{swap} é \emph{nothrow}.
+
+\begin{armadilha}[destrutor que lança durante o \emph{unwinding} chama \classe{std::terminate}]
+Se um destrutor lançar enquanto outra exceção está em voo, há duas exceções
+simultâneas e o padrão responde encerrando o programa. Por isso todo destrutor é
+implicitamente \texttt{noexcept}. O padrão correto é engolir e registrar o erro
+no destrutor, e oferecer um \texttt{fechar()} público para quem quiser tratá-lo
+de verdade --- é assim que \texttt{std::ofstream} se comporta.
+\end{armadilha}
+
+\begin{regra}[\texttt{noexcept} é promessa, não impedimento]
+\texttt{noexcept} não impede a função de lançar: promete que ela não lança.
+Quebrar a promessa não produz \emph{unwinding} nem \emph{handler} ---
+\texttt{std::terminate} direto. Em troca, a biblioteca otimiza: é o que faz
+\texttt{std::vector} mover em vez de copiar ao realocar. Marque
+\texttt{noexcept} em construtores e atribuições de \emph{move}, em
+\texttt{swap}, em destrutores e em \emph{getters} triviais.
+\end{regra}
+
+\subsubsection{A hierarquia padrão}
+
+A pergunta que separa os dois grandes ramos é uma só: \emph{isto poderia ter
+sido evitado por quem chamou, verificando antes?}
+
+\begin{itemize}
+    \item \textbf{Sim} $\rightarrow$ \classe{std::logic\_error} e derivados
+          (\texttt{invalid\_argument}, \texttt{domain\_error},
+          \texttt{length\_error}, \texttt{out\_of\_range}). É bug. Não capture
+          em produção; corrija o código.
+    \item \textbf{Não} $\rightarrow$ \classe{std::runtime\_error} e derivados
+          (\texttt{range\_error}, \texttt{overflow\_error},
+          \texttt{system\_error}). É o mundo. Trate, tente de novo, faça
+          \emph{fallback}.
+\end{itemize}
+
+Uma exceção customizada deve derivar de \texttt{std::runtime\_error}, que já
+gerencia a \emph{string} do \texttt{what()} --- e essa \emph{string} precisa
+sobreviver ao objeto lançado, o que é a razão de não se poder montá-la na hora
+dentro do \texttt{what()} e devolver \texttt{.c\_str()} de um temporário.
+
+Vale também dar ao seu domínio uma \textbf{raiz própria}:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Uma raiz por domínio permite capturar tudo o que é seu sem pegar o
+             que não é.}]
+struct ErroDaAcademia : std::runtime_error { using std::runtime_error::runtime_error; };
+struct ErroDeParse    : ErroDaAcademia     { using ErroDaAcademia::ErroDaAcademia; };
+struct ErroDeRede     : ErroDaAcademia     { int codigo; /* ... */ };
+\end{lstlisting}
+
+Para acrescentar contexto sem apagar a causa, \texttt{std::throw\_with\_nested}
+na subida e \texttt{std::rethrow\_if\_nested} na leitura produzem o rastro
+encadeado:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/errors/}: cada camada acrescenta contexto.}]
+falha ao iniciar o servidor na porta 443
+  não foi possível carregar o certificado TLS
+    arquivo '/etc/ssl/cert.pem' não encontrado
+\end{lstlisting}
+
+\begin{regra}[\texttt{catch(...)} é legítimo em exatamente três lugares]
+No \texttt{main}, na função de entrada de uma \emph{thread} --- onde uma
+exceção que escapa chama \texttt{std::terminate}, e o remédio é
+\texttt{std::exception\_ptr} --- e numa fronteira com código C, que não sabe
+desenrolar pilha de C++. Em qualquer outro ponto, \texttt{catch(...)} está
+escondendo um bug.
+\end{regra}
+
+\subsubsection{Erros como valores}
+
+\classe{std::error\_code} é um par (valor inteiro, categoria) que identifica um
+erro de forma extensível, sem alocar e sem lançar. A distinção que o torna
+interoperável é entre \texttt{error\_code} --- o que \emph{aconteceu},
+específico da plataforma ou da biblioteca --- e \texttt{error\_condition} --- o
+que aquilo \emph{significa}, portável. Uma categoria própria que implemente
+\texttt{default\_error\_condition} passa a ser comparável com
+\texttt{std::errc}, e é assim que Asio, \texttt{<filesystem>} e o código do
+usuário coexistem sem conhecer uns aos outros.
+
+\begin{armadilha}[a polaridade do \texttt{bool} é invertida entre as duas formas]
+Com \texttt{std::error\_code}, \texttt{if (ec)} significa \textbf{houve erro}.
+Com \texttt{std::expected}, \texttt{if (r)} significa \textbf{sucesso}. As duas
+convenções coexistem no mesmo programa, e a confusão entre elas produz código
+que inverte o tratamento de erro sem que nada deixe de compilar.
+\end{armadilha}
+
+\texttt{std::expected<T, E>} (C++23) resolve o que faltava às outras formas:
+\texttt{optional<T>} diz que não há valor mas não diz por quê;
+\texttt{error\_code} diz o porquê mas não carrega o valor.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{std::expected} em
+             \texttt{src/errors/demo\_expected.hpp}.}]
+std::expected<int, Falha> para_inteiro(std::string_view s) noexcept {
+    if (s.empty()) return std::unexpected{Falha::vazio};
+
+    int valor = 0;
+    const auto [ptr, ec] = std::from_chars(s.data(), s.data() + s.size(), valor);
+
+    if (ec == std::errc::result_out_of_range) return std::unexpected{Falha::fora_do_intervalo};
+    if (ec != std::errc{} || ptr != s.data() + s.size())
+        return std::unexpected{Falha::caractere_invalido};
+
+    return valor;                    // sucesso: conversão implícita para expected
+}
+\end{lstlisting}
+
+O ganho real, porém, é o encadeamento monádico: a primeira falha curto-circuita
+todas as etapas seguintes, e nenhum \texttt{if} aparece no meio do
+\emph{pipeline}.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O \emph{pipeline} de \texttt{src/errors/demo\_expected.hpp}.}]
+    auto pipeline = [](std::string_view entrada) {
+        return para_inteiro(entrada)              // expected<int, Falha>
+            .and_then(exigir_positivo)            // só roda se deu certo
+            .transform([](int v) { return v * 2; })   // mapeia só o sucesso
+            .transform([](int v) { return fmt::format("resultado={}", v); });
+    };
+\end{lstlisting}
+
+\begin{table}[htbp]
+\centering
+\caption{As quatro operações monádicas de \texttt{std::expected}.}
+\label{tab:monadicas}
+\footnotesize
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Operação} & \textbf{Recebe} & \textbf{Devolve} & \textbf{Papel} \\
+\midrule
+\texttt{and\_then(f)}        & \texttt{T} & \texttt{expected<U,E>} & encadeia \\
+\texttt{transform(f)}        & \texttt{T} & \texttt{U}             & mapeia o sucesso \\
+\texttt{or\_else(f)}         & \texttt{E} & \texttt{expected<T,G>} & recupera \\
+\texttt{transform\_error(f)} & \texttt{E} & \texttt{G}             & traduz o erro \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{armadilha}[\texttt{std::expected} não é \texttt{[[nodiscard]]} no padrão]
+Ignorar o retorno de uma função que devolve \texttt{expected} compila sem um
+pio --- e o erro desaparece por completo, o que é pior do que a exceção que se
+queria evitar. Marque você as suas funções:
+\texttt{[[nodiscard]] std::expected<int,Falha> para\_inteiro(...);}
+\end{armadilha}
+
+\subsubsection{Escolhendo a forma}
+
+\begin{table}[htbp]
+\centering
+\caption{As cinco formas de reportar erro, comparadas.}
+\label{tab:formas-erro}
+\footnotesize
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Forma} & \textbf{Motivo do erro} & \textbf{Custo} & \textbf{Ignorável?} \\
+\midrule
+\texttt{optional<T>}          & não             & zero  & sim \\
+exceção                       & sim, rico       & alto  & não \\
+\emph{out-param} + \texttt{bool} & via bool/enum & zero  & sim, e em silêncio \\
+\texttt{error\_code}          & sim, extensível & zero  & sim \\
+\texttt{expected<T,E>}        & sim, \textbf{tipado} & zero & sim, se não marcar \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+E os dois critérios que decidem, na prática:
+
+\begin{itemize}
+    \item \textbf{Frequência.} Esperado e frequente $\rightarrow$
+          \texttt{expected} ou \texttt{error\_code}. Excepcional e raro
+          $\rightarrow$ exceção. Bug do chamador $\rightarrow$ \texttt{assert}
+          ou \texttt{logic\_error}.
+    \item \textbf{Distância.} Se o erro precisa atravessar muitas camadas que
+          nada têm a ver com ele, exceção --- propagar \texttt{expected} muda a
+          assinatura de todas elas. E em construtor ou operador, exceção é a
+          única opção: não há valor de retorno disponível.
+\end{itemize}
+
+% =============================================================================
+\subsection{Síntese: os erros que o compilador não denuncia}
+% =============================================================================
+
+O capítulo inteiro se resume na \cref{tab:sintese-fundamentos}, que reúne as
+armadilhas das oito seções e --- a coluna que importa --- o que fazer a
+respeito.
+
+\begin{table}[htbp]
+\centering
+\caption{Os erros silenciosos do capítulo, e a correção de cada um.}
+\label{tab:sintese-fundamentos}
+\footnotesize
+\begin{tabular}{@{}p{0.30\textwidth}p{0.22\textwidth}p{0.36\textwidth}@{}}
+\toprule
+\textbf{Erro} & \textbf{Seção} & \textbf{Correção} \\
+\midrule
+\texttt{int t = 3.99;} trunca              & \ref{sec:syntax}
+    & inicialize com \texttt{\{\}} \\
+lista de inicialização fora de ordem       & \ref{sec:syntax}
+    & \texttt{-Wreorder}; siga a declaração \\
+\emph{cast} à moda C esconde qual conversão & \ref{sec:casts}
+    & \texttt{-Wold-style-cast} \\
+escrever em objeto \texttt{const}          & \ref{sec:casts}
+    & não use \texttt{const\_cast} para isso \\
+ler \texttt{float} por \texttt{int*}       & \ref{sec:casts}
+    & \texttt{std::bit\_cast} ou \texttt{memcpy} \\
+destrutor vazio suprime os \emph{moves}    & \ref{sec:value-semantics}
+    & Rule of 0; ou \texttt{= default} nos cinco \\
+\emph{move ctor} sem \texttt{noexcept}     & \ref{sec:value-semantics}
+    & marque \texttt{noexcept} \\
+\texttt{return std::move(local)}           & \ref{sec:value-semantics}
+    & \texttt{return local;} \\
+\texttt{move} onde cabia \texttt{forward}  & \ref{sec:value-semantics}
+    & \texttt{forward<T>} em tipo deduzido \\
+sobrecarregar \texttt{\&\&} ou \texttt{||} & \ref{sec:operators}
+    & não sobrecarregue \\
+construtor de um argumento sem \texttt{explicit} & \ref{sec:operators}
+    & \texttt{explicit} por padrão \\
+\texttt{a[i, j]} recompilado em C++23      & \ref{sec:operators}
+    & \texttt{-Wcomma-subscript} \\
+ciclo de \texttt{shared\_ptr}              & \ref{sec:smart-pointers}
+    & \texttt{weak\_ptr} num dos lados \\
+\texttt{shared\_ptr<T>(this)} num método   & \ref{sec:smart-pointers}
+    & \texttt{enable\_shared\_from\_this} \\
+\emph{weak} vivo retém o objeto inteiro    & \ref{sec:smart-pointers}
+    & \texttt{shared\_ptr(new)} se for grande \\
+\texttt{release()} usado como empréstimo   & \ref{sec:smart-pointers}
+    & \texttt{get()}, ou passe \texttt{*p} \\
+\texttt{while (!ifs.eof())}                & \ref{sec:streams-raii}
+    & ponha a leitura na condição \\
+\texttt{gcount()} lido fora do laço        & \ref{sec:streams-raii}
+    & consulte logo após cada \texttt{read} \\
+\texttt{'─'} entre aspas simples           & \ref{sec:streams-raii}
+    & literal de \texttt{string}; UTF-8 tem 3 bytes \\
+\texttt{40 - s.size()} dá a volta          & \ref{sec:streams-raii}
+    & \texttt{-Wsign-conversion}; converta antes \\
+\texttt{cout.rdbuf()} não pega \texttt{fmt::print} & \ref{sec:streams-raii}
+    & \texttt{dup2}, ou injete o \emph{stream} \\
+\texttt{std::endl} em laço                 & \ref{sec:streams-raii}
+    & \texttt{'\textbackslash n'}; 32$\times$ medido \\
+\texttt{fs::exists()} antes de abrir       & \ref{sec:streams-raii}
+    & tente e trate a falha (TOCTOU) \\
+método derivado esconde \emph{overloads}   & \ref{sec:oop}
+    & \texttt{using Base::f;} \\
+assinatura errada ao ``sobrescrever''      & \ref{sec:oop}
+    & \texttt{override} sempre \\
+\texttt{delete} por base sem dtor virtual  & \ref{sec:oop}
+    & destrutor virtual, ou \texttt{final} \\
+\emph{slicing} em parâmetro por valor      & \ref{sec:oop}
+    & \texttt{const T\&}; base abstrata \\
+argumento padrão em virtual                & \ref{sec:oop}
+    & idioma NVI \\
+capturar exceção por valor                 & \ref{sec:errors}
+    & \texttt{catch (const T\&)}; \texttt{-Wcatch-value} \\
+\texttt{throw e;} para repassar            & \ref{sec:errors}
+    & \texttt{throw;} \\
+retorno \texttt{expected} ignorado         & \ref{sec:errors}
+    & \texttt{[[nodiscard]]} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Quatro delas --- \emph{slicing}, destrutor não virtual, \emph{move} suprimido e
+uso após \emph{move} --- envolvem tempo de vida ou \emph{layout} de objeto, e
+para essas o instrumento certo não é a leitura atenta, é o \emph{sanitizer}
+(\cref{sec:sanitizers}). Os subprojetos \projeto{value\_semantics},
+\projeto{oop} e \projeto{errors} recomendam explicitamente uma passada sob
+\texttt{-Db\_sanitize=address,undefined} justamente por isso.

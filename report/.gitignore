@@ -1,0 +1,69 @@
+# =============================================================================
+#  Tudo que o Makefile gera. O que NAO entra aqui, de proposito:
+#    figures/*.png     artefatos versionados (ver o cabecalho de tools/figuras.mk)
+#    figures/*/.gitkeep  criados por `make new-chapter`, mantem a pasta no git
+# =============================================================================
+
+# Saida de compilacao: `make`, `make quick`, `make draft`, `make doc`,
+# `make overleaf` e `make figures-diff` escrevem tudo aqui dentro --
+# report.pdf, build/doc/, build/report-overleaf.zip, build/.draft-mode,
+# build/chapters/*.aux, build/figuras/.
+build/
+
+# Intermediarios do LaTeX, caso alguma compilacao escape do build/
+# (`make quick` e `make draft` chamados com -output-directory diferente,
+#  ou um pdflatex rodado na mao pelo editor)
+*.aux
+*.log
+*.out
+*.toc
+*.lof
+*.lot
+*.lol
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.synctex(busy)
+*.xdv
+*.bbl
+*.blg
+*.bcf
+*.run.xml
+# makeidx
+*.idx
+*.ind
+*.ilg
+# glossaries
+*.glo
+*.gls
+*.glg
+*.acn
+*.acr
+*.alg
+*.ist
+# externalizacao do tikz
+*.figlist
+*.makefile
+*.auxlock
+*.pgf-plot.gnuplot
+*.pgf-plot.table
+
+# Rascunhos do renderizador de figuras (`make figures` / `make figure`,
+# removidos por `make clean-figures`)
+figures-src/.render/
+.render/
+
+# Binarios baixados, nao versionados junto com o texto (ver tools/vendor/README.md).
+# Plano B do pandoc quando `make setup-doc` nao pode instalar via apt.
+tools/vendor/pandoc/
+tools/vendor/*.tar.gz
+
+# Cache do Python (scripts/ e tools/, chamados por make check e make doc)
+__pycache__/
+*.pyc
+
+# Editores e sistema
+*.swp
+*~
+.DS_Store
+tmp/

@@ -1,0 +1,1670 @@
+% =============================================================================
+%  Gráficos, física e simulação
+%  Cobre a Etapa 7 da trilha: collision, sfml_bullet, sfml_bullet2, qt_sfml,
+%  qt_sfml2, calculus, flight-simulator.
+% =============================================================================
+
+% =============================================================================
+\section{Gráficos, física e simulação}
+\label{sec:graficos}
+% =============================================================================
+
+Este capítulo tem uma progressão deliberada, e ela é o conteúdo tanto quanto os
+subprojetos individuais: primeiro a física \emph{sem} desenho
+(\ref{sec:collision}), depois o desenho (\ref{sec:sfml-bullet}), depois as
+articulações e os corpos deformáveis (\ref{sec:sfml-bullet2}), depois a
+interface gráfica em volta (\ref{sec:qt-sfml}), e por fim a matemática
+(\ref{sec:calculus}) que sustenta o subprojeto mais integrado do repositório
+(\ref{sec:flight-simulator}).
+
+Entender a física antes de desenhá-la não é preciosismo pedagógico: quando algo
+está errado numa simulação com renderização, a primeira pergunta é sempre se o
+erro está no simulador ou no desenho --- e quem nunca viu o simulador sozinho
+não tem como responder. Este capítulo leva essa pergunta a sério: em três dos
+seis subprojetos a resposta medida foi ``o erro está no desenho'', e num deles a
+discrepância entre onde a esfera \emph{está} e onde ela é \emph{pintada} é de
+392 pixels (\cref{sec:sfml-bullet-geometria}).
+
+\begin{regra}[todos os alvos deste capítulo são construídos]
+Houve um tempo em que os subprojetos gráficos ficavam comentados em
+\texttt{src/meson.build} ``porque as dependências são pesadas''. Isso acabou.
+Hoje \textbf{os 57 subprojetos são construídos}, os 98 binários resultantes são
+instalados em \texttt{dist/bin}, e a compilação passa limpa sob
+\texttt{-Wall -Wextra -Wpedantic}. Bullet3, SFML, Qt~6, Eigen3 e JSBSim entram
+via Conan; o JSBSim em particular vem de uma receita própria em
+\texttt{src/flight-simulator/deps/jsbsim}, construída por
+\texttt{src/flight-simulator/deps/install.sh} --- não é um \emph{submodule} de
+Git, e não há \texttt{.gitmodules} no repositório.
+\end{regra}
+
+\begin{porque}[um alvo que não é construído é um alvo que apodrece]
+A decisão de habilitar tudo não é estética. No minuto em que os alvos
+``pesados'' voltaram a compilar, o repositório pagou a conta acumulada: quatro
+cabeçalhos com \texttt{\#include} faltando (\texttt{<algorithm>},
+\texttt{<array>}, \texttt{<cmath>}, \texttt{<fmt/core.h>}) e dois bugs de ABI em
+\emph{assembly} que só apareceram ao \emph{executar} os binários. Todos estavam
+latentes exatamente nos alvos que ninguém construía.
+
+Um \texttt{\#} na frente de um \texttt{subdir()} não desativa um subprojeto: ele
+apenas transfere o custo do defeito para o futuro, com juros. Se um alvo não
+pode ser construído, conserte-o ou apague-o.
+\end{porque}
+
+% =============================================================================
+\subsection{Física sem renderização}
+\label{sec:collision}
+% =============================================================================
+
+O subprojeto \projeto{collision} faz uma coisa só: uma esfera cai de dez metros,
+bate num plano e quica com coeficiente de restituição 0,6. Não há janela, não há
+desenho --- apenas uma tabela de números impressa a cada dez passos. É
+exatamente essa austeridade que o torna útil: tudo o que aparece na tela é um
+número que veio do integrador, e nada mais.
+
+\begin{porque}[antes de desenhar, é preciso ter o que desenhar]
+Um motor de física é uma função que recebe um estado (posições, velocidades,
+orientações de $n$ corpos) e um intervalo de tempo, e devolve o estado seguinte.
+Toda a parte visual --- janelas, texturas, câmeras --- é uma \emph{leitura} desse
+estado, e pode ser trocada inteira sem que o motor perceba. Se você começa pelo
+desenho, nunca sabe se um objeto atravessou o chão porque o \emph{solver} falhou
+ou porque a sua conversão de coordenadas estava errada. Começando pelo simulador
+puro, você fixa uma referência: uma tabela de números que ou está certa ou está
+errada, independentemente de qualquer biblioteca gráfica.
+\end{porque}
+
+\subsubsection{Vocabulário: o que é cada peça}
+
+Quatro termos aparecem em toda documentação de motor de física, e é melhor
+defini-los antes de usá-los.
+
+\begin{itemize}
+  \item \textbf{Corpo rígido} (\texttt{btRigidBody}): um objeto que não se
+        deforma. Seu estado completo cabe em treze números --- posição (3),
+        orientação como quaternion (4), velocidade linear (3) e velocidade
+        angular (3).
+  \item \textbf{Forma de colisão} (\texttt{btCollisionShape}): a geometria usada
+        \emph{para detectar contato}. Não precisa ser a geometria desenhada, e
+        quase nunca é: um personagem complexo colide como uma cápsula.
+  \item \textbf{AABB} (\emph{axis-aligned bounding box}): a menor caixa alinhada
+        aos eixos do mundo que contém a forma. Testar sobreposição de duas AABBs
+        custa seis comparações; é a razão de a \emph{broadphase} ser barata.
+  \item \textbf{\emph{Motion state}} (\texttt{btMotionState}): a ponte entre o
+        motor e o desenho. O motor escreve nele a transformação
+        \emph{interpolada} do corpo; o renderizador lê. Guarde este adjetivo ---
+        ele volta medido na \cref{sec:collision-interpolacao}.
+\end{itemize}
+
+\subsubsection{O \emph{pipeline} de um quadro}
+
+Toda chamada a \texttt{stepSimulation} percorre quatro etapas, e conhecer a
+divisão explica quase todo o comportamento e todo o custo do motor
+(\cref{fig:bullet-pipeline}).
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=4mm and 7mm]
+  \node[caixaforte] (step) {\texttt{stepSimulation(dt, maxSubSteps, fixedTimeStep)}};
+  \node[caixa, below left=10mm and 20mm of step] (bp) {\textbf{Broadphase}\\\scriptsize pares de AABB\\\scriptsize que se sobrepõem};
+  \node[caixa, right=of bp] (np) {\textbf{Narrowphase}\\\scriptsize colisão exata\\\scriptsize entre os pares};
+  \node[caixa, right=of np] (sv) {\textbf{Solver}\\\scriptsize impulsos e\\\scriptsize fricção};
+  \node[caixa, right=of sv] (it) {\textbf{Integração}\\\scriptsize posição e\\\scriptsize velocidade};
+  \draw[seta] (step) -- (bp);
+  \draw[seta] (bp) -- (np); \draw[seta] (np) -- (sv); \draw[seta] (sv) -- (it);
+\end{tikzpicture}
+\caption{O \emph{pipeline} do Bullet. A \emph{broadphase} é barata e aproximada
+         --- descarta a maioria dos pares comparando caixas alinhadas aos
+         eixos; a \emph{narrowphase} é cara e exata, e só roda no que sobrou.
+         A separação é a razão de uma cena com milhares de corpos ser viável.}
+\label{fig:bullet-pipeline}
+\end{figure}
+
+A montagem do mundo reflete essa divisão: uma configuração de colisão, um
+despachante para a \emph{narrowphase}, uma estrutura de aceleração para a
+\emph{broadphase}, um \emph{solver} e o mundo que une os quatro.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={As cinco peças, e a escolha da estrutura de \emph{broadphase}.}]
+btDefaultCollisionConfiguration* config = new btDefaultCollisionConfiguration();
+btCollisionDispatcher* dispatcher = new btCollisionDispatcher(config);
+
+// btDbvtBroadphase = Dynamic AABB Tree → O(n log n), ótimo para cenas dinâmicas
+// Alternativa: btAxisSweep3 para cenas com bounds fixos
+btDbvtBroadphase* broadphase = new btDbvtBroadphase();
+
+btSequentialImpulseConstraintSolver* solver = new btSequentialImpulseConstraintSolver();
+
+btDiscreteDynamicsWorld* world = new btDiscreteDynamicsWorld(
+    dispatcher, broadphase, solver, config);
+world->setGravity(btVector3(0, -9.81f, 0));
+\end{lstlisting}
+
+O \emph{solver} escolhido, \texttt{btSequentialImpulseConstraintSolver}, resolve
+os contatos por \textbf{Gauss-Seidel projetado}: em vez de montar e inverter um
+sistema linear com todos os contatos de uma vez, ele percorre os contatos um a
+um aplicando impulsos, repete a varredura algumas vezes por passo e aceita a
+aproximação. É barato, converge razoavelmente e \emph{não} é exato --- o que
+explica, mais adiante, por que cadeias longas de restrições tremem
+(\cref{sec:sfml-bullet2}).
+
+\subsubsection{Estático e dinâmico: a massa é a chave}
+
+A distinção entre um corpo que se move e um que não se move não é um sinalizador
+--- é o valor da massa. \textbf{Massa zero significa estático}, e o Bullet
+interpreta isso como massa infinita: o corpo participa das colisões, mas nenhum
+impulso o desloca. Corpos dinâmicos precisam ainda do tensor de inércia, que o
+próprio \emph{shape} calcula.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O tensor de inércia sai da forma, não do usuário --- \texttt{src/collision/main.cpp}.}]
+btScalar mass = 1.0f;                       // 1 kg
+btVector3 localInertia(0, 0, 0);
+// para uma esfera maciça: I = (2/5) * m * r²
+sphereShape->calculateLocalInertia(mass, localInertia);
+\end{lstlisting}
+
+\begin{regra}[a ordem de destruição é obrigação sua]
+O Bullet não tem \emph{smart pointers} nem coletor de lixo, e a ordem importa:
+remover os corpos do mundo, depois deletar corpos, \emph{motion states} e
+\emph{shapes}, e só então o mundo e os quatro subsistemas. Deletar o mundo antes
+dos corpos é acesso a memória inválida. Esta é uma das poucas situações do
+repositório em que \texttt{new} e \texttt{delete} crus aparecem em código de
+aplicação --- e a razão de os subprojetos seguintes envolverem tudo isso numa
+classe \texttt{PhysicsWorld} (\cref{sec:sfml-bullet}). Guarde a ressalva: a
+\cref{sec:sfml-bullet-raii} mostra, com \emph{sanitizer} e tudo, que envolver em
+\classe{std::unique\_ptr} \textbf{não} resolve o problema sozinho --- apenas o
+move para um lugar mais silencioso.
+\end{regra}
+
+\subsubsection{Por que o passo de tempo é fixo por dentro}
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Os três argumentos, e o que cada um controla.}]
+// stepSimulation(timeStep, maxSubSteps, fixedTimeStep):
+//   - fixedTimeStep: dt interno para estabilidade numérica (padrão 1/60)
+//   - maxSubSteps: se timeStep > fixedTimeStep, subdivide (até maxSubSteps vezes)
+//   - passando maxSubSteps=1 e dt=fixedTimeStep → determinístico
+world->stepSimulation(dt, 1, dt);
+\end{lstlisting}
+
+\begin{porque}[o integrador diverge se o passo varia]
+Motores de física de jogo usam integradores explícitos, cuja estabilidade
+depende do tamanho do passo. Um quadro que demore o dobro do esperado ---
+porque o sistema operacional escalonou outra coisa, porque houve uma pausa do
+coletor da GPU --- produziria um salto grande demais, e corpos atravessariam
+paredes. A solução do Bullet é aceitar um $dt$ variável do mundo externo e
+subdividi-lo internamente em passos fixos. É por isso que uma simulação com
+\texttt{maxSubSteps} maior que 1 \textbf{não é determinística}: o número de
+subpassos depende do relógio.
+\end{porque}
+
+\subsubsection{O que a execução realmente imprime}
+\label{sec:collision-medido}
+
+Este livro mede em vez de afirmar, e a primeira medição já contraria a
+documentação do próprio subprojeto.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída real de \texttt{./build/src/collision/main} (linhas selecionadas).}]
+  step    time (s)         y (m)      vy (m/s)
+----------------------------------------------
+     0       0.000       10.0000       -0.1635
+    10       0.167        9.8501       -1.7985
+    40       0.667        7.7655       -6.7035
+    80       1.333        1.1710      -13.2435
+    90       1.500        1.5773       +3.2962
+   110       1.833        2.1582       +0.0262
+   140       2.333        0.9859       +1.8662
+   170       2.833        1.0000        0.0000
+\end{lstlisting}
+
+Cinco leituras que a tabela permite, e que nenhuma delas é óbvia:
+
+\begin{enumerate}
+  \item \textbf{O passo 0 já não tem velocidade zero.} O laço chama
+        \texttt{stepSimulation} \emph{antes} de imprimir, então a linha rotulada
+        ``passo 0'' é o estado \emph{depois} do primeiro passo. E
+        $-0{,}1635 = -9{,}81 \times \tfrac{1}{60}$, exatamente um passo de
+        gravidade. O \texttt{README.md} do subprojeto prevê
+        \texttt{0.0000} nessa célula --- e está errado.
+  \item \textbf{O repouso é em $y = 1$, não em $y = 0$.} A posição de um corpo é
+        a do seu centro de massa, e a esfera tem raio 1~m. Quem espera zero está
+        confundindo o centro com a superfície.
+  \item \textbf{O quique perde 40\% da velocidade.} A esfera chega ao contato a
+        cerca de $-13{,}6$~m/s e sai a cerca de $+8{,}2$~m/s: a restituição 0,6
+        multiplica a velocidade normal, não a energia (a energia cai por
+        $0{,}6^2 = 36\%$ do valor original).
+  \item \textbf{O terceiro quique some.} Entre os passos 140 e 170 a amplitude
+        colapsa: com restituição 0,6 cada quique tem $36\%$ da altura anterior, e
+        depois de três quiques a altura já é menor que a tolerância de
+        penetração do \emph{solver}.
+  \item \textbf{A última linha é exatamente $1{,}0000$ e $0{,}0000$.} Não é
+        coincidência nem arredondamento: o Bullet \textbf{adormece} corpos cuja
+        velocidade fica abaixo de um limiar por tempo suficiente
+        (\emph{deactivation}), zerando as velocidades e parando de integrá-los.
+        É uma otimização, e é também a explicação para o bug clássico ``meu
+        corpo não reage quando eu empurro'': é preciso chamar
+        \texttt{body->activate(true)} antes de aplicar um impulso --- exatamente
+        o que o \emph{ragdoll} da \cref{sec:sfml-bullet2} faz.
+\end{enumerate}
+
+\begin{armadilha}[a saída ``esperada'' de um README não é uma medição]
+O \texttt{README.md} deste subprojeto traz uma tabela de saída com
+\texttt{vy = 0.0000} no passo 0 e o quique acontecendo por volta de
+\texttt{y = 0.9}. Nenhum dos dois números aparece na execução. Documentação
+escrita ``de cabeça'' envelhece pior que código, porque nada a compila. A regra
+prática deste livro: se um número aparece num texto, ele veio de uma execução, e
+a legenda diz de qual.
+\end{armadilha}
+
+\subsubsection{Duas leituras diferentes da mesma posição}
+\label{sec:collision-interpolacao}
+
+Fica um enigma na tabela: no passo 0 a velocidade já é $-0{,}1635$~m/s, mas a
+posição ainda é \texttt{10.0000}. Se o corpo tem velocidade, ele deveria ter
+descido. A explicação é o adjetivo guardado lá atrás: \texttt{getMotionState()}
+devolve a transformação \textbf{interpolada}, e não a transformação do corpo.
+
+Uma instrumentação mínima --- o mesmo cenário, imprimindo as duas leituras lado a
+lado e comparando com a queda livre analítica $y(t) = 10 - \tfrac{1}{2}gt^2$ ---
+separa os três valores:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Medição comparando \texttt{motionState}, \texttt{btRigidBody::getWorldTransform} e a solução analítica.}]
+step          t         ms.y       body.y     freefall
+   0     0.0000     10.00000      9.99728      9.99864
+  10     0.1667      9.85013      9.82015      9.83514
+  20     0.3333      9.42775      9.37053      9.39914
+  30     0.5000      8.73287      8.64840      8.69064
+\end{lstlisting}
+
+Duas diferenças, e ambas fecham na terceira casa decimal:
+
+\begin{itemize}
+  \item \textbf{\texttt{ms.y} menos \texttt{body.y}} vale $0{,}08447$~m no passo
+        30. A velocidade ali é $-5{,}069$~m/s, e
+        $0{,}08447 / 5{,}069 = 0{,}01666$~s --- \textbf{exatamente um $dt$}. O
+        \emph{motion state} está sempre um passo atrás do corpo: ele é a posição
+        que o renderizador deve desenhar, não a que o \emph{solver} está usando.
+  \item \textbf{\texttt{body.y} menos a queda livre} vale $-0{,}04224$~m no
+        passo 30 --- o corpo caiu \emph{mais} que a fórmula. Isso é o viés
+        conhecido do integrador de Euler semi-implícito (simplético), que
+        atualiza a velocidade antes da posição e acumula um erro
+        $\tfrac{1}{2}g\,dt\,t$. Substituindo:
+        $0{,}5 \times 9{,}81 \times 0{,}016667 \times 0{,}51667 = 0{,}04224$.
+        O erro previsto e o erro medido coincidem em cinco casas.
+\end{itemize}
+
+\begin{regra}[escolha a leitura conforme o consumidor]
+Use \texttt{getMotionState()->getWorldTransform()} para \textbf{desenhar}: é a
+posição suavizada, e é o que evita tremor quando a taxa de quadros não é
+múltipla do passo físico. Use
+\texttt{body->getWorldTransform()} para \textbf{decidir}: \emph{raycast},
+lógica de jogo, gravação em CSV, teste automatizado. Misturar as duas produz um
+sistema em que o que se vê e o que se testa discordam por um quadro --- e um
+quadro é suficiente para uma bala passar por uma parede.
+\end{regra}
+
+\begin{armadilha}[dois alvos com o mesmo nome disputam \texttt{dist/bin}]
+Uma medição colateral, e desconfortável. O alvo do \projeto{collision} chama-se
+\texttt{main}, e o do \texttt{src/sandbox} também:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={\texttt{ninja -C build -t targets all | grep main}}]
+src/collision/main: cpp_LINKER
+src/sandbox/main:   cpp_LINKER
+\end{lstlisting}
+
+O Meson aceita os dois --- eles vivem em diretórios de \emph{build} distintos ---
+mas ambos declaram \texttt{install: true}, e a instalação copia os dois para
+\texttt{dist/bin/main}. Quem vencer a corrida fica. Rodando
+\texttt{./dist/bin/main} hoje sai o demo de JSON do \texttt{sandbox}, não a
+simulação de queda livre; para ver a queda é preciso executar
+\texttt{./build/src/collision/main}. \textbf{Dê ao alvo o nome do subprojeto}, não
+o nome do arquivo: \texttt{executable('collision', \ldots)}. Nomear alvos como
+arquivos é a maneira mais fácil de criar uma colisão de \emph{namespace} num
+diretório de instalação plano.
+\end{armadilha}
+
+% =============================================================================
+\subsection{Renderizando a física}
+\label{sec:sfml-bullet}
+% =============================================================================
+
+O subprojeto \projeto{sfml\_bullet} acrescenta ao anterior uma janela SFML,
+interação por mouse e um \emph{game loop}. E acrescenta também os quatro
+problemas que aparecem sempre que física e desenho se encontram --- três deles
+resolvidos no código, e um deles ainda aberto e mensurável.
+
+A separação de responsabilidades é a de sempre, e vale enunciá-la antes do
+código: \texttt{PhysicsWorld} (em \texttt{physics\_world.hpp/cpp}) não conhece o
+SFML; \texttt{Simulation} (em \texttt{simulation.hpp/cpp}) não conhece o Bullet
+a não ser através de \texttt{BodyHandle}. Tudo o que atravessa a fronteira são
+dois \emph{aggregates}: \texttt{BodyDef} na ida e \texttt{BodyHandle} na volta.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Os dois tipos de vocabulário da fronteira --- \texttt{src/sfml\_bullet/physics\_world.hpp}.}]
+enum class ShapeType { Sphere, Box };
+
+struct BodyDef {          // o que a camada visual PEDE
+    ShapeType type;
+    float     x, y;       // posição inicial em METROS
+    float     half_extent;// raio, ou meia-aresta da caixa
+    float     mass;       // 0 = estático
+    float     restitution;// elasticidade [0, 1]
+    float     friction;
+};
+
+struct BodyHandle {       // o que a camada de física DEVOLVE
+    btRigidBody*      body;
+    btCollisionShape* shape;
+    ShapeType         type;
+    float             half_extent;
+};
+\end{lstlisting}
+
+\subsubsection{Problema 1: um motor 3D fazendo física 2D}
+
+Bullet não tem modo 2D. A solução é restringir os graus de liberdade por corpo,
+e são duas linhas:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O detalhe mais importante do subprojeto.}]
+body->setLinearFactor(btVector3(1, 1, 0));   // só se move em X e Y
+body->setAngularFactor(btVector3(0, 0, 1));  // só rota em torno de Z
+\end{lstlisting}
+
+Os dois vetores são multiplicadores aplicados à velocidade a cada passo:
+um zero em $Z$ significa ``qualquer velocidade que apareça neste eixo é
+descartada''. O resultado é comportamento perfeitamente bidimensional com a
+qualidade do \emph{solver} 3D. As caixas continuam sendo \texttt{btBoxShape}
+tridimensionais --- apenas nunca saem do plano.
+
+\begin{armadilha}[o fator não é uma restrição de posição]
+\texttt{setLinearFactor} zera a \emph{velocidade} em $Z$, não a \emph{posição}.
+Um corpo criado com $z \neq 0$, ou empurrado para fora do plano por uma
+penetração resolvida pelo \emph{solver}, fica lá para sempre --- ele apenas
+para de acelerar naquele eixo. Crie tudo com $z = 0$ e não confie no fator para
+consertar geometria inicial errada.
+\end{armadilha}
+
+\subsubsection{Problema 2: dois sistemas de coordenadas incompatíveis}
+
+Bullet mede em metros, com $Y$ crescendo para \emph{cima} e a origem onde você
+quiser. SFML mede em pixels, com $Y$ crescendo para \emph{baixo} e a origem no
+canto superior esquerdo. A conversão precisa de uma escala e de uma inversão:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={As três constantes e as duas funções --- \texttt{src/sfml\_bullet/simulation.hpp}.}]
+constexpr float SCALE    = 80.f;   // 1 metro Bullet = 80 pixels SFML
+constexpr float OFFSET_X = 400.f;  // x = 0 (Bullet) cai no meio da janela
+constexpr float OFFSET_Y = 550.f;  // y = 0 (Bullet) cai 50 px acima da borda
+
+inline sf::Vector2f to_sfml(float bx, float by) {
+    return { bx * SCALE + OFFSET_X, -by * SCALE + OFFSET_Y };
+}
+inline sf::Vector2f to_bullet(float sx, float sy) {
+    return { (sx - OFFSET_X) / SCALE, -(sy - OFFSET_Y) / SCALE };
+}
+\end{lstlisting}
+
+Com uma janela de $800 \times 600$ pixels e 80 pixels por metro, o mundo visível
+mede $10 \times 7{,}5$ metros: $x \in [-5, +5]$ e
+$y \in [-0{,}625,\; +6{,}875]$. Vale fazer essa conta uma vez e anotá-la: ela é
+a régua com que qualquer posição do código passa a ser conferida.
+
+\begin{regra}[a escala é uma decisão de simulação, não de apresentação]
+O Bullet é ajustado para objetos de escala humana --- entre alguns centímetros e
+algumas dezenas de metros. Modelar um personagem com um metro de altura como um
+corpo de \emph{oitenta} unidades (isto é, trabalhar em pixels) degrada a
+estabilidade do \emph{solver}: os limites de tolerância, a penetração permitida
+e o amortecimento padrão são todos calibrados para metros. Simule em metros e
+converta na hora de desenhar --- nunca o contrário.
+\end{regra}
+
+\subsubsection{Problema 3: o quadro lento}
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O \emph{clamp}, em \texttt{Simulation::update} --- e o passo, em \texttt{PhysicsWorld::step}.}]
+void Simulation::update(float dt) {
+    if (paused_) return;
+    float clamped = std::min(dt, 0.05f);  // no máximo 50 ms por quadro
+    physics_.step(clamped);
+    sync_entities();
+}
+
+void PhysicsWorld::step(float dt) {
+    world_->stepSimulation(dt, 10, 1.f / 60.f);
+}
+\end{lstlisting}
+
+Sem o \texttt{clamp}, uma pausa de dois segundos --- o usuário arrastou a janela,
+o sistema entrou em suspensão --- pediria ao Bullet 120 subpassos de uma vez.
+Cada subpasso custa tempo real, e se ele custar mais do que o tempo que
+representa, o próximo quadro chega ainda mais atrasado e pede ainda mais
+subpassos: é a \emph{spiral of death}. Limitar o $dt$ significa que a simulação
+``perde tempo'' em vez de tentar recuperá-lo: um compromisso quase sempre
+correto em aplicação interativa, e quase sempre errado em simulação
+determinística (\cref{sec:flight-simulator}).
+
+Repare também no teto implícito: com \texttt{maxSubSteps = 10} e
+\texttt{fixedTimeStep = 1/60}, o Bullet consome no máximo $10/60 = 0{,}1667$~s
+por chamada. Qualquer $dt$ acima disso é \textbf{silenciosamente descartado} ---
+o \emph{clamp} de 50~ms apenas garante que nunca se chega perto desse limite.
+
+\subsubsection{Problema 4: a física e o desenho discordam em 392 pixels}
+\label{sec:sfml-bullet-geometria}
+
+Este é o problema que o subprojeto \emph{não} resolve, e é o mais instrutivo dos
+quatro. \texttt{PhysicsWorld::add\_body} constrói caixas assim:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Uma só medida para os três eixos --- \texttt{src/sfml\_bullet/physics\_world.cpp}.}]
+shape = std::make_unique<btBoxShape>(
+    btVector3(def.half_extent, def.half_extent, def.half_extent)
+);
+\end{lstlisting}
+
+\texttt{BodyDef} tem um único campo \texttt{half\_extent}, e ele é aplicado aos
+três eixos. Logo, \textbf{toda caixa deste subprojeto é um cubo}. Agora leia o
+chão que \texttt{Simulation::create\_boundaries()} cria: centro em
+$(0,\,-0{,}5)$ e \texttt{half\_extent} $= 5{,}1$ --- ``10,2 m de largura para
+cobrir a tela''. A largura sai correta; a altura também sai 10,2~m. O topo do
+``chão'' não está em $y \approx 0$: está em $-0{,}5 + 5{,}1 = 4{,}6$~m.
+
+Uma reprodução mínima, sem SFML, com as três fronteiras exatamente como o código
+as cria e uma esfera de 0,3~m solta do alto da área visível:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Reprodução dirigida da geometria de \texttt{create\_boundaries()}, 600 passos a 60~Hz.}]
+esfera repousa em y = 4.9000 m  -> pixel 158.0 (chao desenhado em 550 px)
+topo do 'chao' fisico: y = 4.60 m -> pixel 182.0
+face interna da parede esq.: x = -4.60 m -> pixel 32.0 (parede desenhada em 0..12 px)
+\end{lstlisting}
+
+A esfera para em $y = 4{,}90$~m, ou seja, no pixel 158. O retângulo cinza que
+representa o chão é desenhado em \texttt{ground.setPosition(-5.f, 550.f)}:
+pixel 550. \textbf{A diferença é de 392 pixels}, quase dois terços da altura da
+janela. As paredes têm o mesmo problema em menor escala: a face interna da
+parede esquerda fica no pixel 32, e o retângulo é pintado de 0 a 12.
+
+\begin{armadilha}[o motor não sabe o que você desenhou]
+Não existe nada no Bullet, no SFML ou no compilador capaz de detectar essa
+divergência: são dois conjuntos de números que ninguém obriga a concordar. As
+três defesas, em ordem de eficácia:
+\begin{enumerate}
+  \item \textbf{Desenhe a partir do corpo físico}, nunca de constantes
+        paralelas. O retângulo do chão deveria sair da AABB do corpo estático,
+        pela mesma função \texttt{to\_sfml} que posiciona as esferas.
+  \item \textbf{Ative o \emph{debug drawer}} do Bullet
+        (\texttt{btIDebugDraw} + \texttt{world->debugDrawWorld()}): ele desenha
+        a geometria de colisão \emph{real}, e um chão 392~px fora do lugar
+        aparece no primeiro quadro.
+  \item \textbf{Dê ao \texttt{BodyDef} três meias-extensões} em vez de uma. O
+        campo único não é uma simplificação inofensiva: ele torna impossível
+        expressar a forma que o subprojeto precisa.
+\end{enumerate}
+\end{armadilha}
+
+\subsubsection{RAII sobre uma API que não o oferece --- e o que ele não conserta}
+\label{sec:sfml-bullet-raii}
+
+O \texttt{PhysicsWorld} deste subprojeto resolve o problema de gestão de memória
+da \cref{sec:collision} pela via idiomática: cada ponteiro criado vira um
+\classe{std::unique\_ptr} guardado num membro, e a destruição acontece sozinha.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A ordem de \emph{declaração} passa a ser a ordem de destruição --- \texttt{src/sfml\_bullet/physics\_world.hpp}.}]
+class PhysicsWorld {
+public:
+    PhysicsWorld(PhysicsWorld&&)            = default;   // <<< guarde esta linha
+    PhysicsWorld& operator=(PhysicsWorld&&) = default;   // <<< e esta
+    ~PhysicsWorld();
+private:
+    std::unique_ptr<btDefaultCollisionConfiguration>     config_;
+    std::unique_ptr<btCollisionDispatcher>               dispatcher_;
+    std::unique_ptr<btDbvtBroadphase>                    broadphase_;
+    std::unique_ptr<btSequentialImpulseConstraintSolver> solver_;
+    std::unique_ptr<btDiscreteDynamicsWorld>             world_;
+
+    std::vector<std::unique_ptr<btRigidBody>>          rigid_bodies_;
+    std::vector<std::unique_ptr<btDefaultMotionState>> motion_states_;
+    std::vector<std::unique_ptr<btCollisionShape>>     shapes_;
+};
+\end{lstlisting}
+
+\begin{porque}[por que a ordem de declaração é uma decisão de projeto]
+Os membros de uma classe são destruídos na \textbf{ordem inversa da
+declaração}. Aqui isso funciona a favor: \texttt{world\_} é declarado depois de
+\texttt{config\_}, \texttt{dispatcher\_}, \texttt{broadphase\_} e
+\texttt{solver\_}, e portanto é destruído \emph{antes} deles --- que é o que o
+Bullet exige, já que o destrutor do mundo ainda usa a \emph{broadphase} e o
+despachante para limpar os \emph{proxies}. Escrever os cinco \texttt{unique\_ptr}
+na ordem errada não gera aviso nenhum e produz um \emph{crash} no encerramento.
+A ordem de declaração de membros é, nesta classe, código executável.
+\end{porque}
+
+E então vem o resto da história. A tecla \texttt{R} do subprojeto reinicia a
+cena assim:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O reset, em \texttt{Simulation::handle\_events} --- \texttt{src/sfml\_bullet/simulation.cpp}.}]
+if (ev.key.code == sf::Keyboard::R) {
+    physics_  = PhysicsWorld{};   // move-assign: destrói o mundo antigo
+    entities_.clear();
+    circles_.clear();
+    rects_.clear();
+    create_boundaries();
+}
+\end{lstlisting}
+
+A atribuição por movimento gerada por \texttt{= default} é
+\textbf{membro a membro, na ordem de declaração}, e cada
+\texttt{unique\_ptr::operator=} destrói o objeto antigo \emph{naquele instante}.
+Ou seja: o \texttt{config\_} antigo morre primeiro, depois o
+\texttt{dispatcher\_}, depois a \texttt{broadphase\_}, e o \texttt{world\_}
+antigo morre por \textbf{último} --- a ordem exatamente oposta à que o destrutor
+tanto se esforçou para garantir. O destrutor, aliás, nem chega a rodar: uma
+atribuição não invoca \texttt{\~{}PhysicsWorld}, então os corpos nunca são
+removidos do mundo.
+
+Uma reprodução dirigida sob \emph{AddressSanitizer}, com a mesma ordem de
+membros e um único corpo no mundo, confirma:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={\texttt{g++ -fsanitize=address}; a linha 37 é o \texttt{p = PW\{\}}.}]
+antes do reset
+AddressSanitizer:DEADLYSIGNAL
+ERROR: AddressSanitizer: SEGV on unknown address 0x0000000000b4
+The signal is caused by a READ memory access.
+    #0 btCollisionWorld::~btCollisionWorld() btCollisionWorld.cpp:89
+    #2 btDiscreteDynamicsWorld::~btDiscreteDynamicsWorld()
+    #5 std::__uniq_ptr_impl<btDiscreteDynamicsWorld, ...>::reset(...)
+    #9 PW::operator=(PW&&)
+   #10 main mv.cpp:37
+\end{lstlisting}
+
+A linha 89 de \texttt{btCollisionWorld.cpp} é
+\texttt{getBroadphase()->destroyProxy(bp, m\_dispatcher1)} --- a
+\emph{broadphase} já foi liberada três membros antes.
+
+\begin{armadilha}[\texttt{= default} num tipo com dependências entre membros]
+\classe{std::unique\_ptr} garante que \emph{cada} recurso é liberado uma vez.
+Ele não sabe nada sobre a \textbf{ordem relativa} em que os recursos podem ser
+liberados, e não tem como saber: essa informação está na documentação do Bullet,
+não no sistema de tipos. Quando os membros de uma classe têm dependências de
+tempo de vida entre si, \texttt{= default} para mover é um erro por omissão:
+\begin{itemize}
+  \item se o tipo não precisa ser movível --- e este não precisa ---, escreva
+        \texttt{PhysicsWorld(PhysicsWorld\&\&) = delete;} e deixe o compilador
+        recusar o \texttt{physics\_ = PhysicsWorld\{\}} em tempo de compilação;
+  \item se precisa mesmo ser movível, escreva as operações à mão, liberando na
+        mesma ordem do destrutor;
+  \item ou dê ao objeto um método \texttt{reset()} explícito, que é o que a
+        tecla \texttt{R} realmente queria.
+\end{itemize}
+A pista estava à vista o tempo todo: uma classe que declara destrutor
+\emph{e} pede \texttt{= default} para as operações de movimento está anunciando
+que gerencia recursos e, ao mesmo tempo, delegando ao compilador a única parte
+que exigia julgamento.
+\end{armadilha}
+
+\subsubsection{Da orientação do Bullet ao ângulo do SFML}
+
+A sincronização física $\rightarrow$ visual tem uma sutileza na rotação. O Bullet
+guarda orientação como \emph{quaternion}; o SFML quer um ângulo em graus, no
+sentido horário.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={As duas inversões de sinal --- \texttt{Simulation::sync\_entities}.}]
+btScalar  angle = t.getRotation().getAngle();  // sempre >= 0
+btVector3 axis  = t.getRotation().getAxis();
+
+float angle_deg = static_cast<float>(angle) * (180.f / 3.14159f);
+if (axis.getZ() < 0.f) angle_deg = -angle_deg;  // 1: eixo pode ser -Z
+e.visual->setRotation(-angle_deg);              // 2: SFML gira ao contrário
+\end{lstlisting}
+
+\begin{armadilha}[\texttt{getAngle()} nunca devolve ângulo negativo]
+Um quaternion representa a rotação de $\theta$ em torno de $\hat{n}$ e a de
+$-\theta$ em torno de $-\hat{n}$ com o mesmo par de valores até o sinal.
+\texttt{btQuaternion::getAngle()} devolve sempre a magnitude, no intervalo
+$[0, \pi]$; o sinal está no eixo. Quem esquece a consulta a
+\texttt{getAxis().getZ()} vê o objeto girar sempre para o mesmo lado. E a
+segunda inversão é independente da primeira: no SFML o eixo $Y$ aponta para
+baixo, o que troca o sentido positivo de rotação. Duas convenções, dois sinais,
+e nenhum aviso do compilador --- a mesma classe de erro do
+\cref{sec:sfml-bullet-geometria}, em outro grau de liberdade.
+\end{armadilha}
+
+% =============================================================================
+\subsection{Constraints, \emph{ragdoll} e corpos deformáveis}
+\label{sec:sfml-bullet2}
+% =============================================================================
+
+O subprojeto \projeto{sfml\_bullet2} acrescenta o que faltava para modelar algo
+articulado --- as \emph{constraints} --- e, junto, algo que nenhum corpo rígido
+consegue ser: uma corda que se deforma.
+
+\begin{porque}[um corpo rígido não dobra, e o mundo é cheio de coisas que dobram]
+Todo o \cref{sec:collision} tratou de objetos cuja forma é constante. Uma porta,
+um braço, uma corrente e um cabo não são isso. Há duas maneiras de chegar lá, e
+o subprojeto usa as duas: (i) manter os corpos rígidos e \textbf{limitar o
+movimento relativo} entre eles com restrições --- é o \emph{ragdoll}; ou
+(ii) trocar o corpo rígido por uma malha de partículas ligadas por molas --- é o
+\emph{soft body}, e é a corda. A primeira é barata e controlável; a segunda é
+cara e expressiva.
+\end{porque}
+
+\subsubsection{Grau de liberdade: o conceito que organiza tudo}
+
+Dois corpos livres no espaço têm doze graus de liberdade --- seis cada um (três
+de translação, três de rotação). Uma \emph{constraint} é uma equação que
+\textbf{remove} alguns desses graus. O que sobra é o nome da junta.
+
+\begin{table}[htbp]
+\centering
+\caption{As três \emph{constraints} do vocabulário do Bullet, e o que cada uma modela.}
+\label{tab:constraints}
+\footnotesize
+\begin{tabular}{@{}llp{0.36\textwidth}@{}}
+\toprule
+\textbf{Constraint} & \textbf{DOF relativos} & \textbf{Modela} \\
+\midrule
+\texttt{btHingeConstraint}      & 1 (dobradiça)     & joelho, cotovelo, porta \\
+\texttt{btConeTwistConstraint}  & 3 (cone + torção) & ombro, quadril, pescoço \\
+\texttt{btPoint2PointConstraint}& 3 (livre)         & elo de corrente, pêndulo \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O \texttt{btConeTwistConstraint} merece a explicação completa, porque é o único
+que o subprojeto de fato usa. Ele fixa a posição relativa (remove os três graus
+de translação) e limita os três de rotação por três ângulos:
+
+\begin{itemize}
+  \item \texttt{swingSpan1} --- abertura máxima do cone num plano;
+  \item \texttt{swingSpan2} --- abertura máxima no plano perpendicular;
+  \item \texttt{twistSpan} --- torção em torno do próprio eixo do ``osso''.
+\end{itemize}
+
+A imagem correta é um cone: o eixo do membro pode apontar para qualquer direção
+\emph{dentro} de um cone elíptico de aberturas \texttt{swingSpan1} e
+\texttt{swingSpan2}, e pode girar em torno de si mesmo até \texttt{twistSpan}.
+
+\subsubsection{O \emph{ragdoll} medido, e o README que mente}
+
+O \emph{ragdoll} é um grafo: corpos como nós, juntas como arestas. Vale ler o
+código antes de acreditar em qualquer descrição dele.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A enumeração inteira --- \texttt{src/sfml\_bullet2/ragdoll.hpp}.}]
+struct Ragdoll {
+    enum Segment { TORSO=0, HEAD, ARM_L, ARM_R, LEG_L, LEG_R, COUNT };
+    btRigidBody* bodies[COUNT] = {};
+    void build(PhysicsWorld& pw, float cx, float cy);
+    void apply_impulse(const btVector3& impulse, const btVector3& origin);
+};
+\end{lstlisting}
+
+São \textbf{seis} segmentos, não sete: torso, cabeça, dois braços e duas pernas
+--- \texttt{COUNT} vale 6. E as juntas construídas em \texttt{ragdoll.cpp} são
+cinco, \textbf{todas \texttt{btConeTwistConstraint}}: pescoço, dois ombros e dois
+quadris (\cref{tab:ragdoll-juntas}). Não há um único
+\texttt{btHingeConstraint} no subprojeto --- não há cotovelo nem joelho, porque
+não há antebraço nem canela para dobrar.
+
+\begin{table}[htbp]
+\centering
+\caption{Os limites angulares de fato programados em \texttt{ragdoll.cpp},
+         convertidos de radianos para graus.}
+\label{tab:ragdoll-juntas}
+\footnotesize
+\begin{tabular}{@{}lrrrl@{}}
+\toprule
+\textbf{Junta} & \textbf{swing1} & \textbf{swing2} & \textbf{twist} & \textbf{Observação} \\
+\midrule
+pescoço  & $27^\circ$ & $27^\circ$ & $18^\circ$ & mais \texttt{setDamping(0.3f)} \\
+ombros   & $90^\circ$ & $90^\circ$ & $72^\circ$ & os mais livres \\
+quadris  & $54^\circ$ & $54^\circ$ & $18^\circ$ & torção quase travada \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Os números contam a anatomia sozinhos: o ombro é a junta mais livre do corpo, o
+quadril tem quase a mesma abertura mas quase nenhuma torção, e o pescoço mal se
+mexe. Sintonizar um \emph{ragdoll} é, em boa medida, mexer nesses nove números
+até que as poses impossíveis parem de acontecer.
+
+\begin{armadilha}[o README descreve um cotovelo que não existe]
+O \texttt{README.md} do \projeto{sfml\_bullet2} e os comentários no topo de
+\texttt{ragdoll.hpp} descrevem \texttt{btHingeConstraint} com limite de
+$-45^\circ$ a $+90^\circ$ para cotovelo e joelho, e uma corda feita de cápsulas
+ligadas por \texttt{btPoint2PointConstraint}. Nenhuma das duas coisas está no
+código. Documentação e comentário de cabeçalho não são compilados; a única
+descrição de um programa que não pode divergir dele é o próprio programa. Ao
+estudar um subprojeto deste repositório --- ou de qualquer outro --- comece pelo
+\texttt{.cpp}, e use o README para descobrir a \emph{intenção}, não o
+\emph{estado}.
+\end{armadilha}
+
+\subsubsection{Duas linhas fáceis de esquecer}
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O último argumento de \texttt{addConstraint}, e o despertar antes do impulso.}]
+world->addConstraint(c, true);   // true = desativa colisão entre os dois corpos
+
+// ... e em Ragdoll::apply_impulse:
+bodies[i]->activate(true);       // sem isto, um corpo adormecido ignora o impulso
+float scale = 1.f / (1.f + dist * dist * 0.5f);   // atenuação quadrática
+bodies[i]->applyCentralImpulse(impulse * scale);
+\end{lstlisting}
+
+\begin{armadilha}[corpos ligados precisam ignorar-se mutuamente]
+O \emph{disable collision between linked bodies} não é otimização: dois corpos
+unidos por uma junta se \emph{sobrepõem por construção} --- o braço encosta no
+torso. Sem o \texttt{true}, o \emph{solver} de colisão empurra os dois para
+longe enquanto a \emph{constraint} os puxa de volta, a cada iteração de
+Gauss-Seidel. O resultado é tremor; em cadeias longas, divergência numérica.
+E o \texttt{activate(true)} é o outro lado da moeda da \emph{deactivation}
+medida na \cref{sec:collision-medido}: um \emph{ragdoll} parado há três segundos
+está dormindo, e uma explosão que não o acorda simplesmente não acontece.
+\end{armadilha}
+
+\subsubsection{A corda é um \emph{soft body}, e o mundo muda por causa dela}
+
+Aqui está a diferença arquitetural mais importante entre o \projeto{sfml\_bullet}
+e o \projeto{sfml\_bullet2}, e ela não está na corda: está no \emph{mundo}.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Três trocas de tipo, e um bloco de parâmetros extra --- \texttt{src/sfml\_bullet2/physics\_world.cpp}.}]
+// btDefaultCollisionConfiguration           → só rigid-rigid
+// btSoftBodyRigidBodyCollisionConfiguration → rigid-rigid, rigid-soft, soft-soft
+config_ = std::make_unique<btSoftBodyRigidBodyCollisionConfiguration>();
+...
+// btDiscreteDynamicsWorld → btSoftRigidDynamicsWorld
+world_ = std::make_unique<btSoftRigidDynamicsWorld>(
+    dispatcher_.get(), broadphase_.get(), solver_.get(), config_.get());
+
+// o solver de soft body não recebe o mundo: ele lê deste bloco compartilhado
+soft_info_.m_broadphase = broadphase_.get();
+soft_info_.m_dispatcher = dispatcher_.get();
+soft_info_.m_gravity    = btVector3(0.f, -9.81f, 0.f);
+soft_info_.m_sparsesdf.Initialize();
+\end{lstlisting}
+
+\begin{armadilha}[a gravidade precisa ser escrita duas vezes]
+\texttt{world\_->setGravity(...)} governa os corpos rígidos;
+\texttt{soft\_info\_.m\_gravity} governa os \emph{soft bodies}. São dois campos
+distintos e o Bullet não os sincroniza. Esquecer o segundo produz uma corda que
+flutua enquanto tudo o mais cai --- e o sintoma é tão estranho que ninguém
+suspeita da gravidade. O \texttt{m\_sparsesdf.Initialize()} é igualmente
+obrigatório: é o campo de distância assinada usado na colisão soft-rigid, e sem
+ele a corda atravessa o chão.
+\end{armadilha}
+
+Com o mundo certo, a corda cabe em poucas linhas --- e cada linha é um parâmetro
+de material que vale conhecer:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A corda inteira --- \texttt{src/sfml\_bullet2/rope.cpp}.}]
+body = btSoftBodyHelpers::CreateRope(
+    pw.soft_info(),
+    btVector3(x0, y0, 0.f), btVector3(x1, y1, 0.f),
+    segments,
+    1);                     // bitmask de âncoras: 1 = nó 0, 2 = último, 3 = ambos
+
+btSoftBody::Material* mat = body->m_materials[0];
+mat->m_kLST = 0.8f;         // Linear Stiffness: resistência ao alongamento [0,1]
+mat->m_kAST = 0.5f;         // Angular Stiffness: resistência à curvatura
+
+body->m_cfg.kDP  = 0.05f;   // damping do movimento dos nós
+body->m_cfg.kDG  = 0.01f;   // drag: arrasto do ar
+body->m_cfg.kSHR = 1.0f;    // shear stiffness
+body->m_cfg.kCHR = 1.0f;    // rigid contact hardness
+
+body->setTotalMass(1.0f, true);        // 1 kg distribuído pelos nós
+body->generateBendingConstraints(2);   // links de 2ª ordem: resiste a dobrar
+
+if (attach) {                          // amarra a ponta a um corpo rígido
+    int last = body->m_nodes.size() - 1;
+    body->appendAnchor(last, attach, false, 1.0f);
+}
+\end{lstlisting}
+
+O modelo por trás disso é simples de enunciar: um \emph{soft body} é um conjunto
+de \textbf{nós} com massa, ligados por \textbf{links} que se comportam como molas
+rígidas. \texttt{kLST} próximo de 1 faz os links quase inextensíveis;
+\texttt{kLST} próximo de 0 faz uma tira de borracha.
+\texttt{generateBendingConstraints(2)} acrescenta links entre nós \emph{não
+adjacentes} (a dois de distância), e é isso que dá à corda resistência a dobrar
+--- sem eles ela se comportaria como uma corrente frouxa.
+
+\begin{armadilha}[um \emph{soft body} não obedece a \texttt{setLinearFactor}]
+\texttt{setLinearFactor} e \texttt{setAngularFactor} são métodos de
+\texttt{btRigidBody}. Um \texttt{btSoftBody} não os tem: seus nós se movem
+livremente nos três eixos. A corda deste subprojeto fica no plano apenas porque
+é \emph{criada} com $z = 0$ nas duas pontas e a gravidade só age em $Y$ --- e
+sairá do plano no instante em que colidir de raspão com um corpo rígido. Num
+mundo ``2D'' construído sobre um motor 3D, cada tipo novo de objeto precisa da
+sua própria resposta para a pergunta ``o que o mantém no plano?''.
+\end{armadilha}
+
+\begin{armadilha}[quem cria com \texttt{new} continua devendo o \texttt{delete}]
+\texttt{btSoftBodyHelpers::CreateRope} devolve um \texttt{btSoftBody*} alocado
+com \texttt{new}, e \texttt{PhysicsWorld::add\_soft} apenas o registra no mundo
+--- não guarda \emph{ownership} nenhum. \texttt{removeSoftBody} desregistra, mas
+não destrói. O \emph{ragdoll} tem o mesmo padrão nas \emph{constraints}: os cinco
+\texttt{new btConeTwistConstraint} não têm \texttt{delete} correspondente. Repare
+no contraste com os corpos rígidos, que passam por \texttt{take\_shape},
+\texttt{take\_body} e \texttt{take\_state} e ficam sob \classe{std::unique\_ptr}:
+o subprojeto \emph{sabe} como fazer certo, e faz certo em dois dos quatro tipos
+de recurso. Vazamento parcial é o estado natural de um envoltório RAII escrito
+aos poucos --- audite cada \texttt{new} da API estrangeira, não só os mais
+visíveis.
+\end{armadilha}
+
+% =============================================================================
+\subsection{Qt e SFML na mesma janela}
+\label{sec:qt-sfml}
+% =============================================================================
+
+Os subprojetos \projeto{qt\_sfml} e \projeto{qt\_sfml2} resolvem um problema
+diferente: como ter os \emph{widgets} do Qt --- \emph{sliders}, botões,
+\emph{layouts} --- em volta de uma área desenhada em tempo real pelo SFML. As
+duas bibliotecas querem, cada uma, ser dona da janela e do laço de eventos.
+
+\begin{porque}[duas bibliotecas, um só sistema de janelas]
+Tanto o Qt quanto o SFML são, por baixo, envoltórios sobre o mesmo recurso do
+sistema operacional: uma janela nativa (um \emph{XID} no X11, um \texttt{HWND} no
+Windows) e uma fila de eventos ligada a ela. Nenhum dos dois foi escrito
+esperando dividir. A integração não consiste em ``fazê-los cooperar'': consiste
+em escolher \textbf{um dono para cada recurso}. O Qt fica com a janela de nível
+superior, o \emph{layout} e a fila de eventos; o SFML fica com os pixels de uma
+sub-região. E cada linha da solução abaixo é uma renúncia explícita de um dos
+dois a alguma coisa.
+\end{porque}
+
+\subsubsection{O truque: entregar o \emph{handle} nativo ao SFML}
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={As duas renúncias que fazem a integração funcionar --- \texttt{src/qt\_sfml/sfml\_widget.cpp}.}]
+    // Renúncia 1: retornar nullptr diz ao Qt para não criar um QPainter.
+    // O widget deixa de ter um "paint engine" — o SFML assume esta área.
+    QPaintEngine* paintEngine() const override { return nullptr; }
+
+    // Renúncia 2: o SFML pede emprestado o handle nativo do widget.
+    void SFMLWidget::showEvent(QShowEvent*) {
+        if (!initialized_) {
+            window_.create(sf::WindowHandle(winId()));  // XID no Linux, HWND no Windows
+            timer_.start(1000 / 60);
+            initialized_ = true;
+        }
+    }
+
+    // E o paintEvent fica VAZIO: quem pinta é o tick() do timer.
+    void SFMLWidget::paintEvent(QPaintEvent*) { }
+\end{lstlisting}
+
+E três atributos de \emph{widget} completam o acordo, cada um desligando uma
+etapa do desenho do Qt: \texttt{WA\_PaintOnScreen} (não pinta sobre este
+\emph{widget}), \texttt{WA\_OpaquePaintEvent} (não limpa o fundo antes) e
+\texttt{WA\_NoSystemBackground} (não preenche com cor de fundo). Sem eles, o
+resultado é cintilação ou o conteúdo do SFML sendo apagado a cada quadro.
+
+\begin{armadilha}[a criação da janela SFML tem de esperar o \texttt{showEvent}]
+\texttt{winId()} só devolve um \emph{handle} válido depois que o sistema de
+janelas criou a janela nativa --- o que acontece na exibição, não na construção
+do \emph{widget}. Chamar \texttt{window\_.create(winId())} no construtor produz
+um \emph{handle} inválido, e o sintoma é uma área preta que nunca desenha. Daí a
+inicialização preguiçosa com a \emph{flag} \texttt{initialized\_}. O mesmo vale
+para \texttt{resizeEvent}, que precisa checar a mesma \emph{flag} antes de
+chamar \texttt{window\_.setSize()}.
+\end{armadilha}
+
+\subsubsection{\texttt{QTimer} como \emph{game loop}}
+
+\begin{regra}[nunca escreva \texttt{while(true)} dentro de uma aplicação Qt]
+Um \emph{game loop} tradicional monopoliza a \emph{thread} e o laço de eventos
+do Qt nunca roda: os botões param de responder, a janela não redesenha, o
+sistema operacional marca a aplicação como travada. O \texttt{QTimer} inverte o
+controle --- o laço de eventos continua sendo o dono, e chama \texttt{tick()}
+sessenta vezes por segundo. É a mesma inversão que o \texttt{io\_context} do
+Asio impõe (\cref{sec:network}), e a mesma que qualquer \emph{framework} de UI
+impõe.
+\end{regra}
+
+A comunicação entre os \emph{widgets} de controle e a área de desenho é por
+\emph{signals and slots} --- o mecanismo do Qt que é, na prática, o padrão
+\emph{Observer} da \cref{sec:patterns} com suporte de pré-processador. O
+\texttt{moc} (\emph{meta-object compiler}) lê os cabeçalhos marcados com
+\texttt{Q\_OBJECT} e gera, para cada classe, uma tabela de despacho que permite
+conectar um sinal a um \emph{slot} pelo nome, em tempo de execução. O
+\texttt{meson.build} do \projeto{qt\_sfml} torna essas etapas visíveis, o que é
+raro: \texttt{qt6.compile\_ui} roda o \texttt{uic} sobre o arquivo
+\texttt{.ui} do Designer, \texttt{qt6.compile\_moc} roda o \texttt{moc} sobre
+os dois cabeçalhos com \texttt{Q\_OBJECT}, e os arquivos gerados entram na lista
+de fontes do executável como qualquer \texttt{.cpp}.
+
+\begin{armadilha}[esquecer o \texttt{Q\_OBJECT} ou o \texttt{moc}]
+Uma classe que herda de \texttt{QObject} sem a macro \texttt{Q\_OBJECT} compila
+e liga sem reclamação --- e simplesmente não emite sinais. Um cabeçalho com a
+macro que não é listado em \texttt{compile\_moc} produz o erro de ligação
+\texttt{undefined reference to vtable for SFMLWidget}, que não menciona o
+\texttt{moc} em lugar nenhum. Os dois sintomas são desproporcionais à causa, e
+os dois são a primeira coisa a conferir num projeto Qt novo.
+\end{armadilha}
+
+Há um segundo laço de eventos escondido nessa arquitetura, e o
+\projeto{qt\_sfml2} não o esquece:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Drenar a fila do SFML mesmo sem usá-la --- \texttt{src/qt\_sfml2/sfml\_widget.cpp}.}]
+void SFMLWidget::tick() {
+    // Obrigatório: sem drenar a fila, o X11 marca a janela como "not responding"
+    sf::Event evt;
+    while (window_.pollEvent(evt)) {}
+    ...
+}
+\end{lstlisting}
+
+O \texttt{sf::RenderWindow} criado sobre o \emph{handle} emprestado recebe
+eventos do servidor de janelas mesmo que o Qt seja quem os trate. Uma fila que
+nunca é esvaziada é uma janela que o gerenciador considera morta.
+
+\subsubsection{Uma medição incômoda: 60 quadros por segundo não são 60}
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Duas constantes, dois arredondamentos diferentes --- ambos os subprojetos.}]
+timer_.start(1000 / 60);          // int / int = 16  → 16 ms → 62,5 Hz
+constexpr float dt = 1.f / 60.f;  // 16,667 ms       → 60,0 Hz
+\end{lstlisting}
+
+\texttt{1000 / 60} é divisão \emph{inteira} e vale 16, não 16,667. O
+\texttt{QTimer} dispara então a cada 16~ms --- 62,5 vezes por segundo --- enquanto
+o \texttt{tick()} avança a simulação em $1/60$ de segundo a cada disparo. A
+simulação corre $62{,}5/60 = 1{,}0417$, ou seja \textbf{4,2\% mais rápido que o
+relógio de parede}. Em dez minutos de execução, são vinte e cinco segundos de
+tempo simulado a mais.
+
+\begin{armadilha}[o passo fixo só é correto se o relógio concordar com ele]
+O erro tem três causas somadas, e todas são comuns:
+\begin{enumerate}
+  \item \textbf{Divisão inteira} onde se queria um período fracionário. Escreva
+        \texttt{std::chrono::milliseconds(16)} e o número fica visível, ou
+        prefira \texttt{16667} microssegundos.
+  \item \textbf{Um período nominal tratado como período real.} Um
+        \texttt{QTimer} garante ``não antes de 16~ms'', nunca ``exatamente
+        16~ms'': sob carga o intervalo cresce, e a simulação passa a correr
+        \emph{devagar}, não rápido.
+  \item \textbf{$dt$ constante desacoplado da medição.} O \projeto{sfml\_bullet}
+        acerta aqui: mede o intervalo real com \texttt{sf::Clock}, aplica o
+        \emph{clamp} e passa o valor medido. Os dois subprojetos Qt assumem o
+        valor nominal.
+\end{enumerate}
+Nenhum aviso do compilador, nenhum teste que falhe --- e o único sintoma é que a
+gravação em vídeo não bate com o cronômetro. Meça o intervalo, ou acumule o
+tempo real e consuma-o em passos fixos (\emph{fixed timestep accumulator}).
+\end{armadilha}
+
+\subsubsection{\texttt{qt\_sfml}: a física escrita à mão, e o seu defeito clássico}
+
+A bola do \projeto{qt\_sfml} não usa motor nenhum --- e é justamente por isso
+que ela ilustra o defeito que todo motor precisa evitar:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Rebatimento por inversão de sinal --- \texttt{SFMLWidget::tick}.}]
+if (pos.x - r < 0.f || pos.x + r > w) velocity_.x *= -1.f;
+if (pos.y - r < 0.f || pos.y + r > h) velocity_.y *= -1.f;
+\end{lstlisting}
+
+\begin{armadilha}[inverter o sinal não é o mesmo que rebater]
+O teste olha a \emph{posição}, mas a correção mexe na \emph{velocidade}, e nada
+recoloca a bola dentro da área. Se num quadro qualquer a bola ficar além da
+borda --- e isso acontece a cada vez que o \emph{slider} de raio a engorda, ou
+que a janela é encolhida --- a condição continua verdadeira no quadro seguinte,
+o sinal inverte de novo, e a bola fica vibrando presa na parede. A correção
+canônica tem duas partes: reposicionar (\texttt{pos.x = r}) \textbf{e} só
+inverter se a velocidade apontar para fora
+(\texttt{if (pos.x - r < 0 \&\& velocity\_.x < 0)}). É exatamente o que um
+\emph{solver} de contato faz --- separar penetração de velocidade --- e por isso
+esse subprojeto é o melhor argumento a favor de usar um.
+\end{armadilha}
+
+O ajuste de velocidade, em contrapartida, está bem-feito e vale citar: ele
+preserva a direção e altera só a magnitude, normalizando com \texttt{std::hypot}
+--- que evita o \emph{overflow} intermediário de
+$\sqrt{x^2 + y^2}$ calculado ingenuamente.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Mudar o módulo sem mudar a direção.}]
+void SFMLWidget::set_speed(float speed) {
+    speed_ = speed;
+    const float len = std::hypot(velocity_.x, velocity_.y);
+    if (len > 0.f) velocity_ = (velocity_ / len) * speed_;
+}
+\end{lstlisting}
+
+\subsubsection{\texttt{qt\_sfml2}: um renderizador 3D escrito à mão sobre um canvas 2D}
+\label{sec:qt-sfml2}
+
+O \projeto{qt\_sfml2} deixou de ser ``o \projeto{qt\_sfml} com Bullet''. Hoje ele
+é uma cena \textbf{tridimensional} --- uma sala cúbica de $10 \times 10 \times
+10$~m com esferas, caixas e cilindros quicando --- projetada à mão em duas
+dimensões e desenhada com as primitivas 2D do SFML
+(\cref{tab:qtsfml-comparacao}). Não há OpenGL escrito pelo subprojeto, não há
+biblioteca de matemática gráfica: a câmera, a projeção e a ordenação por
+profundidade são cerca de setenta linhas de código próprio, e é isso que o torna
+o melhor lugar do repositório para aprender como uma imagem 3D é feita.
+
+\begin{table}[htbp]
+\centering
+\caption{Os dois subprojetos de integração Qt + SFML, como estão hoje.}
+\label{tab:qtsfml-comparacao}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Aspecto} & \texttt{qt\_sfml} & \texttt{qt\_sfml2} \\
+\midrule
+dimensão        & 2D puro                & \textbf{3D projetado à mão} \\
+física          & rebatimento à mão      & Bullet3, seis planos estáticos \\
+gravidade       & não                    & $-9{,}82$ m/s² \\
+restrição 2D    & ---                    & \textbf{nenhuma}: é 3D de verdade \\
+colisões        & bordas da área         & entre todos os corpos e as paredes \\
+câmera          & ---                    & orbital, mouse arrasta e roda \\
+interação       & \emph{slider}          & \emph{spawn}, explosão, gravidade \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{A sala.} Seis \texttt{btStaticPlaneShape} --- planos infinitos, massa
+zero --- fecham um cubo de aresta 10~m, com restituição 0,85 e fricção 0,4.
+Plano infinito é a forma de colisão mais barata que existe: não tem AABB
+limitada, não tem vértices, e o teste ponto-plano é um produto escalar.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A sala inteira em seis linhas --- \texttt{src/qt\_sfml2/physics\_world.cpp}.}]
+const float h = half_room_;                   // 5.0 → sala 10x10x10
+add_static_plane({  0.f,  1.f,  0.f }, -h);   // chão
+add_static_plane({  0.f, -1.f,  0.f }, -h);   // teto
+add_static_plane({  1.f,  0.f,  0.f }, -h);   // parede esquerda
+add_static_plane({ -1.f,  0.f,  0.f }, -h);   // parede direita
+add_static_plane({  0.f,  0.f,  1.f }, -h);   // parede frontal
+add_static_plane({  0.f,  0.f, -1.f }, -h);   // parede traseira
+\end{lstlisting}
+
+\paragraph{A câmera orbital.} A posição do observador é dada em coordenadas
+esféricas por três números: azimute $\theta$, elevação $\varphi$ e raio $r$. O
+mouse arrastado muda $\theta$ e $\varphi$; a roda muda $r$.
+
+\[
+\mathbf{p}_{\text{cam}} =
+r\,\bigl(\sin\varphi\,\sin\theta,\;\; \cos\varphi,\;\; \sin\varphi\,\cos\theta\bigr)
+\]
+
+A partir dela monta-se uma base ortonormal: \texttt{forward} aponta para o centro
+da sala, \texttt{right} é o produto vetorial de \texttt{forward} com o ``para
+cima'' do mundo, e \texttt{up} fecha o triedro.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A base da câmera, com o cuidado que salva os polos --- \texttt{update\_camera\_matrix()}.}]
+cam_forward_ = normalize(-cam_pos_);
+Vec3f r = cross(cam_forward_, {0.f, 1.f, 0.f});   // world up
+float rlen = length(r);
+if (rlen < 1e-4f) { r = {0.f, 0.f, 1.f}; rlen = 1.f; }  // fallback no polo
+cam_right_ = r / rlen;
+cam_up_    = cross(cam_right_, cam_forward_);
+\end{lstlisting}
+
+\begin{armadilha}[o produto vetorial degenera exatamente onde o usuário quer ir]
+Quando a câmera está sobre o polo, \texttt{forward} fica paralelo ao ``para
+cima'' do mundo e o produto vetorial devolve o vetor nulo: a base explode e a
+imagem some. O subprojeto se defende \textbf{duas} vezes, e as duas são
+necessárias:
+\begin{enumerate}
+  \item o arrasto do mouse limita $\varphi$ a $[0{,}1,\; \pi - 0{,}1]$
+        radianos, mantendo a câmera a uns $6^\circ$ de cada polo;
+  \item mesmo assim, o cálculo testa \texttt{rlen < 1e-4f} e cai num eixo
+        alternativo.
+\end{enumerate}
+Defender-se apenas com o \emph{clamp} deixa o programa à mercê de qualquer outro
+caminho que escreva $\varphi$ --- um botão ``vista de topo'', a leitura de um
+arquivo de cena. Trate a degenerescência no lugar onde ela é matemática, não
+apenas onde ela é entrada do usuário.
+\end{armadilha}
+
+\paragraph{A projeção perspectiva.} Três passos, e nenhuma matriz $4\times4$:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={De ponto do mundo a pixel --- \texttt{SFMLWidget::project3D}.}]
+float dx = wp.x() - cam_pos_.x, dy = ..., dz = ...;      // 1. vetor olho→ponto
+
+float vx =  dot(d, cam_right_);                          // 2. base da câmera
+float vy = -dot(d, cam_up_);                             //    Y invertido p/ tela
+float vz =  dot(d, cam_forward_);                        //    profundidade
+
+if (vz < near_plane_) vz = near_plane_;                  // 3. evita divisão por ~0
+
+float scale = (H / 2.f) / (fov_scale_ * vz);             //    divisão perspectiva
+return { W/2.f + vx * scale, H/2.f + vy * scale };
+\end{lstlisting}
+
+A linha que faz a perspectiva é a divisão por \texttt{vz}: quanto mais longe o
+ponto, menor o fator de escala, e é só isso que separa uma projeção perspectiva
+de uma ortográfica. O \texttt{fov\_scale\_} é $\tan(\text{FOV}/2)$ --- menor
+valor, campo de visão mais estreito, mais ``zoom''. E o \texttt{near\_plane\_}
+existe porque um ponto atrás da câmera tem \texttt{vz} negativo e produziria uma
+imagem espelhada no infinito.
+
+\paragraph{A ordenação por profundidade.} Sem \emph{z-buffer}, a única maneira de
+um objeto distante não aparecer na frente de um próximo é desenhar de trás para
+frente --- o \emph{algoritmo do pintor}:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Ordenar pelo centro de cada objeto --- \texttt{SFMLWidget::draw\_objects}.}]
+float depth = dot(pos - cam_pos_, cam_forward_);
+...
+std::sort(entries.begin(), entries.end(),
+          [](const Entry& a, const Entry& b){ return a.depth > b.depth; });
+\end{lstlisting}
+
+\begin{armadilha}[o algoritmo do pintor erra, e erra em silêncio]
+Ordenar por profundidade do \emph{centro} pressupõe que um objeto está
+inteiramente à frente ou inteiramente atrás de outro. Isso é falso para objetos
+que se interpenetram, para objetos longos vistos de viés, e para o caso clássico
+de três objetos em ciclo de oclusão --- em que nenhuma ordem é correta. O sintoma
+é uma esfera que ``pisca'' à frente de outra quando as duas passam perto. As
+saídas são o \emph{z-buffer} por pixel (o que uma GPU faz) ou subdividir a
+geometria; nenhuma das duas cabe num canvas de \texttt{sf::CircleShape}. Aceitar
+o erro e saber onde ele aparece é uma decisão legítima --- \emph{não} saber é que
+não é.
+\end{armadilha}
+
+O toque final é o \emph{depth cue}: \texttt{depth\_scale()} mapeia a
+profundidade de câmera do intervalo $[2, 27]$~m para um fator de $1{,}0$ a
+$0{,}3$, aplicado ao tamanho e ao brilho do objeto. É a pista visual mais barata
+que existe para dar sensação de distância --- e a mais antiga: pintores a usam
+há seis séculos com o nome de perspectiva aérea.
+
+\begin{regra}[o \texttt{tick()} condensa a arquitetura inteira do capítulo]
+Avançar a física, drenar eventos, limpar, ler a transformação de cada corpo e
+desenhar. É a \textbf{sincronização física $\rightarrow$ visual}, e ela é sempre
+nessa direção: o motor de física é a fonte da verdade, e o desenho é uma leitura
+dela. Repare que \texttt{PhysicsWorld} do \projeto{qt\_sfml2} não inclui um só
+cabeçalho do Qt, e que \texttt{MainWindow} não inclui um só cabeçalho do Bullet.
+Essa separação é o que permite ao mesmo mundo físico ser desenhado por um
+projetor caseiro hoje e por OpenGL amanhã.
+\end{regra}
+
+% =============================================================================
+\subsection{Álgebra linear numérica}
+\label{sec:calculus}
+% =============================================================================
+
+O subprojeto \projeto{calculus} usa Eigen3~\cite{eigen} para percorrer as quatro
+decomposições matriciais que sustentam praticamente toda computação numérica
+aplicada (\cref{tab:decomposicoes}). É o pré-requisito matemático da
+\cref{sec:flight-simulator}, e o vocabulário de qualquer trabalho com
+\emph{machine learning}, controle ou processamento de sinais. O binário
+instalado chama-se \texttt{eigen\_demo}, não \texttt{calculus}.
+
+\begin{porque}[por que decompor em vez de calcular direto]
+Quase todo problema numérico interessante se reduz a ``resolva $Ax = b$'' ou a
+``descubra a estrutura de $A$''. Atacar isso diretamente --- eliminação a cada
+novo $b$, inversa explícita, determinante pela definição --- é caro e
+numericamente frágil. Uma \textbf{decomposição} fatora $A$ uma única vez num
+produto de matrizes com estrutura simples (triangulares, ortogonais, diagonais),
+e a partir daí cada pergunta vira uma operação barata sobre os fatores. Trocar
+$O(n^3)$ repetido por $O(n^3)$ uma vez mais $O(n^2)$ por pergunta é o
+argumento óbvio; o argumento importante é o outro: as matrizes ortogonais
+preservam norma, e por isso não amplificam erro de arredondamento.
+\end{porque}
+
+\begin{table}[htbp]
+\centering
+\caption{As quatro decomposições, e quando cada uma é a ferramenta certa.}
+\label{tab:decomposicoes}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Decomposição} & \textbf{Quando usar} & \textbf{Custo} \\
+\midrule
+LU (\texttt{PartialPivLU})            & resolver $Ax=b$, determinante        & $O(n^3)$ \\
+QR (\texttt{HouseholderQR})           & mínimos quadrados, sistema sobredeterminado & $O(mn^2)$ \\
+SVD (\texttt{JacobiSVD})              & compressão, PCA, pseudo-inversa, posto & $O(mn^2)$ \\
+autovalores (\texttt{SelfAdjointEigenSolver}) & PCA, estabilidade, vibrações & $O(n^3)$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{LU: fatore uma vez, resolva muitas}
+
+A fatoração $A = P^{-1}LU$ escreve $A$ como o produto de uma permutação de
+linhas $P$, uma triangular inferior $L$ com uns na diagonal e uma triangular
+superior $U$. Resolver $Ax = b$ passa a ser resolver dois sistemas triangulares,
+cada um por substituição direta em $O(n^2)$.
+
+A permutação não é detalhe de implementação: é o \textbf{pivoteamento parcial}.
+A cada coluna, o algoritmo troca linhas para colocar na diagonal o maior
+elemento em módulo. Sem isso, um pivô minúsculo dividiria a coluna inteira e
+explodiria o erro relativo --- e um pivô exatamente zero pararia o algoritmo numa
+matriz perfeitamente invertível.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída real de \texttt{./dist/bin/eigen\_demo}, demo 1 (trechos).}]
+A:                          L (triangular inferior):
+    2.0000   1.0000  -1.0000     1.0000   0.0000   0.0000
+   -3.0000  -1.0000   2.0000     0.6667   1.0000   0.0000
+   -2.0000   1.0000   2.0000    -0.6667   0.2000   1.0000
+
+U (triangular superior):    x (solução de Ax = b):
+   -3.0000  -1.0000   2.0000     2.0000   3.0000  -1.0000
+    0.0000   1.6667   0.6667
+    0.0000   0.0000   0.2000  norma do residuo ||Ax - b||: 8.88e-16
+                              det(A): -1.0000
+\end{lstlisting}
+
+Três coisas para ler nesses números:
+
+\begin{itemize}
+  \item \textbf{A primeira linha de $U$ é a segunda linha de $A$.} O pivô
+        escolhido foi $-3$, e não o $2$ que estava na posição $(0,0)$: ali está o
+        pivoteamento acontecendo, visível a olho nu.
+  \item \textbf{O resíduo é $8{,}9 \times 10^{-16}$}, cerca de quatro vezes o
+        épsilon de \texttt{double} ($2{,}2 \times 10^{-16}$). Não é zero, e não
+        deveria ser: é o acúmulo esperado de algumas dezenas de operações em
+        ponto flutuante. Um resíduo \emph{exatamente} zero num sistema
+        arbitrário seria motivo de desconfiança, não de comemoração.
+  \item \textbf{O determinante é o produto da diagonal de $U$}, com o sinal da
+        permutação: $(-3) \times 1{,}6667 \times 0{,}2 = -1{,}0$, e o sinal
+        confere. Sai de graça, e nunca --- nunca --- se calcula determinante pela
+        expansão de Laplace, cujo custo é $O(n!)$.
+\end{itemize}
+
+\subsubsection{QR: regressão linear é mínimos quadrados}
+
+Quando há mais equações que incógnitas ($m > n$), o sistema é
+\textbf{sobredeterminado} e em geral não tem solução exata. O que se pede então
+é o $x$ que minimiza $\lVert Ax - b \rVert^2$ --- a soma dos quadrados dos erros.
+A fatoração $A = QR$, com $Q$ ortogonal e $R$ triangular superior, entrega isso
+diretamente, porque multiplicar por $Q^\top$ não muda a norma do resíduo.
+
+O exemplo do subprojeto é literalmente uma regressão linear: quatro pontos
+$(1;\,2{,}1)$, $(2;\,3{,}9)$, $(3;\,6{,}2)$, $(4;\,7{,}8)$, duas colunas
+(intercepto e inclinação).
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída real de \texttt{./dist/bin/eigen\_demo}, demo 2.}]
+x (minimos quadrados: [intercepto, inclinacao]):
+    0.1500   1.9400
+
+reta ajustada: y = 0.1500 + 1.9400 * x
+residuo ||Ax - b||: 0.2864
+\end{lstlisting}
+
+\begin{armadilha}[o README afirma outra reta, e a conta decide quem está certo]
+O \texttt{README.md} do \projeto{calculus} promete
+$y \approx 0{,}08 + 1{,}93x$. A execução dá $y = 0{,}1500 + 1{,}9400x$. Quem
+está certo? Aqui a pergunta tem resposta fechada, porque a regressão simples tem
+fórmula:
+\[
+\hat{\beta} = \frac{\sum (x_i - \bar{x})(y_i - \bar{y})}{\sum (x_i - \bar{x})^2}
+            = \frac{9{,}7}{5{,}0} = 1{,}94,
+\qquad
+\hat{\alpha} = \bar{y} - \hat{\beta}\bar{x} = 5{,}0 - 1{,}94 \times 2{,}5 = 0{,}15 .
+\]
+E o resíduo: os valores ajustados são $2{,}09$; $4{,}03$; $5{,}97$; $7{,}91$,
+os erros são $+0{,}01$; $-0{,}13$; $+0{,}23$; $-0{,}11$, e a norma é
+$\sqrt{0{,}082} = 0{,}2864$ --- os quatro dígitos impressos. O programa está
+certo, o README está errado, e a única razão de sabermos disso é que alguém
+refez a conta. \textbf{Quando um número da documentação diverge do número
+medido, a documentação perdeu} --- mas confirme com uma terceira fonte antes de
+tirar conclusões sobre o código.
+\end{armadilha}
+
+\begin{porque}[por que ninguém usa a equação normal]
+Resolver $A^\top A x = A^\top b$ diretamente é matematicamente equivalente e
+numericamente pior: o número de condição de $A^\top A$ é o \emph{quadrado} do de
+$A$. Como cada fator dez no número de condição custa aproximadamente um dígito
+decimal de precisão, elevar ao quadrado \textbf{dobra o número de dígitos
+perdidos}. Uma matriz com $\kappa = 10^8$ --- perfeitamente comum em ajuste
+polinomial --- ainda é tratável em \texttt{double}, mas $\kappa^2 = 10^{16}$
+consome toda a precisão disponível e a resposta vira ruído. A QR chega ao mesmo
+mínimo sem nunca formar $A^\top A$.
+\end{porque}
+
+\subsubsection{SVD: a mais cara e a mais informativa}
+
+A decomposição em valores singulares escreve qualquer matriz --- retangular,
+singular, o que for --- como $A = U \Sigma V^\top$, com $U$ e $V$ ortogonais e
+$\Sigma$ diagonal com entradas $\sigma_1 \geq \sigma_2 \geq \dots \geq 0$. A
+leitura geométrica é a que vale a pena guardar: toda transformação linear é uma
+\textbf{rotação, seguida de esticamentos independentes ao longo dos eixos,
+seguida de outra rotação}. Os $\sigma_i$ são esses fatores de esticamento.
+
+\begin{table}[htbp]
+\centering
+\caption{Cinco perguntas respondidas pela mesma decomposição.}
+\label{tab:svd-usos}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Pergunta} & \textbf{Resposta pela SVD} \\
+\midrule
+qual o posto?                & quantos $\sigma_i$ acima do limiar numérico \\
+o problema é bem condicionado? & $\sigma_{\max} / \sigma_{\min}$ \\
+como comprimir?              & manter só os $k$ maiores $\sigma_i$ \\
+quais as componentes principais? & SVD dos dados centralizados \\
+como inverter o não inversível? & pseudo-inversa $A^{+} = V\Sigma^{+}U^\top$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O exemplo é a matriz $3\times3$ com os números de 1 a 9 --- cujas linhas estão em
+progressão aritmética e, portanto, são linearmente dependentes.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída real de \texttt{./dist/bin/eigen\_demo}, demo 3.}]
+valores singulares:  16.8481    1.0684    0.0000
+numero de condicao: 7.84e+16
+rank numerico: 2
+erro de aproximacao rank-1: 1.0684
+\end{lstlisting}
+
+Quatro leituras, e uma delas é uma contradição aparente que ensina método:
+
+\begin{enumerate}
+  \item \textbf{O terceiro valor singular é zero}, como tem de ser: a terceira
+        linha é o dobro da segunda menos a primeira. O posto verdadeiro é 2.
+  \item \textbf{O posto numérico impresso é 2}, e o Eigen chegou a ele
+        \emph{contando} quantos $\sigma_i$ superam um limiar relativo
+        (aproximadamente $\varepsilon \cdot \sigma_{\max} \cdot \max(m,n)$).
+        Posto não é uma propriedade decidível em ponto flutuante --- é uma
+        pergunta sobre uma tolerância.
+  \item \textbf{O número de condição impresso é $7{,}8 \times 10^{16}$}, o que
+        \emph{parece} contradizer o item anterior. Não contradiz: o programa
+        calcula $\sigma_{\max}/\sigma_{\min}$ com um $\sigma_{\min}$ que é lixo
+        de arredondamento. Para uma matriz de posto deficiente, esse quociente
+        não mede nada --- mede o inverso do erro de arredondamento da máquina.
+        A grandeza útil nesse caso é o \emph{número de condição efetivo},
+        $\sigma_1/\sigma_r$ com $r$ igual ao posto numérico: aqui
+        $16{,}8481/1{,}0684 = 15{,}8$, um problema perfeitamente bem
+        condicionado \emph{no subespaço em que ele existe}.
+  \item \textbf{O erro da aproximação de posto 1 é $1{,}0684$ --- exatamente
+        $\sigma_2$.} Isso não é coincidência: é o teorema de Eckart-Young, que
+        garante que truncar a SVD nos $k$ maiores valores singulares dá a melhor
+        aproximação de posto $k$ possível, e que o erro em norma de Frobenius é
+        $\sqrt{\sigma_{k+1}^2 + \dots + \sigma_n^2}$. Com $\sigma_3 \approx 0$,
+        a raiz vale $\sigma_2$. Um teorema conferido em quatro casas decimais
+        por um programa de dez linhas.
+\end{enumerate}
+
+\begin{armadilha}[$\sigma_{\max}/\sigma_{\min}$ só é o número de condição se a matriz tiver posto cheio]
+A fórmula é ensinada sem a ressalva, e o resultado é código que classifica toda
+matriz singular como ``mal condicionada'' e toda matriz de posto deficiente como
+``instável'', quando o problema real pode ser trivial depois de projetado no
+subespaço certo. Antes de dividir, conte o posto; e ao contar o posto, decida e
+documente o limiar. Se a decisão de negócio depende dele --- e depende --- ela não
+pode ficar escondida num padrão de biblioteca.
+\end{armadilha}
+
+\begin{armadilha}[\texttt{JacobiSVD} não calcula $U$ e $V$ a menos que você peça]
+\texttt{Eigen::JacobiSVD<Matrix> svd(A)} calcula só os valores singulares;
+\texttt{svd.matrixU()} nesse caso dispara uma asserção. Os sinalizadores
+\texttt{ComputeThinU | ComputeThinV} pedem apenas as colunas necessárias --- para
+uma matriz $m \times n$ com $m \gg n$, isso é a diferença entre guardar
+$m \times m$ e $m \times n$ valores. \texttt{ComputeFullU} existe e quase nunca
+é o que se quer.
+\end{armadilha}
+
+\subsubsection{Autovalores, PCA e a escolha do \emph{solver}}
+
+Um autovetor de $A$ é uma direção que $A$ não gira, apenas escala; o fator é o
+autovalor. Numa \textbf{matriz de covariância} --- que é sempre simétrica e
+semidefinida positiva --- os autovetores são os eixos ao longo dos quais os dados
+variam de forma independente, e os autovalores são as variâncias nessas
+direções. Isso é a análise de componentes principais inteira, em uma frase.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída real de \texttt{./dist/bin/eigen\_demo}, demo 4.}]
+C (matriz de covariancia):        autovalores (ordem CRESCENTE):
+    4.0000   2.0000   0.6000          0.6945   0.9326   5.3729
+    2.0000   2.0000   0.5000
+    0.6000   0.5000   1.0000      verificacao C.v = lambda.v:
+                                    lambda0 =  0.6945  residuo = 1.14e-15
+variancia explicada:                lambda1 =  0.9326  residuo = 4.90e-16
+  PC1: 76.8%   PC2: 13.3%           lambda2 =  5.3729  residuo = 2.22e-15
+  PC3:  9.9%
+\end{lstlisting}
+
+Duas verificações que qualquer leitor pode refazer no papel:
+
+\begin{itemize}
+  \item \textbf{A soma dos autovalores é o traço.}
+        $0{,}6945 + 0{,}9326 + 5{,}3729 = 7{,}0000$, e
+        $\mathrm{tr}(C) = 4 + 2 + 1 = 7$. É uma identidade exata da álgebra
+        linear, e serve como teste de sanidade barato para qualquer rotina de
+        autovalores que você escreva ou use.
+  \item \textbf{A ``variância explicada'' é só uma divisão.}
+        $5{,}3729 / 7 = 76{,}8\%$. A primeira componente principal responde por
+        pouco mais de três quartos da variação; as três juntas, por definição,
+        respondem por 100\%.
+\end{itemize}
+
+\begin{armadilha}[o Eigen devolve autovalores em ordem \emph{crescente}]
+\texttt{SelfAdjointEigenSolver} ordena do menor para o maior --- o oposto da
+convenção da SVD, que ordena do maior para o menor. A primeira componente
+principal é a \textbf{última} coluna de \texttt{eigenvectors()}. É por isso que o
+laço da variância explicada no subprojeto é escrito ao contrário:
+
+\begin{lstlisting}[style=bt, language=C++]
+for (int i = 2; i >= 0; --i) {              // do maior autovalor para o menor
+    double pct = 100.0 * solver.eigenvalues()(i) / total;
+    fmt::println("  PC{}: {:.1f}%", 3 - i, pct);
+}
+\end{lstlisting}
+
+\noindent
+Uma PCA que reporta como ``principal'' a componente de \emph{menor} variância é
+o resultado silencioso de ignorar isso, e o gráfico produzido parece plausível.
+\end{armadilha}
+
+Para matrizes simétricas --- e toda matriz de covariância é simétrica ---
+\texttt{SelfAdjointEigenSolver} é a escolha obrigatória: explora a simetria, é
+mais rápido, é numericamente mais estável e \textbf{garante autovalores reais}.
+Usar o \texttt{EigenSolver} geral numa matriz simétrica devolve autovalores
+complexos com parte imaginária da ordem do erro de arredondamento --- e o código
+que os consome passa a lidar com números complexos sem motivo.
+
+\begin{regra}[nunca chame \texttt{.inverse()} para resolver um sistema]
+\texttt{x = A.inverse() * b} é mais lento, menos preciso e mais frágil que
+\texttt{x = A.lu().solve(b)}. Inverter calcula $n$ soluções para obter uma; e a
+inversa explícita amplifica o erro de arredondamento de forma que a solução
+direta não amplifica. A inversa tem usos legítimos --- expressões simbólicas,
+propagação de covariância --- mas resolver sistema não é um deles. A mesma regra
+vale para a pseudo-inversa: prefira \texttt{svd.solve(b)} a
+\texttt{pinv(A) * b}.
+\end{regra}
+
+\begin{regra}[escolha a decomposição pelo problema, não pelo hábito]
+Sistema quadrado e bem comportado: LU. Sistema sobredeterminado ou colunas quase
+dependentes: QR (e \texttt{ColPivHouseholderQR} se houver risco de posto
+deficiente). Posto, condicionamento, compressão ou PCA: SVD, e pague o preço.
+Matriz simétrica: sempre o \emph{solver} auto-adjunto. Usar SVD para tudo
+funciona e custa de cinco a dez vezes mais que LU; usar LU para tudo é rápido
+até o dia em que a matriz é singular.
+\end{regra}
+
+% =============================================================================
+\subsection{Simulação de voo com autopiloto}
+\label{sec:flight-simulator}
+% =============================================================================
+
+O subprojeto \projeto{flight-simulator} é o mais integrado do repositório, e por
+isso a trilha o deixa por último: JSBSim~\cite{jsbsim} como modelo de dinâmica
+de voo, três controladores PID como autopiloto, um laço de controle a 120~Hz e
+registro em CSV para análise posterior. É o único subprojeto em que o C++ não é
+o assunto --- ele é o veículo para um sistema de controle real.
+
+\subsubsection{A arquitetura, e o padrão que ela repete}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=5mm and 12mm]
+  \node[caixaforte] (main) {\texttt{main.cpp}\\\scriptsize laço de missão};
+  \node[caixa, below left=10mm and 6mm of main]  (fdm) {\texttt{FlightModel}\\\scriptsize envolve o JSBSim};
+  \node[caixa, below=10mm of main]               (ap)  {\texttt{Autopilot}\\\scriptsize três PIDs};
+  \node[caixa, below right=10mm and 6mm of main] (log) {\texttt{FlightLogger}\\\scriptsize CSV};
+  \node[folha, below=6mm of fdm] (st) {\texttt{FlightState}};
+  \node[folha, below=6mm of ap]  (ci) {\texttt{ControlInputs}};
+  \draw[seta] (main) -- (fdm); \draw[seta] (main) -- (ap); \draw[seta] (main) -- (log);
+  \draw[aresta] (fdm) -- (st); \draw[aresta] (ap) -- (ci);
+  \draw[setafraca] (st.east) .. controls +(1,-0.6) and +(-1,-0.6) .. (ci.west);
+\end{tikzpicture}
+\caption{O laço de controle. \texttt{FlightState} e \texttt{ControlInputs} são
+         \emph{aggregates} simples --- os tipos de vocabulário desta aplicação
+         --- e é por eles, e não por chamadas à API do JSBSim, que as três peças
+         conversam.}
+\label{fig:flight}
+\end{figure}
+
+O \texttt{FlightModel} é um invólucro sobre uma API C complexa --- exatamente o
+mesmo padrão de \texttt{http::get} sobre libcurl (\cref{sec:http-client}) e de
+\texttt{db::Connection} sobre SOCI (\cref{sec:database}). A recorrência não é
+coincidência: é a inversão de dependência da \cref{sec:solid} aplicada toda vez
+que uma biblioteca externa entra no programa.
+
+\subsubsection{PID: três termos, três papéis}
+
+Um controlador PID calcula o sinal de controle a partir do erro entre o valor
+desejado e o atual:
+\[
+u(t) \;=\; K_p\,e(t) \;+\; K_i \int_0^t e(\tau)\,d\tau \;+\; K_d\,\frac{de(t)}{dt}
+\]
+O termo proporcional reage ao erro presente; o integral elimina o erro
+acumulado --- o desvio residual que o proporcional sozinho nunca fecha; e o
+derivativo amortece a oscilação, antecipando a tendência.
+
+O autopiloto usa três laços independentes, cada um com um ganho próprio: a
+altitude comanda o profundor, a proa comanda o aileron, e a velocidade comanda o
+acelerador.
+
+\begin{armadilha}[o erro de proa precisa de aritmética circular]
+Subtrair proas em graus dá o resultado errado na descontinuidade: indo de
+$350^\circ$ para $10^\circ$, a subtração ingênua devolve $-340^\circ$, e o
+autopiloto comanda uma curva de quase uma volta completa em vez de
+$20^\circ$. É por isso que o subprojeto tem uma função
+\texttt{heading\_error()} separada, que normaliza a diferença ao intervalo
+$(-180^\circ, +180^\circ]$. Todo controle sobre grandeza angular tem esse
+problema, e ele não aparece em teste que não cruze a descontinuidade.
+\end{armadilha}
+
+\begin{armadilha}[\emph{integral windup}]
+Enquanto o atuador está saturado --- profundor no batente, acelerador no máximo
+--- o erro persiste e o termo integral continua acumulando. Quando o sistema
+finalmente alcança o alvo, o integral acumulado empurra muito além dele, e o
+resultado é um \emph{overshoot} grande seguido de oscilação. As correções
+usuais são limitar o acumulador (\emph{clamping}) ou parar de integrar enquanto
+a saída estiver saturada. É a primeira coisa a investigar quando um PID
+sintonizado ``em bancada'' se comporta mal no sistema real.
+\end{armadilha}
+
+\subsubsection{O laço de missão}
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Ler, decidir, aplicar, avançar --- e registrar.}]
+constexpr double DT      = 1.0 / 120.0; // 120 Hz (padrão JSBSim)
+
+while (sim_time <= SIM_END) {
+    if (sim_time >= 30.0) ap.set_target_altitude_ft(5000.0);
+    if (sim_time >= 90.0) ap.set_target_heading_deg(180.0);
+
+    auto state = fdm.state();           // lê o estado atual
+    auto ctrl  = ap.update(state, DT);  // autopiloto calcula controles
+    fdm.set_controls(ctrl);             // aplica controles
+    fdm.step();                         // avança a física por DT
+
+    logger.record(sim_time, state);
+    sim_time += DT;
+}
+\end{lstlisting}
+
+\begin{porque}[por que o passo é fixo aqui, e variável no \texttt{sfml\_bullet}]
+São objetivos opostos. Uma aplicação interativa precisa acompanhar o relógio de
+parede: se um quadro atrasa, o mundo tem de continuar coerente com o que o
+usuário vê, e daí o $dt$ medido e limitado da \cref{sec:sfml-bullet}. Uma
+simulação precisa de \textbf{reprodutibilidade}: o mesmo binário com a mesma
+entrada tem de produzir o mesmo CSV, e para isso o passo é constante e o tempo é
+contado em passos, não em segundos de relógio. Trocar um pelo outro produz ou
+uma interface que engasga, ou um experimento que não se repete.
+\end{porque}
+
+O registro em CSV a taxa configurável fecha o ciclo: o produto do subprojeto não
+é o executável, é o arquivo de dados que permite verificar depois se o
+autopiloto de fato estabilizou --- e comparar sintonias de ganho sem olhar para
+a tela.
+
+% =============================================================================
+\subsection{Síntese}
+% =============================================================================
+
+O capítulo tem um padrão que atravessa os sete subprojetos: \textbf{a simulação
+é a fonte da verdade, e tudo o mais é uma leitura dela}. O Bullet produz
+transformações que o SFML lê para desenhar; o JSBSim produz um estado que o
+autopiloto lê para decidir e que o \emph{logger} lê para registrar. Em nenhum
+caso o desenho ou o registro escrevem de volta no simulador --- e é essa
+direção única que torna possível trocar a renderização, acrescentar um segundo
+consumidor de dados, ou rodar a simulação sem interface nenhuma.
+
+A segunda recorrência é a do \textbf{invólucro sobre API estrangeira}:
+\texttt{PhysicsWorld} sobre Bullet, \texttt{SFMLWidget} sobre a integração
+Qt/SFML, \texttt{FlightModel} sobre JSBSim. Os três existem pelo mesmo motivo
+--- transformar gestão manual de recursos em \gls{raii}, e uma API C em tipos do
+domínio --- e os três são a mesma resposta que a \cref{sec:rede} deu para
+libcurl e SOCI. E os três merecem a ressalva que este capítulo mediu: um
+invólucro RAII resolve \emph{quem} libera o recurso, nunca \emph{em que ordem}
+--- essa segunda pergunta continua sendo sua, e o compilador não a fará por você
+(\cref{sec:sfml-bullet-raii}).
+
+A terceira recorrência é a mais desconfortável, e é o motivo de este capítulo
+medir tanto: \textbf{em quatro dos seis subprojetos, a descrição escrita
+divergia do código}. O README do \projeto{collision} prevê uma saída que o
+binário não produz; o do \projeto{sfml\_bullet} descreve uma gravidade e um
+lugar para as fronteiras que não são os do código; o do \projeto{sfml\_bullet2}
+documenta uma corda de cápsulas onde há um \emph{soft body} e um cotovelo que
+não existe; o do \projeto{calculus} publica uma reta de regressão que a
+aritmética contradiz. Nenhuma dessas divergências é sinal de descuido
+excepcional --- todas são o comportamento normal de texto que nada verifica. A
+defesa é a que este livro pratica: \textbf{cada número tem uma legenda dizendo
+de qual execução ele veio}.
+
+\begin{table}[htbp]
+\centering
+\caption{Os números medidos deste capítulo, e o que cada um ensina.}
+\label{tab:cap8-medidas}
+\footnotesize
+\begin{tabular}{@{}llp{0.40\textwidth}@{}}
+\toprule
+\textbf{Medida} & \textbf{Valor} & \textbf{Lição} \\
+\midrule
+atraso do \emph{motion state}   & $1 \times dt$        & desenho e decisão leem fontes diferentes \\
+viés do Euler semi-implícito    & $\tfrac{1}{2}g\,dt\,t$ & o integrador tem erro sistemático, não aleatório \\
+chão físico contra chão pintado & 392 px               & nada obriga geometria e desenho a concordar \\
+período do \texttt{QTimer}      & 16 ms (não 16,667)   & divisão inteira num período é 4,2\% de deriva \\
+resíduo de $Ax=b$ por LU        & $8{,}9\cdot10^{-16}$ & quatro épsilons é o resultado \emph{certo} \\
+erro da aproximação posto 1     & $1{,}0684 = \sigma_2$& Eckart-Young, conferido em quatro casas \\
+soma dos autovalores            & $7{,}0 = \mathrm{tr}(C)$ & teste de sanidade barato para PCA \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{regra}[unidades e sistemas de coordenadas são parte do tipo, ou serão bug]
+Metros contra pixels, $Y$ para cima contra $Y$ para baixo, pés contra metros,
+graus contra radianos, proa circular contra número real, ângulo de quaternion
+sempre positivo contra ângulo com sinal --- este capítulo tem um erro de
+conversão em cada seção. A defesa estrutural existe e está na
+\cref{sec:operators}: tipos fortes com literais de unidade, em que somar metros
+com segundos não compila. Onde isso for demais, ao menos concentre as conversões
+em duas funções nomeadas, como o \texttt{to\_sfml} e o
+\texttt{to\_bullet} deste capítulo --- e nunca as escreva em linha, no meio
+do código de desenho.
+\end{regra}

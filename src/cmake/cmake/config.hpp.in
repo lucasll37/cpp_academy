@@ -1,0 +1,42 @@
+// =============================================================================
+//  src/cmake/cmake/config.hpp.in
+//
+//  O molde do `configure_file` — o equivalente CMake do que
+//  src/meson/build_info.hpp.in faz no Meson.
+//
+//  As marcas @NOME@ são substituídas em tempo de CONFIGURAÇÃO (cmake ..), não
+//  de build. O arquivo gerado vai para o diretório de build, e é por isso que
+//  o alvo precisa de `target_include_directories(... ${CMAKE_CURRENT_BINARY_DIR})`.
+//
+//  ⚠ NUNCA edite o config.hpp gerado: ele é sobrescrito a cada configuração.
+//    Edite este .in.
+// =============================================================================
+#pragma once
+
+namespace config {
+
+inline constexpr const char* kProjeto        = "@PROJECT_NAME@";
+inline constexpr const char* kVersao         = "@PROJECT_VERSION@";
+inline constexpr const char* kCompilador     = "@CMAKE_CXX_COMPILER_ID@";
+inline constexpr const char* kVersaoCompilador = "@CMAKE_CXX_COMPILER_VERSION@";
+inline constexpr const char* kTipoBuild      = "@CMAKE_BUILD_TYPE@";
+inline constexpr const char* kSistema        = "@CMAKE_SYSTEM_NAME@";
+inline constexpr const char* kProcessador    = "@CMAKE_SYSTEM_PROCESSOR@";
+inline constexpr const char* kGerador        = "@CMAKE_GENERATOR@";
+inline constexpr int         kPadraoCpp      = @CMAKE_CXX_STANDARD@;
+
+// `#cmakedefine01` vira `#define NOME 1` ou `#define NOME 0` — nunca fica
+// indefinido, o que permite usar `if constexpr` em vez de `#ifdef`.
+#cmakedefine01 TEM_OPENMP
+#cmakedefine01 TEM_MPI
+#cmakedefine01 TEM_CUDA
+#cmakedefine01 TEM_PROTOBUF
+#cmakedefine01 TEM_GTEST
+
+inline constexpr bool kTemOpenMP   = TEM_OPENMP;
+inline constexpr bool kTemMPI      = TEM_MPI;
+inline constexpr bool kTemCUDA     = TEM_CUDA;
+inline constexpr bool kTemProtobuf = TEM_PROTOBUF;
+inline constexpr bool kTemGTest    = TEM_GTEST;
+
+}  // namespace config

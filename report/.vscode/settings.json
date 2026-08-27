@@ -1,0 +1,66 @@
+{
+  // ---------------------------------------------------------------------
+  //  LaTeX Workshop (James-Yu.latex-workshop)
+  //  Compila pelo Makefile, para que o VS Code e o terminal produzam
+  //  exatamente o mesmo resultado.
+  // ---------------------------------------------------------------------
+  "latex-workshop.latex.outDir": "%DIR%/build",
+  "latex-workshop.latex.rootFile": "report.tex",
+
+  "latex-workshop.latex.tools": [
+    {
+      "name": "make",
+      "command": "make",
+      "args": [],
+      "env": {}
+    },
+    {
+      "name": "make-quick",
+      "command": "make",
+      "args": ["quick"],
+      "env": {}
+    }
+  ],
+  "latex-workshop.latex.recipes": [
+    {
+      "name": "make (documento completo)",
+      "tools": ["make"]
+    },
+    {
+      "name": "make quick (uma passagem, rapido)",
+      "tools": ["make-quick"]
+    }
+  ],
+
+  // Compila ao salvar. Troque para "never" se preferir disparar com Ctrl+Alt+B.
+  "latex-workshop.latex.autoBuild.run": "onSave",
+
+  // Visualizacao dentro do proprio VS Code, com SyncTeX nos dois sentidos:
+  // Ctrl+Alt+J vai do .tex para o PDF; Ctrl+clique no PDF volta para o .tex.
+  "latex-workshop.view.pdf.viewer": "tab",
+  "latex-workshop.synctex.afterBuild.enabled": true,
+
+  // Os intermediarios ficam todos em build/; nao poluir a arvore do projeto.
+  "latex-workshop.latex.autoClean.run": "never",
+
+  // ---------------------------------------------------------------------
+  //  Edicao do texto
+  // ---------------------------------------------------------------------
+  "[latex]": {
+    "editor.wordWrap": "bounded",
+    "editor.wordWrapColumn": 80,
+    "editor.rulers": [80],
+    "editor.tabSize": 4,
+    "editor.insertSpaces": true,
+    "editor.suggest.snippetsPreventQuickSuggestions": false
+  },
+  "files.encoding": "utf8",
+  "files.trimTrailingWhitespace": true,
+
+  // Corretor ortografico (streetsidesoftware.code-spell-checker), se instalado.
+  "cSpell.language": "pt,en",
+
+  "search.exclude": {
+    "build/**": true
+  }
+}

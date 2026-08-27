@@ -1,0 +1,1507 @@
+% =============================================================================
+%  Concorrência
+%  Cobre a Etapa 5 da trilha: concurrency, concurrency2, coroutines,
+%  mandelbrot, mandelbrot_openmp.
+% =============================================================================
+
+% =============================================================================
+\section{Concorrência}
+\label{sec:concorrencia}
+% =============================================================================
+
+Concorrência é o assunto em que os erros deixam de ser determinísticos. Tudo o
+que o \cref{sec:fundamentos} classificou como ``silencioso'' ainda produzia o
+mesmo resultado a cada execução; aqui, o mesmo binário com a mesma entrada pode
+acertar mil vezes e falhar na milésima primeira --- na máquina do cliente, sob
+carga, sem \emph{stack trace} útil.
+
+O capítulo percorre cinco subprojetos. \projeto{concurrency} apresenta os
+primitivos da biblioteca padrão, da criação de uma \emph{thread} até o
+\emph{thread pool}. \projeto{concurrency2} continua dali com o que o C++20
+acrescentou --- \texttt{jthread}, \texttt{stop\_token}, \texttt{latch},
+\texttt{barrier}, \texttt{counting\_semaphore} e \texttt{atomic::wait} ---, com
+o modelo de memória por baixo de todos eles e com a programação
+\emph{lock-free} medida em vez de presumida. \projeto{coroutines} apresenta a
+concorrência sem \emph{threads} --- suspensão e retomada dentro de uma única
+linha de execução. E \projeto{mandelbrot} e \projeto{mandelbrot\_openmp}
+resolvem o \emph{mesmo} problema de duas maneiras, o que permite medir o que
+custa cada abordagem em esforço e em ganho.
+
+\begin{regra}[o ThreadSanitizer é obrigatório neste capítulo]
+Um \gls{datarace} é \gls{ub}, não ``valor errado ocasional'', e testar não o
+encontra: a ausência de falha numa execução não é evidência de ausência de
+corrida. O TSan (\texttt{-Db\_sanitize=thread}) instrumenta os acessos e detecta
+corridas que \emph{não} se manifestaram naquela execução --- que são exatamente
+as que interessam. Rode os subprojetos deste capítulo sob ele ao menos uma vez.
+\end{regra}
+
+% =============================================================================
+\subsection{\emph{Threads} e primitivos de sincronização}
+\label{sec:concurrency}
+% =============================================================================
+
+\subsubsection{\emph{Threads}: a obrigação que ninguém lembra}
+
+Uma \classe{std::thread} precisa ser \texttt{join}ada ou \texttt{detach}ada
+antes de ser destruída. Se não for, o destrutor chama
+\texttt{std::terminate} --- o programa inteiro morre, sem \emph{unwinding} e sem
+\emph{handler}.
+
+\begin{porque}[por que o destrutor encerra o programa em vez de fazer \texttt{join}]
+As duas alternativas eram piores. \texttt{join} implícito faria o destrutor
+bloquear por tempo indefinido num ponto do código que não parece bloqueante ---
+inclusive durante o desenrolamento de uma exceção. \texttt{detach} implícito
+deixaria a \emph{thread} rodando com referências para objetos que acabaram de
+ser destruídos. O comitê escolheu falhar ruidosamente em vez de escolher entre
+dois comportamentos surpreendentes.
+\end{porque}
+
+A consequência prática é que o caminho de exceção precisa ser coberto, e a
+ferramenta é a de sempre --- \gls{raii}:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O \emph{guard} que garante o \texttt{join} mesmo com exceção.}]
+class ThreadGuard {
+    std::thread& t_;
+public:
+    explicit ThreadGuard(std::thread& t) : t_(t) {}
+    ~ThreadGuard() { if (t_.joinable()) t_.join(); }
+};
+\end{lstlisting}
+
+\begin{regra}[em C++20, \classe{std::jthread} já faz isso]
+\texttt{std::jthread} faz \texttt{join} no destrutor e traz \texttt{stop\_token}
+para cancelamento cooperativo. Ele não aparece \emph{neste} subprojeto porque a
+intenção aqui é mostrar o mecanismo por baixo --- mas em código novo,
+\texttt{jthread} é o padrão, e o \texttt{ThreadGuard} acima passa a ser matéria
+histórica. O subprojeto \projeto{concurrency2} existe, é construído e o cobre
+por inteiro, junto com \texttt{latch}, \texttt{barrier} e
+\texttt{counting\_semaphore} (\cref{sec:concurrency2}).
+\end{regra}
+
+\subsubsection{\emph{Mutex}: por que \texttt{contador++} não basta}
+
+\texttt{contador++} é leitura, modificação e escrita --- três operações. Duas
+\emph{threads} podem ler o mesmo valor, incrementar cada uma a sua cópia, e
+escrever o mesmo resultado: dois incrementos, um efeito. Com dois laços de mil
+iterações, o resultado final fica em qualquer ponto entre 1000 e 2000, e não é
+determinístico.
+
+A família de \emph{locks} da biblioteca padrão é escolhida pela flexibilidade
+necessária (\cref{tab:locks}) --- e nenhum deles deve ser travado e destravado
+à mão.
+
+\begin{table}[htbp]
+\centering
+\caption{Os invólucros RAII de \emph{lock}.}
+\label{tab:locks}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Invólucro} & \textbf{Permite} & \textbf{Use quando} \\
+\midrule
+\classe{std::lock\_guard}  & travar e destravar no escopo & é o caso comum \\
+\classe{std::unique\_lock} & destravar, retravar, \texttt{try\_lock} & precisa de \texttt{condition\_variable} \\
+\texttt{std::shared\_lock} & vários leitores simultâneos  & leitura domina a escrita \\
+\classe{std::scoped\_lock} & travar \emph{vários} sem \emph{deadlock} & precisa de dois \emph{mutexes} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O \classe{std::shared\_mutex} implementa o \emph{readers-writer lock}: muitos
+leitores em paralelo, um escritor exclusivo. Vale quando a leitura domina; com
+escrita frequente, o custo extra de bookkeeping torna o \emph{mutex} simples
+mais rápido.
+
+\begin{armadilha}[travar dois \emph{mutexes} em ordens diferentes é \emph{deadlock}]
+Se a \emph{thread} A trava \texttt{m1} e depois \texttt{m2}, e a B trava
+\texttt{m2} e depois \texttt{m1}, mais cedo ou mais tarde as duas ficam paradas
+esperando uma pela outra --- e não há \emph{timeout}, não há erro, não há
+mensagem. As duas saídas: \texttt{std::scoped\_lock(m1, m2)}, que usa um
+algoritmo livre de \emph{deadlock}; ou uma \textbf{hierarquia de \emph{locks}}
+documentada, em que todos travam sempre na mesma ordem.
+\end{armadilha}
+
+\subsubsection{\texttt{condition\_variable}: esperar sem girar}
+
+Um \emph{mutex} protege dados; ele não sabe \emph{esperar por um estado}. A
+\texttt{condition\_variable} preenche essa lacuna: \texttt{wait} libera o
+\emph{mutex}, dorme, e ao acordar readquire o \emph{mutex} --- tudo
+atomicamente, o que é a única razão de ela existir como primitivo em vez de ser
+escrita à mão.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O par produtor/consumidor mínimo.}]
+// Produtor
+{
+    std::lock_guard<std::mutex> lock(mtx);
+    fila.push(42);
+    pronto = true;
+}
+cv.notify_one();                    // notifica FORA do lock
+
+// Consumidor
+std::unique_lock<std::mutex> lock(mtx);
+cv.wait(lock, [&]{ return pronto; });   // o predicado não é opcional
+\end{lstlisting}
+
+\begin{armadilha}[\texttt{wait} sem predicado é sempre um bug]
+O POSIX admite \emph{spurious wakeups}: o sistema operacional pode acordar uma
+\emph{thread} sem que ninguém tenha notificado. E há o caso pior, que não
+depende do sistema: se a notificação acontecer \emph{antes} de o consumidor
+entrar em \texttt{wait}, ela se perde, e o consumidor dorme para sempre. A
+sobrecarga com predicado resolve os dois, porque testa a condição antes de
+dormir e a cada despertar. Nunca escreva \texttt{cv.wait(lock)} sozinho.
+\end{armadilha}
+
+\subsubsection{\texttt{future}, \texttt{promise} e \texttt{async}}
+
+A tríade cobre o caso ``quero um valor que será produzido em outro lugar''
+(\cref{tab:futures}). O ganho sobre \emph{thread} mais variável compartilhada é
+que a exceção também atravessa: se a função lançar,
+\texttt{future::get()} relança no chamador --- ao passo que uma exceção que
+escapa da função de entrada de uma \texttt{std::thread} chama
+\texttt{std::terminate} (\cref{sec:errors}).
+
+\begin{table}[htbp]
+\centering
+\caption{As três formas de obter um \texttt{future}.}
+\label{tab:futures}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Ferramenta} & \textbf{Quando} \\
+\midrule
+\classe{std::async}          & a forma mais simples: uma função, um resultado \\
+\classe{std::promise}        & o produtor decide \emph{quando} entregar \\
+\classe{std::packaged\_task} & embrulhar uma função para enfileirar depois \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{armadilha}[\texttt{std::async} sem política pode não criar \emph{thread} nenhuma]
+A sobrecarga sem argumento de política permite ao compilador escolher entre
+\texttt{launch::async} e \texttt{launch::deferred} --- e, se ele escolher
+\emph{deferred}, a função só roda quando alguém chamar \texttt{get()}, na
+\emph{thread} do chamador. Um programa que dispara dez \texttt{async} esperando
+paralelismo pode acabar executando tudo em sequência. Passe
+\texttt{std::launch::async} explicitamente quando quiser paralelismo de fato.
+E lembre: o destrutor de um \texttt{future} vindo de \texttt{std::async}
+\textbf{bloqueia} até a tarefa terminar.
+\end{armadilha}
+
+\subsubsection{Atômicos e ordem de memória}
+
+Uma \gls{atomico} resolve a corrida sobre \emph{aquela} variável, sem
+\emph{mutex} e sem bloqueio. O que ela \textbf{não} faz é estabelecer
+invariantes entre duas variáveis --- para isso ainda é preciso um \emph{lock}.
+
+A parte difícil é a ordem de memória, que existe porque compilador e processador
+têm permissão para reordenar acessos. A ordem escolhida determina que
+reordenações continuam permitidas (\cref{tab:memory-order}).
+
+\begin{table}[htbp]
+\centering
+\caption{As ordens de memória, do mais barato ao mais caro.}
+\label{tab:memory-order}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Ordem} & \textbf{Garante} & \textbf{Custo} \\
+\midrule
+\texttt{relaxed} & só atomicidade; nenhuma ordenação      & mínimo \\
+\texttt{acquire} & leituras posteriores não sobem daqui   & médio \\
+\texttt{release} & escritas anteriores não descem daqui   & médio \\
+\texttt{seq\_cst}& ordem total única para todas as \emph{threads} & máximo (padrão) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O par \emph{release}/\emph{acquire} é o idioma de publicação, e é o que dá
+sentido à tabela:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Publicar dados por meio de uma \emph{flag} atômica.}]
+// Thread 1 (produtor)
+dados = 42;                               // escrita NÃO atômica
+flag.store(true, memory_order_release);   // publica
+
+// Thread 2 (consumidor)
+while (!flag.load(memory_order_acquire)); // espera a publicação
+fmt::print("{}\n", dados);                // sempre 42
+\end{lstlisting}
+
+O \emph{release} garante que a escrita em \texttt{dados} não seja movida para
+depois do \texttt{store}; o \emph{acquire} garante que a leitura de
+\texttt{dados} não seja movida para antes do \texttt{load}. Sem o par, ler
+\texttt{dados} seria \gls{datarace} --- mesmo com a \emph{flag} sendo atômica.
+
+\begin{regra}[comece com o padrão; só desça de ordem com medição]
+\texttt{seq\_cst} é o padrão porque é o único que se comporta como a intuição
+espera. \texttt{relaxed} é correto apenas quando \emph{nenhuma} outra variável
+depende daquela ordenação --- um contador de estatísticas, por exemplo. Trocar
+por \texttt{relaxed} sem essa análise produz um programa que funciona em x86,
+onde o hardware já é fortemente ordenado, e falha em ARM.
+\end{regra}
+
+\subsubsection{\emph{Thread pool}: onde tudo se junta}
+
+O \emph{thread pool} do subprojeto usa quase todos os primitivos anteriores:
+\emph{threads} guardadas em um \texttt{vector}, uma fila protegida por
+\emph{mutex}, uma \texttt{condition\_variable} para acordar quem espera, uma
+\emph{flag} de parada, e \texttt{join} no destrutor.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O encerramento ordenado, em
+             \texttt{src/concurrency/demo\_patterns.hpp}.}]
+    // ── Destrutor: sinaliza parada e aguarda todas as threads ─────────────────
+    ~ThreadPool() {
+        {
+            std::unique_lock<std::mutex> lock(mtx_);
+            parar_ = true;
+        }
+        cv_.notify_all(); // acorda todas as threads para que saiam do loop
+        for (auto& t : workers_) {
+            if (t.joinable()) t.join();
+        }
+    }
+\end{lstlisting}
+
+E o laço do trabalhador tem dois detalhes que merecem atenção, ambos visíveis no
+código:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O laço do trabalhador, em
+             \texttt{src/concurrency/demo\_patterns.hpp}.}]
+                std::unique_lock<std::mutex> lock(mtx_);
+                // Dorme até: haver tarefa OU sinal de parada
+                cv_.wait(lock, [this]() {
+                    return parar_ || !tarefas_.empty();
+                });
+
+                // Se parar_ e fila vazia → encerra a thread
+                if (parar_ && tarefas_.empty()) return;
+
+                tarefa = std::move(tarefas_.front());
+                tarefas_.pop();
+            }
+
+            tarefa(); // executa FORA do lock — outras threads podem pegar tarefas
+\end{lstlisting}
+
+O primeiro é o predicado composto: a \emph{thread} acorda tanto para trabalhar
+quanto para morrer, e sem o segundo termo o encerramento travaria com todos os
+trabalhadores dormindo. O segundo é a chave do desempenho: a tarefa é
+\textbf{movida para fora} do escopo do \emph{lock} e executada depois --- se
+rodasse com o \emph{lock} tomado, o \emph{pool} inteiro seria serializado e não
+haveria paralelismo nenhum.
+
+\begin{table}[htbp]
+\centering
+\caption{As armadilhas clássicas do capítulo, reunidas.}
+\label{tab:armadilhas-concorrencia}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Problema} & \textbf{Causa} & \textbf{Solução} \\
+\midrule
+\gls{datarace}        & acesso não sincronizado        & \emph{mutex} ou atômico \\
+\emph{deadlock}       & duas \emph{threads} esperam uma pela outra & \texttt{scoped\_lock} ou hierarquia \\
+\emph{thread} não \texttt{join}ada & destruída sem \texttt{join}/\texttt{detach} & \emph{guard} RAII ou \texttt{jthread} \\
+\emph{spurious wakeup}& CV acordada sem notificação    & predicado no \texttt{wait} \\
+notificação perdida   & \texttt{notify} antes do \texttt{wait} & predicado no \texttt{wait} \\
+problema ABA          & CAS vê valor antigo que voltou & CAS versionado, \emph{hazard pointers} \\
+parada que nunca chega& \texttt{stop\_token} nunca consultado & checar entre unidades de trabalho \\
+permissão vazada      & \texttt{return} entre \texttt{acquire} e \texttt{release} & \emph{guard} RAII caseiro \\
+\emph{use-after-free} & nó liberado com outro CAS em curso & \emph{hazard pointers}, RCU, não liberar \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =============================================================================
+\subsection{Concorrência moderna: o que o C++20 acrescentou}
+\label{sec:concurrency2}
+% =============================================================================
+
+O subprojeto \projeto{concurrency2} continua exatamente de onde a
+\cref{sec:concurrency} parou. Aquele cobre o núcleo do C++11; este acrescenta as
+três coisas que faltavam: os primitivos que o C++20 trouxe (\texttt{jthread},
+\texttt{stop\_token}, \texttt{latch}, \texttt{barrier},
+\texttt{counting\_semaphore} e \texttt{atomic::wait}), o \textbf{modelo de
+memória} que existe por baixo de todos eles, e a programação
+\emph{lock-free} --- com a fronteira \emph{medida} em vez de presumida.
+
+O motivo de o assunto merecer um subprojeto inteiro cabe numa frase do
+\texttt{README}: \emph{a intuição sobre concorrência falha de um jeito
+específico e caro --- o código errado funciona nos seus testes}. Um
+\gls{datarace} não estoura; ele fica latente por meses, e um dia o compilador
+atualiza, o \texttt{-O2} iça uma leitura para fora do laço e o serviço trava em
+produção.
+
+\begin{regra}[um alvo que não é construído é um alvo que apodrece]
+Todos os 57 subprojetos do repositório são construídos hoje --- 98 binários
+instalados em \texttt{dist/bin}, com zero avisos sob
+\texttt{-Wall -Wextra -Wpedantic}. Isso não é vaidade de \emph{build}: ao
+reabilitar os alvos que antes ficavam comentados, apareceram quatro
+\emph{includes} faltando e dois erros de \gls{abi} que ninguém tinha visto
+justamente porque aqueles alvos nunca eram compilados. Em concorrência o
+apodrecimento é pior, porque o defeito não é um erro de compilação que aparece
+na primeira tentativa: é uma corrida que só se manifesta sob carga. Por isso
+\projeto{concurrency2} tem uma exigência declarada --- compila sem avisos
+\emph{e} roda limpo sob o ThreadSanitizer, com zero achados. Alvo que não é
+construído e executado não tem qualidade; tem apenas ausência de evidência.
+\end{regra}
+
+% -----------------------------------------------------------------------------
+\subsubsection{\texttt{jthread}: o destrutor que não mata o programa}
+% -----------------------------------------------------------------------------
+
+\begin{porque}[por que \classe{std::thread} precisava de um substituto]
+Ela tem dois defeitos. O primeiro já apareceu na \cref{sec:concurrency}: o
+destrutor chama \texttt{std::terminate} se a \emph{thread} ainda for
+\emph{joinable} --- esquecer um \texttt{join()}, ou sofrer uma exceção antes
+dele, mata o processo. O segundo é mais silencioso: \textbf{não havia forma
+padrão de pedir que a \emph{thread} parasse}. Cada projeto reinventava o seu
+\texttt{std::atomic<bool> parar}, funcional mas incapaz de conversar com o resto
+da biblioteca. \classe{std::jthread} resolve os dois: \gls{raii} no destrutor
+(que faz \texttt{request\_stop()} e depois \texttt{join()}) e um
+\texttt{stop\_token} cooperativo embutido.
+\end{porque}
+
+Escrever um bloco com uma \texttt{jthread} e sem \texttt{join} deixou de ser um
+erro: o destrutor cuida disso ao sair do escopo. E o caminho de exceção --- que
+era justamente o que obrigava a escrever o \texttt{ThreadGuard} da página
+anterior --- passa a ser coberto de graça, porque o desenrolamento destrói a
+\texttt{jthread} e o destrutor junta.
+
+\paragraph{\texttt{stop\_token}.} É um objeto que responde a uma única pergunta:
+\emph{alguém já pediu para parar?} Quem pede chama \texttt{request\_stop()} na
+\texttt{jthread} (ou num \texttt{std::stop\_source}); quem trabalha consulta
+\texttt{stop\_requested()}. A ligação é automática, com uma regra sintática que
+surpreende: \textbf{se a \emph{lambda} declarar um \texttt{std::stop\_token}
+como primeiro parâmetro, a \texttt{jthread} o passa sozinha}.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O mecanismo inteiro, em
+             \texttt{src/concurrency2/demo\_jthread.hpp}.}]
+        // O `std::stop_token st` no primeiro parametro e o que ativa o mecanismo
+        std::jthread trabalhador{[&iteracoes](std::stop_token st) {
+            while (!st.stop_requested()) {          // <- o ponto de checagem
+                ++iteracoes;
+                std::this_thread::sleep_for(5ms);
+            }
+            fmt::print("      [worker] parada pedida, saindo limpo\n");
+        }};
+
+        std::this_thread::sleep_for(40ms);
+        trabalhador.request_stop();
+\end{lstlisting}
+
+\begin{armadilha}[\texttt{request\_stop()} não interrompe nada: ele apenas pede]
+A parada é \textbf{cooperativa} --- \texttt{request\_stop()} liga uma
+\emph{flag}, e só. Se a \emph{thread} nunca consultar
+\texttt{stop\_requested()}, ela não para, e o \texttt{join()} do destrutor
+espera para sempre: \texttt{std::jthread t\{[](std::stop\_token) \{ while
+(true) \{\} \}\};} trava o programa inteiro, sem mensagem. Não existe
+\texttt{thread::kill()} em C++, e a ausência é deliberada: matar uma
+\emph{thread} no meio do caminho deixaria \emph{mutexes} travados, destrutores
+sem rodar e invariantes quebrados --- o \texttt{pthread\_cancel} do POSIX existe
+e é considerado inseguro em C++ exatamente por isso. A contrapartida é que
+\emph{onde} se checa vira decisão de projeto, e a resposta é sempre a mesma:
+\textbf{entre unidades de trabalho, nunca no meio de uma}, ou o estado fica pela
+metade.
+\end{armadilha}
+
+\paragraph{Quem está bloqueado não checa \emph{flag} nenhuma.} Uma
+\emph{thread} parada dentro de um \texttt{read()} de \emph{socket} nunca chega
+ao \texttt{stop\_requested()}, e o C++20 oferece duas saídas. A primeira é
+\texttt{std::stop\_callback}: um objeto que registra uma função no
+\texttt{stop\_token} e a dispara \emph{no instante} do \texttt{request\_stop()}
+--- fechar o \emph{socket} ali faz o \texttt{read()} retornar com erro. A
+segunda é a sobrecarga de \texttt{condition\_variable\_any} que aceita o
+\emph{token} e devolve \texttt{false} quando a parada é pedida:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Sair de um \texttt{wait} bloqueado, em
+             \texttt{src/concurrency2/demo\_jthread.hpp}.}]
+        std::jthread consumidor{[&](std::stop_token st) {
+            while (true) {
+                std::unique_lock lk{m};
+                // Esta sobrecarga devolve `false` se a parada foi pedida.
+                // Um `cv.wait(lk, pred)` normal ficaria bloqueado para sempre.
+                if (!cv.wait(lk, st, [&fila] { return !fila.empty(); })) return;
+                fila.pop_back();
+            }
+        }};
+\end{lstlisting}
+
+A distinção não tem contorno: \classe{std::condition\_variable} \textbf{não} tem
+essa sobrecarga; só \texttt{condition\_variable\_any} tem. Ela é mais lenta,
+porque aceita qualquer tipo \emph{lockable}, e é a única que integra com
+\texttt{stop\_token}.
+
+\begin{armadilha}[o \emph{callback} roda na \emph{thread} de quem pediu a parada]
+Não na trabalhadora. Ele precisa ser curto e \emph{thread-safe}, e não deve
+tomar nenhum \emph{lock} que a trabalhadora possa estar segurando --- sob pena
+de \emph{deadlock} no ponto mais improvável do código.
+\end{armadilha}
+
+\begin{armadilha}[parada pedida não é trabalho terminado --- um bug real deste subprojeto]
+A primeira versão da fila SPSC de \texttt{demo\_lockfree.hpp}
+(\cref{sec:lockfree}) usava \texttt{stop\_token} como condição de saída do
+consumidor. O destrutor da \texttt{jthread} chama \texttt{request\_stop()}
+\emph{antes} do \texttt{join()}; o consumidor via o pedido e saía com a fila
+ainda cheia. A saída do programa acusou \texttt{PERDEU DADOS} --- a soma não
+fechava. A condição correta era o trabalho ter \textbf{terminado}, não a parada
+ter sido \textbf{pedida}, e o aviso ficou no fonte, sobre o laço consertado. A
+lição vale além do caso: \texttt{stop\_token} é para \emph{cancelamento}, não
+para \emph{encerramento normal}. Quando o critério é ``processei tudo'', ele
+tem de ser escrito, não deduzido do ciclo de vida do objeto.
+\end{armadilha}
+
+% -----------------------------------------------------------------------------
+\subsubsection{\texttt{latch}, \texttt{barrier} e \texttt{counting\_semaphore}}
+% -----------------------------------------------------------------------------
+
+\begin{porque}[por que três primitivos novos, se \emph{mutex} mais CV já dava conta]
+Dava --- em três objetos e umas quinze linhas. Expressar ``espere as $N$
+\emph{threads} chegarem'' exigia um \emph{mutex}, uma
+\texttt{condition\_variable} e um contador, com o predicado escrito à mão em
+dois lugares. Além de verboso, era caro: cada decremento travava o \emph{mutex}
+e o \texttt{notify\_all} acordava todo mundo. Os primitivos do C++20 dizem a
+intenção diretamente, e o \emph{runtime} pode implementá-los com um
+\emph{futex} sobre um contador atômico --- sem \emph{mutex} nenhum no caminho
+comum.
+\end{porque}
+
+\paragraph{\texttt{latch}: a porteira de uso único.}
+\texttt{count\_down()} subtrai um; \texttt{wait()} bloqueia até o contador
+chegar a zero; chegou a zero, fica em zero para sempre --- não há \emph{reset},
+e daí o ``uso único''. O primeiro uso é o óbvio: a \emph{thread} principal
+espera as $N$ trabalhadoras. O segundo é a \textbf{largada}, e quase ninguém
+lembra dele:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A largada sincronizada, em
+             \texttt{src/concurrency2/demo\_sincronizadores.hpp}.}]
+    std::latch largada{1};                // 1 so: o tiro de partida
+    std::latch prontos{kThreads};
+
+    for (int i = 0; i < kThreads; ++i) {
+        corredores.emplace_back([i, &largada, &prontos, &ordem] {
+            prontos.count_down();         // "estou na posicao"
+            largada.wait();               // espera o tiro
+        });
+    }
+
+    prontos.wait();                       // todos posicionados
+    largada.count_down();                 // libera os 4 de uma vez
+\end{lstlisting}
+
+Sem esse padrão, qualquer medição de paralelismo perde o sentido: a
+\emph{thread} 0 já processou metade do trabalho quando a \emph{thread} 3 nasce,
+e o tempo medido inclui o custo de criar \emph{threads} em vez do custo do
+trabalho. São \emph{dois} \emph{latches}: um para saber que todos chegaram à
+posição, outro para soltar todos juntos. Para quem participa \emph{e} espera há
+\texttt{arrive\_and\_wait()}, que é \texttt{count\_down()} mais \texttt{wait()}
+num passo.
+
+\begin{armadilha}[\texttt{count\_down()} além do zero é \gls{ub}]
+O contador não satura: decrementá-lo depois de zerado é comportamento
+indefinido, e não há como desfazer. Um \texttt{latch} dimensionado com o número
+errado de participantes, ou uma trabalhadora que decremente duas vezes por
+engano, produzem um programa que passa em teste e é formalmente inválido.
+\end{armadilha}
+
+\paragraph{\texttt{barrier}: a porteira que se rearma.} É o mesmo contador, com
+uma diferença decisiva: ao chegar a zero ele \textbf{se rearma} para a fase
+seguinte. É o primitivo das simulações em passos --- ninguém começa o passo
+$N+1$ antes de todos terminarem o passo $N$ --- e o análogo padrão do
+\texttt{\#pragma omp barrier} da \cref{sec:mandelbrot}. O segundo argumento do
+construtor é a \textbf{função de \emph{completion}}:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A função de \emph{completion}, em
+             \texttt{src/concurrency2/demo\_sincronizadores.hpp}.}]
+    // O segundo argumento e a "completion function": roda UMA vez, em UMA das
+    // threads participantes, no instante em que a ultima chega - e antes de
+    // qualquer uma ser liberada. E o lugar seguro para trocar buffers.
+    std::barrier sincro{kThreads, [&fase]() noexcept {
+        fmt::print("      -- fim da fase {} (completion) --\n", fase.fetch_add(1));
+    }};
+\end{lstlisting}
+
+``Roda uma vez, e antes de qualquer uma ser liberada'' é a garantia que permite
+trocar os \emph{buffers} de leitura e escrita entre passos de uma simulação sem
+\emph{lock} nenhum: naquele instante, nenhuma outra \emph{thread} está tocando
+nos dados. Repare no \texttt{noexcept} --- a função é chamada num ponto em que
+uma exceção não teria para onde ir. E uma trabalhadora que vai encerrar antes
+das outras chama \texttt{arrive\_and\_drop()}, que reduz o número esperado nas
+fases seguintes; sem isso, as restantes esperariam para sempre por quem já
+morreu.
+
+\paragraph{\texttt{counting\_semaphore}: contar permissões.}
+\texttt{acquire()} toma uma permissão (bloqueando se não houver nenhuma) e
+\texttt{release()} devolve uma, acordando um esperador. O parâmetro de
+\emph{template} é o \textbf{máximo}; o do construtor é o valor \textbf{inicial}
+--- os dois são frequentemente confundidos:
+
+Em \texttt{std::counting\_semaphore<8> vagas\{2\}}, o \texttt{8} é o teto e o
+\texttt{2} é quantas permissões existem no início --- o subprojeto usa exatamente
+esse par para deixar no máximo duas de seis tarefas dentro da seção limitada, e
+mede o pico observado para provar que o limite valeu.
+
+\texttt{std::binary\_semaphore} é apelido de \texttt{counting\_semaphore<1>}, e
+o seu uso característico não é exclusão mútua: é sinalizar que algo aconteceu,
+uma vez, com o semáforo começando em zero.
+
+\begin{armadilha}[semáforo não é \emph{mutex}, por mais que \texttt{counting\_semaphore<1>} pareça]
+A diferença não é de contagem, é de \textbf{propriedade}
+(\cref{tab:semaforo-mutex}). Um \emph{mutex} tem dono: quem travou é quem
+destrava, e destravar o \emph{mutex} alheio é \gls{ub}. Um semáforo não tem dono
+--- a \emph{thread} A pode dar \texttt{acquire} e a B dar \texttt{release}, o
+que é \emph{recurso} em semáforo e \emph{bug} em \emph{mutex}. E não existe
+\texttt{unique\_lock} para semáforo: um \texttt{return} no meio da função ou uma
+exceção vazam a permissão para sempre, e o vazamento se manifesta como
+\emph{deadlock} depois, longe da causa. Quando o RAII fizer falta, ele cabe em
+cinco linhas --- um agregado que faz \texttt{acquire} no construtor,
+\texttt{release} no destrutor, e apaga a cópia.
+\end{armadilha}
+
+\begin{table}[htbp]
+\centering
+\caption{Por que um não substitui o outro.}
+\label{tab:semaforo-mutex}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Aspecto} & \textbf{\emph{mutex}} & \textbf{semáforo} \\
+\midrule
+dono          & sim, quem travou      & não, ninguém \\
+quem libera   & só o dono             & qualquer \emph{thread} \\
+contagem      & 0 ou 1                & 0 a $N$ \\
+RAII          & \classe{std::scoped\_lock} & não há padrão \\
+uso típico    & exclusão mútua        & recursos limitados \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Semáforo é para \textbf{contar}: ``no máximo quatro conexões simultâneas'', ``o
+\emph{buffer} tem dez vagas''. O resumo de escolha do \texttt{README} resolve a
+maioria das dúvidas:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Escolha rápida, de \texttt{src/concurrency2/}.}]
+esperar N eventos, uma vez ............... latch
+sincronizar rodadas repetidas ............ barrier
+limitar acesso concorrente a K ........... counting_semaphore
+sinalizar "aconteceu" uma vez ............ binary_semaphore
+exclusao mutua ........................... mutex
+resultado de UMA operacao assincrona ..... future/promise
+\end{lstlisting}
+
+% -----------------------------------------------------------------------------
+\subsubsection{O modelo de memória}
+\label{sec:modelo-memoria}
+% -----------------------------------------------------------------------------
+
+Esta é a parte da linguagem em que a intuição mais falha, e a causa é simples de
+enunciar e difícil de aceitar: \textbf{não existe ``a ordem em que o programa
+executou''}. O compilador reordena, porque nada no código de uma \emph{thread} o
+impede. A CPU reordena, porque executa fora de ordem e adia escritas num
+\emph{store buffer}. Os \emph{caches} propagam escritas em ordens diferentes
+para núcleos diferentes. O que o C++11 definiu não foi uma ordem global, e sim
+uma relação \textbf{parcial} --- \emph{happens-before} --- mais a regra de que
+ler algo que não \emph{acontece-antes} da sua leitura é \gls{datarace}, isto é,
+\gls{ub} total.
+
+\emph{Happens-before}, em termos concretos: dentro de uma mesma \emph{thread},
+tudo o que está escrito antes acontece-antes do que está escrito depois, e isso
+é gratuito. \emph{Entre} \emph{threads}, a relação só existe se alguma operação
+de sincronização a criar --- destravar um \emph{mutex} acontece-antes de
+travá-lo em seguida; criar uma \emph{thread} acontece-antes da primeira
+instrução dela; um \emph{store release} acontece-antes do \emph{load acquire}
+que lê aquele valor. Fora dessas pontes não há ordem alguma, e os dois acessos
+são simultâneos por definição.
+
+\begin{armadilha}[\gls{datarace} é \gls{ub}, não ``valor errado ocasional'']
+A intuição errada é ``no pior caso eu leio um valor velho''. A realidade é que o
+compilador tem permissão para assumir que a corrida \emph{não acontece} e
+otimizar em cima disso. O caso clássico é um \texttt{bool parar = false;} não
+atômico lido em \texttt{while (!parar) \{ trabalho(); \}} enquanto outra
+\emph{thread} escreve \texttt{true}: com \texttt{-O2}, o compilador vê que o
+laço não escreve em \texttt{parar}, iça a leitura para fora e gera
+\texttt{while (true)}. O programa trava para sempre --- e o compilador
+\textbf{está certo}, porque a outra \emph{thread} escrevendo ali já era
+\gls{ub}. Trocar por \classe{std::atomic<bool>} resolve, porque aí a releitura
+passa a ser obrigatória.
+\end{armadilha}
+
+\begin{armadilha}[\texttt{volatile} não serve para concorrência]
+Ele impede que a leitura seja otimizada, o que faz o laço acima funcionar por
+acidente --- e é daí que vem a lenda. Mas \texttt{volatile} não dá garantia
+nenhuma de ordem entre variáveis e não garante atomicidade: um
+\texttt{volatile long long} pode ser lido pela metade numa máquina de 32 bits.
+Em C++, \texttt{volatile} é para registrador mapeado em memória (MMIO), não para
+\emph{threads}.
+\end{armadilha}
+
+\paragraph{\emph{Acquire}/\emph{release}, em uma frase.} Se a \emph{thread} B
+faz um \emph{load-acquire} que \textbf{lê o valor escrito} por um
+\emph{store-release} da \emph{thread} A, então tudo o que A escreveu antes
+daquele \emph{store} é visível para B depois daquele \emph{load}. É assim que se
+publica uma estrutura inteira com um único atômico --- e note que os campos
+publicados \emph{não} são atômicos, de propósito:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Publicação por \emph{flag}, em
+             \texttt{src/concurrency2/demo\_memory\_model.hpp}.}]
+    std::jthread leitor{[&] {
+        while (!pronto.load(std::memory_order_acquire)) {   // <- ACQUIRE
+            std::this_thread::yield();
+        }
+        // Aqui e SEGURO ler `carga` sem ser atomica: o par release/acquire
+        // criou happens-before entre as escritas do produtor e estas leituras.
+        ok = (carga.a == 42 && carga.b == 3.5 && carga.c == "publicado");
+    }};
+
+    carga.a = 42;                                        // escritas comuns
+    carga.b = 3.5;
+    carga.c = "publicado";
+    pronto.store(true, std::memory_order_release);       // <- RELEASE publica tudo
+\end{lstlisting}
+
+A barreira é \textbf{direcional}, e é isso que a torna barata: \emph{release}
+impede que qualquer coisa de antes desça para depois do \emph{store};
+\emph{acquire} impede que qualquer coisa de depois suba para antes do
+\emph{load}. Cada um bloqueia um sentido só; \texttt{seq\_cst} bloqueia os dois
+\emph{e} ainda impõe uma ordem total entre todas as operações \texttt{seq\_cst}
+do programa.
+
+\begin{armadilha}[um \emph{release} sozinho não sincroniza nada]
+São três condições, e falhar em qualquer uma anula a garantia sem aviso:
+(a) tem de haver um \emph{acquire} do outro lado; (b) esse \emph{acquire} tem de
+\textbf{ler o valor que aquele \emph{release} escreveu} --- ler um valor mais
+antigo não sincroniza com coisa alguma; e (c) o par tem de ser \textbf{no mesmo
+átomo}. Fazer \emph{release} em \texttt{a} e \emph{acquire} em \texttt{b} é
+escrever duas barreiras que não se conversam.
+\end{armadilha}
+
+\paragraph{\texttt{relaxed}: só atomicidade.} Ele garante exatamente uma coisa:
+a operação é atômica --- nenhum incremento se perde, nenhum valor ``meio
+escrito'' aparece. Não garante \emph{nada} sobre a ordem em relação a outras
+variáveis. O subprojeto mede o caso legítimo (quatro \emph{threads} somando
+50\,000 vezes cada uma com \texttt{fetch\_add} \texttt{relaxed}) e o contador
+fecha em 200\,000 sempre, porque ninguém depende da ordem dos incrementos. O uso
+errado é publicar dados: \texttt{pronto.store(true, relaxed)} deixa a outra
+\emph{thread} enxergar \texttt{pronto == true} e \texttt{dados == 0}.
+
+\begin{regra}[a contagem de referências é o exemplo canônico, e é assimétrica]
+No contador de um \classe{std::shared\_ptr}, o \textbf{incremento} pode ser
+\texttt{relaxed} --- basta que nenhum se perca. O \textbf{decremento} precisa ser
+\texttt{acq\_rel}: quem zera o contador vai destruir o objeto, e precisa
+enxergar tudo o que as outras \emph{threads} fizeram com ele antes de soltarem
+as suas referências. Essa assimetria é a razão de o decremento custar mais que o
+incremento (\cref{sec:smart-pointers}).
+\end{regra}
+
+\paragraph{\texttt{seq\_cst}: o padrão, e quanto ele custou de fato.}
+\texttt{x.store(1)} é \texttt{x.store(1, memory\_order\_seq\_cst)} --- a única
+ordem que corresponde à intuição, porque existe \emph{uma} ordem total de todas
+as operações \texttt{seq\_cst} com a qual todas as \emph{threads} concordam. A
+crença difundida é que ela é cara e que trocar para \texttt{relaxed} é dinheiro
+no bolso. O subprojeto mede, com dois milhões de \texttt{fetch\_add} sem
+contenção:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/concurrency2/}: dois milhões de
+             \texttt{fetch\_add} numa \emph{thread} só, x86-64.}]
+relaxed :    2.96 ms
+seq_cst :    2.99 ms
+razao   :    1.01x
+\end{lstlisting}
+
+Um por cento --- ou seja, ruído. A explicação é arquitetural: no x86-64,
+\texttt{fetch\_add} vira \texttt{lock xadd} de qualquer maneira, a arquitetura é
+fortemente ordenada e \emph{acquire}/\emph{release} saem de graça. Num ARM ou
+POWER, onde \texttt{seq\_cst} exige barreiras explícitas (\texttt{dmb ish}), a
+diferença é grande.
+
+\begin{regra}[comece com \texttt{seq\_cst}; só desça com o profiler e com a frase escrita]
+A medição acima é a razão de a regra existir. Descer de ordem é a otimização de
+menor retorno e maior risco do capítulo: no x86-64 costuma não pagar nada, e num
+ARM produz um programa que passa em todos os testes da sua máquina e falha na do
+cliente. Só desça quando (a) o \emph{profiler} apontar aquela operação e (b)
+você conseguir escrever, em uma frase, qual \emph{happens-before} está sendo
+preservado. Se não consegue escrever a frase, não desça.
+\end{regra}
+
+\begin{armadilha}[atômico não é ``\emph{thread-safe}'' automaticamente]
+\texttt{if (x > 0) x = x - 1;} são \emph{duas} operações sobre um
+\classe{std::atomic<int>}: uma leitura e uma escrita. Entre elas outra
+\emph{thread} mexe, e o contador fica negativo. Cada operação é atômica; a
+\emph{sequência} não é. Para torná-la atômica é preciso
+\texttt{compare\_exchange} num laço, ou um \emph{mutex}.
+\end{armadilha}
+
+\begin{armadilha}[\texttt{atomic<T>} com \texttt{T} grande esconde um \emph{lock}]
+O subprojeto mede: \texttt{atomic<int>} (4 bytes) e \texttt{atomic<double>}
+(8 bytes) são \emph{lock-free}; uma \emph{struct} de 32 bytes não é --- o corte
+no x86-64 é 16 bytes, o alcance do \texttt{cmpxchg16b}. Quando não é
+\emph{lock-free}, a implementação usa um \emph{mutex} interno: continua correta,
+mas não pode mais ser usada em \emph{signal handler} e perde a garantia de
+progresso. Consulte o \texttt{static constexpr}
+\textbf{\texttt{is\_always\_lock\_free}}, que responde em compilação; o
+\texttt{is\_lock\_free()} de membro responde em execução e, para tipos grandes,
+vira chamada a \texttt{\_\_atomic\_is\_lock\_free} --- o que obriga a linkar
+\texttt{-latomic}.
+\end{armadilha}
+
+Falta uma quinta ordem na \cref{tab:memory-order}, e a omissão é deliberada:
+\texttt{memory\_order\_consume} está no padrão para não ser usado. Nenhum
+compilador o implementa de verdade --- todos o promovem para \texttt{acquire}
+--- e ele está em revisão desde o C++17. Escrevê-lo não produz erro, nem aviso,
+nem efeito: é documentação enganosa dentro do código. E nada nesta seção
+substitui rodar o TSan da regra de abertura do capítulo, que é o que transforma
+``não vi falhar'' em evidência --- \projeto{concurrency2} é executado sob ele e
+reporta zero achados.
+
+% -----------------------------------------------------------------------------
+\subsubsection{CAS: a primitiva que constrói todas as outras}
+\label{sec:cas}
+% -----------------------------------------------------------------------------
+
+\begin{porque}[por que \texttt{fetch\_add} não é suficiente]
+Ele resolve contadores, e só. ``Incremente apenas se ainda for $X$'', ``insira
+na frente da lista'', ``atualize o máximo'' --- nada disso é uma soma. Todas
+essas operações precisam de uma primitiva capaz de dizer \emph{``se o valor
+ainda for o que eu li, troque; senão, me diga o que ele é agora''}: o
+\emph{compare-and-swap}. O hardware a expõe diretamente --- \texttt{lock
+cmpxchg} no x86, o par \texttt{ldrex}/\texttt{strex} (LL/SC) no ARM --- e tudo o
+mais (\texttt{fetch\_add}, \texttt{fetch\_or}, \texttt{exchange}) pode ser
+construído a partir dela.
+\end{porque}
+
+A forma canônica é um laço de corpo vazio, e o detalhe que a faz funcionar está
+na assinatura: \texttt{esperado} é passado \textbf{por referência} e é reescrito
+pela própria função quando ela falha. Sem isso, cada volta precisaria de um
+\texttt{load} extra.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O laço de CAS, forma canônica.}]
+void atualiza_max(std::atomic<int>& m, int v) {
+    int atual = m.load();
+    while (v > atual &&
+           !m.compare_exchange_weak(atual, v)) {
+        // corpo VAZIO: o CAS ja reescreveu `atual` com o valor real
+    }
+}
+\end{lstlisting}
+
+A escolha entre as duas versões é mecânica. \texttt{\_weak} pode falhar
+\emph{espuriamente} --- devolver \texttt{false} mesmo quando o valor era o
+esperado --- porque mapeia direto no par LL/SC do ARM e do POWER, e por isso é a
+versão barata para usar \emph{dentro} de um laço, onde a falha só custa outra
+volta. \texttt{\_strong} só falha se o valor realmente mudou, e é a versão para
+quando não há laço externo. O CAS aceita ainda
+\emph{duas} ordens de memória ---
+\texttt{compare\_exchange\_weak(esp, novo, ORDEM\_SUCESSO, ORDEM\_FALHA)} --- e
+a ordem de falha não pode ser mais forte que a de sucesso, nem ser
+\texttt{release}: uma falha não escreve nada, e não há o que publicar.
+
+\paragraph{O preço da contenção, medido.} O subprojeto reimplementa
+\texttt{fetch\_add} em cima de CAS --- o cenário mais contencioso possível, em
+que toda \emph{thread} disputa o mesmo átomo em toda iteração --- e instrumenta
+o laço com um segundo contador, que soma \emph{tentativas} em vez de sucessos:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/concurrency2/}: 4 \emph{threads} $\times$
+             20\,000 incrementos por CAS.}]
+incrementos efetivados : 80000
+tentativas de CAS      : 141160 - 201402   (varia por execucao)
+falhas por contencao   : 43% - 60% de retrabalho
+\end{lstlisting}
+
+Nenhum incremento se perde --- a corretude está intacta. Mas entre 43\% e 60\%
+das voltas do laço foram trabalho jogado fora. É esse retrabalho que faz um
+algoritmo \emph{lock-free} degradar sob contenção: ele nunca \textbf{bloqueia},
+e ainda assim não é de graça. Com uma \emph{thread} só, o retrabalho é zero. Na
+prática, use \texttt{fetch\_add}: o hardware resolve num \texttt{lock xadd}, sem
+laço nenhum.
+
+\begin{porque}[por que a primeira versão desta medição foi descartada]
+Ela media a atualização de um máximo, com cada \emph{thread} usando uma faixa
+disjunta e crescente de valores. O resultado foi \textbf{0\% de retrabalho}:
+cada valor já era um novo máximo, e o CAS acertava de primeira. A medição
+contradizia o texto --- e o texto estava certo sobre o fenômeno, mas o
+experimento não reproduzia a condição de que ele falava, porque não havia
+disputa alguma pelo átomo. Trocou-se o experimento por um que força a disputa. A
+lição de método atravessa o livro: quando o número contraria a expectativa, a
+primeira pergunta é \emph{o que este experimento está medindo de fato?} --- e é
+frequente que a resposta seja ``outra coisa''.
+\end{porque}
+
+\paragraph{\texttt{atomic\_flag} e a espera atômica.} \texttt{atomic\_flag} é o
+único tipo que o padrão \emph{exige} ser \emph{lock-free} em toda
+implementação, e por isso o único utilizável sem ressalvas num \emph{signal
+handler}. Tem três operações: \texttt{test\_and\_set()}, que liga a
+\emph{flag} e devolve o valor \emph{anterior}; \texttt{clear()}; e
+\texttt{test()}, que só existe desde o C++20 --- versão em que a \emph{flag}
+também passou a nascer limpa, aposentando o \texttt{ATOMIC\_FLAG\_INIT}.
+
+Desde o C++20, todo \classe{std::atomic<T>} também tem \texttt{wait},
+\texttt{notify\_one} e \texttt{notify\_all}, implementados sobre \emph{futex}.
+São a terceira maneira de esperar por uma condição: o laço de \emph{spin} não
+precisa de \emph{mutex} mas queima CPU; a \texttt{condition\_variable} dorme mas
+exige \emph{mutex}; \texttt{atomic::wait} dorme \emph{e} dispensa o
+\emph{mutex}.
+
+\begin{armadilha}[\texttt{atomic\_flag} não serve para ``inicialize uma vez'']
+\texttt{if (!ja\_inicializou.test\_and\_set()) inicializa();} elege
+corretamente uma única \emph{thread} para inicializar --- e deixa todas as
+outras seguirem em frente \emph{sem esperar}, usando o objeto ainda não
+inicializado. Para inicialização única use \classe{std::call\_once} ou uma
+estática local, \emph{thread-safe} desde o C++11, que fazem as demais
+\textbf{esperarem}. A \emph{flag} só diz quem chegou primeiro.
+\end{armadilha}
+
+\begin{armadilha}[a semântica de \texttt{atomic::wait} é o inverso da intuição]
+\texttt{estado.wait(0)} significa ``durma \textbf{enquanto} o valor ainda for
+0'', e não ``espere até que ele seja 0'' --- o oposto de
+\texttt{cv.wait(lk, pred)}, que espera até o predicado ser verdadeiro. E, como a
+\texttt{condition\_variable}, ela sofre despertar espúrio: em código real, o
+\texttt{wait} vai dentro de um laço que reconfere a condição.
+\end{armadilha}
+
+\paragraph{\emph{Spin lock}: o exercício que quase nunca se deve usar.} A
+implementação didática do subprojeto usa o idioma \emph{test and test-and-set},
+e o laço interno é o ponto:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\emph{Test and test-and-set}, em
+             \texttt{src/concurrency2/demo\_atomicos.hpp}.}]
+    class SpinLock {
+        std::atomic_flag travado_{};
+    public:
+        void lock() {
+            while (travado_.test_and_set(std::memory_order_acquire)) {
+                // `test()` puro nao escreve na linha de cache; ficar em
+                // `test_and_set` faria a linha pingar entre os nucleos a cada
+                // volta. Isto e o "test and test-and-set".
+                while (travado_.test(std::memory_order_relaxed))
+                    ;
+            }
+        }
+        void unlock() { travado_.clear(std::memory_order_release); }
+    };
+\end{lstlisting}
+
+\begin{armadilha}[o \emph{spin lock} caseiro perde para o \classe{std::mutex} do sistema]
+Ele funciona, e mesmo assim é quase sempre a escolha errada: quem espera queima
+CPU integral --- num núcleo de que o dono do \emph{lock} talvez precisasse para
+terminar e liberar; se o sistema operacional preempta o dono, os demais giram um
+quantum inteiro à toa; e não há RAII, reentrância nem detecção de
+\emph{deadlock}. O detalhe decisivo é que o \classe{std::mutex} do glibc
+\textbf{já faz um \emph{spin} curto} antes de recorrer ao \emph{futex}: o melhor
+dos dois mundos vem de graça. Só considere o \emph{spin lock} quando a seção
+crítica tiver pouquíssimas instruções, nenhuma chamada de função, e você tiver
+medido.
+\end{armadilha}
+
+% -----------------------------------------------------------------------------
+\subsubsection{\emph{Lock-free} na prática}
+\label{sec:lockfree}
+% -----------------------------------------------------------------------------
+
+\begin{porque}[o que ``\emph{lock-free}'' quer dizer --- e o que não quer]
+Não quer dizer ``rápido''. Quer dizer uma garantia de \textbf{progresso}. Um
+algoritmo \emph{bloqueante} pode ser paralisado por uma única \emph{thread}
+suspensa no lugar errado --- o sistema operacional a tirou do processador com o
+\emph{mutex} na mão, e todas as outras esperam. Um algoritmo \emph{lock-free}
+garante que \emph{alguma} \emph{thread} sempre progride, ainda que uma
+específica possa ficar tentando indefinidamente. \emph{Wait-free} é mais forte:
+\emph{toda} \emph{thread} progride num número limitado de passos. A garantia
+importa em duas situações concretas: código em \emph{signal handler}, que não
+pode travar \emph{mutex}, e sistemas de tempo real, em que o pior caso é o que
+conta.
+\end{porque}
+
+\paragraph{A fila SPSC: a única que vale escrever à mão.} SPSC é \emph{single
+producer, single consumer}. Restringir o problema a \textbf{um} produtor e
+\textbf{um} consumidor o torna tratável, porque cada índice passa a ter um único
+escritor: o produtor é o único que escreve \texttt{cabeca\_}, o consumidor é o
+único que escreve \texttt{cauda\_}. Não há CAS nenhum --- só um par
+\emph{release}/\emph{acquire} de cada lado.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A fila SPSC completa, em
+             \texttt{src/concurrency2/demo\_lockfree.hpp}.}]
+template <typename T, std::size_t N>
+class FilaSPSC {
+    static_assert((N & (N - 1)) == 0, "N precisa ser potencia de 2");
+
+    // Cada indice na sua propria linha de cache: sem isso, o produtor
+    // escrevendo `cabeca_` invalidaria a linha do consumidor a cada push.
+    alignas(kLinha) std::atomic<std::size_t> cabeca_{0};   // so o produtor escreve
+    alignas(kLinha) std::atomic<std::size_t> cauda_{0};    // so o consumidor escreve
+    alignas(kLinha) T                        buf_[N]{};
+
+public:
+    bool push(const T& v) {
+        const std::size_t c = cabeca_.load(std::memory_order_relaxed);
+        const std::size_t prox = (c + 1) & (N - 1);
+        // acquire: precisa enxergar os pops ja feitos pelo consumidor
+        if (prox == cauda_.load(std::memory_order_acquire)) return false;  // cheia
+        buf_[c] = v;
+        cabeca_.store(prox, std::memory_order_release);   // publica o dado junto
+        return true;
+    }
+
+    std::optional<T> pop() {
+        const std::size_t t = cauda_.load(std::memory_order_relaxed);
+        if (t == cabeca_.load(std::memory_order_acquire)) return std::nullopt;  // vazia
+        T v = buf_[t];
+        cauda_.store((t + 1) & (N - 1), std::memory_order_release);
+        return v;
+    }
+};
+\end{lstlisting}
+
+Três decisões merecem leitura atenta. O \texttt{static\_assert} de potência de
+dois permite trocar o \texttt{\%} por um \texttt{\&} com a máscara
+\texttt{N - 1}, e módulo é caro num caminho quente. O \texttt{alignas(kLinha)}
+--- em que \texttt{kLinha} é
+\texttt{std::hardware\_destructive\_interference\_size}, o tamanho mínimo que
+separa dois objetos para que não caiam na mesma linha de \emph{cache} --- evita
+que o produtor, ao escrever \texttt{cabeca\_}, invalide a linha do consumidor a
+cada \texttt{push}: é o \emph{false sharing} medido em \projeto{performance}. E o
+par \emph{release}/\emph{acquire} publica \emph{também} a escrita em
+\texttt{buf\_[c]} feita na linha anterior --- a mesma publicação por \emph{flag}
+da \cref{sec:modelo-memoria}, aplicada a cada elemento. O resultado medido: 200
+mil itens em cerca de 2,3\,ms, ou aproximadamente 90 milhões de itens por
+segundo, com a soma íntegra.
+
+\begin{armadilha}[a garantia da SPSC depende de ser exatamente 1 produtor e 1 consumidor]
+Com dois produtores, ambos podem ler a mesma \texttt{cabeca\_}, escrever no
+mesmo \emph{slot} e um sobrescrever o outro --- não há CAS para arbitrar. Não há
+aviso de compilação nem verificação em execução: a classe simplesmente deixa de
+estar correta no momento em que alguém acrescenta uma segunda \emph{thread}
+produtora, meses depois, sem ler o comentário.
+\end{armadilha}
+
+\paragraph{A pilha \emph{lock-free} e o problema ABA.} A pilha já exige CAS em
+laço, porque vários produtores disputam o mesmo \texttt{topo\_}. E é aqui que
+aparece a armadilha mais conhecida do assunto:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={O problema ABA, como o subprojeto o descreve.}]
+thread 1: le topo = A, vai chamar CAS(A -> A->prox = B)
+thread 2: pop A, pop B, push A de volta
+thread 1: CAS(A -> B) SUCEDE - o ponteiro e A de novo!
+          Mas B ja saiu da pilha. O topo agora aponta para lixo.
+\end{lstlisting}
+
+O CAS compara \textbf{endereços}, não identidades --- e o alocador adora
+reciclar o endereço que acabou de ser liberado, o que torna o ABA muito mais
+provável do que a descrição sugere. As defesas conhecidas são todas caras:
+contador de versão junto do ponteiro (o que exige CAS de 128 bits,
+\texttt{cmpxchg16b}, e alinhamento a 16 bytes), \emph{hazard pointers}, RCU ou
+\emph{epoch-based reclamation}, ou simplesmente nunca liberar.
+
+\begin{armadilha}[não há momento seguro para liberar um nó]
+No \texttt{pop()} da pilha, o CAS lê \texttt{t->prox} --- e outra \emph{thread}
+pode ter feito \texttt{delete t} um instante antes. É \emph{use-after-free}, e o
+AddressSanitizer o acusa. A demonstração do subprojeto escapa porque
+\textbf{separa as fases}: primeiro só \emph{pushes} concorrentes, depois só
+\emph{pops} de uma \emph{thread} --- e o \texttt{delete} está marcado no fonte
+com uma advertência explícita de que é um bug em uso concorrente. Não há como
+saber se alguma \emph{thread} ainda tem um ponteiro para o nó, e é essa
+impossibilidade --- não o CAS --- que torna estruturas \emph{lock-free}
+encadeadas assunto de especialista.
+\end{armadilha}
+
+\texttt{std::atomic<std::shared\_ptr<T>>}, do C++20, resolve o ciclo de vida, e
+o GCC 13 já o tem --- mas o seu \texttt{is\_always\_lock\_free} é
+\texttt{false}: internamente há um \emph{mutex}. Fica correto e deixa de ser
+\emph{lock-free}, que era o ponto. Na prática, use as implementações prontas
+(\texttt{moodycamel::ConcurrentQueue}, \texttt{boost::lockfree},
+\texttt{folly::MPMCQueue}) e reserve o esforço de escrever a sua para o caso
+SPSC, o único simples o bastante para ser revisado com calma.
+
+\paragraph{A medição que fecha o assunto.} Quatro \emph{threads}, cem mil
+operações cada uma, dois experimentos:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/concurrency2/}: 4 \emph{threads} $\times$
+             100\,000 operações.}]
+contador:
+  atomic fetch_add           :  3.87 ms
+  mutex + ++                 :  9.10 ms   (2.3x mais lento)
+
+insercao:
+  mutex + vector::push_back  :  8.68 ms
+  pilha lock-free (com new)  : 23.61 ms   (2.7x mais LENTO)
+\end{lstlisting}
+
+O primeiro resultado confirma a expectativa: quando a seção crítica é \emph{uma
+instrução}, o atômico ganha com folga, porque o \emph{mutex} acrescenta duas
+operações atômicas --- travar e destravar --- em volta dela. O segundo a
+contraria, e é o resultado que justifica a seção inteira: com trabalho um pouco
+maior dentro da seção crítica, \textbf{o \emph{mutex} ganhou}, por um fator de
+2,7. A pilha \emph{lock-free} paga um \texttt{new} por nó --- e o alocador tem o
+seu próprio \emph{lock} interno, de modo que ela não é sequer tão
+\emph{lock-free} quanto o nome sugere --- e ainda sofre o retrabalho de CAS
+medido na \cref{sec:cas}.
+
+\begin{regra}[para ganhar desempenho, reduza a contenção; \emph{lock-free} é para a garantia]
+Nesta ordem: primeiro tente eliminar o compartilhamento (dados por
+\emph{thread}, \emph{sharding}, ou simplesmente uma seção crítica menor); depois
+considere um atômico, se a operação couber em uma instrução; e só escolha uma
+estrutura \emph{lock-free} quando precisar da \emph{garantia de progresso} ---
+\emph{signal handler}, tempo real, ou um caminho em que suspender uma
+\emph{thread} é inaceitável. Escolher \emph{lock-free} esperando velocidade é,
+como a medição mostra, uma aposta que frequentemente se perde.
+\end{regra}
+
+% =============================================================================
+\subsection{Co-rotinas}
+\label{sec:coroutines}
+% =============================================================================
+
+O subprojeto \projeto{coroutines} trata da adição do C++20 que separa
+\emph{concorrência} de \emph{paralelismo}. Uma \gls{corotina} não cria
+\emph{thread} nenhuma: ela suspende a própria execução, devolve o controle a
+quem chamou, e retoma depois exatamente de onde parou --- com as variáveis
+locais preservadas num \emph{frame} alocado à parte.
+
+Uma função é uma co-rotina se usar qualquer um dos três operadores
+(\cref{tab:operadores-corotina}). Não há palavra-chave no cabeçalho: a natureza
+da função é determinada pelo corpo, o que é uma decisão de projeto incomum e
+uma fonte frequente de confusão.
+
+\begin{table}[htbp]
+\centering
+\caption{Os três operadores, e o análogo em linguagens que já os tinham.}
+\label{tab:operadores-corotina}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Operador} & \textbf{Significado} & \textbf{Análogo} \\
+\midrule
+\texttt{co\_yield v}   & suspende e entrega \texttt{v} ao chamador & \texttt{yield} do Python \\
+\texttt{co\_await expr}& suspende e aguarda \texttt{expr} completar & \texttt{await} do Python/JS \\
+\texttt{co\_return v}  & termina a co-rotina com o valor \texttt{v} & \texttt{return} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{\emph{Generator}: preguiça com estado}
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Um gerador infinito recortado por um limite, em
+             \texttt{src/coroutines/demo\_generator.hpp}.}]
+Generator<long long> fibonacci(long long limite) {
+    long long a = 0, b = 1;
+    while (a <= limite) {
+        co_yield a;
+        auto prox = a + b;
+        a = b;
+        b = prox;
+    }
+    // ao sair do while, a coroutine termina → return_void() chamado
+}
+\end{lstlisting}
+
+Compare com o que a \cref{sec:ranges} dizia sobre \emph{views}: elas também são
+preguiçosas, mas guardar estado numa \emph{view} exige um \emph{lambda}
+\texttt{mutable}, e isso é frágil --- a \emph{view} pode ser percorrida mais de
+uma vez, e o estado não reinicia. A co-rotina resolve porque o estado vive no
+\emph{frame}, e o \emph{frame} pertence ao gerador.
+
+\subsubsection{O \texttt{promise\_type}: o contrato que a linguagem exige}
+
+A linguagem fornece apenas o mecanismo de suspensão; \emph{o que fazer} em cada
+ponto é decidido por um tipo que o usuário escreve. O compilador procura
+\texttt{T::promise\_type} no tipo de retorno da co-rotina e chama seis métodos
+dele em momentos definidos. Os dois que mais confundem são as suspensões
+inicial e final:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Duas decisões de projeto do gerador, em
+             \texttt{src/coroutines/demo\_generator.hpp}.}]
+        // initial_suspend → suspend_always: a coroutine não executa nada
+        // ao ser criada. Só começa quando chamamos .next() pela primeira vez.
+        // (Alternativa: suspend_never = executa até o primeiro co_yield logo)
+        std::suspend_always initial_suspend() noexcept { return {}; }
+
+        // final_suspend → suspend_always: ao terminar, a coroutine suspende
+        // em vez de se destruir automaticamente. Isso é necessário para que
+        // o Generator (que guarda o handle) possa destruí-la de forma segura.
+        std::suspend_always final_suspend() noexcept { return {}; }
+\end{lstlisting}
+
+\begin{armadilha}[o \emph{frame} da co-rotina é alocado, e alguém tem de destruí-lo]
+O \texttt{coroutine\_handle} é um ponteiro cru com semântica de dono: quem o
+guarda precisa chamar \texttt{destroy()}, e ninguém o faz por você. O
+\texttt{final\_suspend} devolvendo \texttt{suspend\_always} é justamente o que
+evita a auto-destruição e transfere a responsabilidade para o invólucro
+(\texttt{Generator}, no caso), que a cumpre no destrutor. Um invólucro que
+esqueça isso vaza o \emph{frame} a cada chamada --- e o vazamento não aparece em
+teste curto.
+\end{armadilha}
+
+\subsubsection{\emph{Task} e o protocolo \emph{Awaitable}}
+
+Enquanto \texttt{co\_yield} produz uma sequência, \texttt{co\_await} espera um
+resultado. E a diferença em relação a \classe{std::future} é exatamente a que
+motiva o capítulo:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Bloquear a \emph{thread} contra suspender a co-rotina.}]
+int resultado = future.get();     // BLOQUEIA: a thread fica parada aqui
+int resultado = co_await task;    // SUSPENDE: a thread vai fazer outra coisa
+\end{lstlisting}
+
+Qualquer tipo participa de \texttt{co\_await} se implementar três métodos:
+\texttt{await\_ready()} (já tem resultado? então nem suspenda),
+\texttt{await\_suspend(handle)} (o que fazer ao suspender) e
+\texttt{await\_resume()} (o valor que a expressão devolve). É um protocolo
+aberto, e é por isso que Asio pôde integrar co-rotinas sem que o padrão
+soubesse de Asio.
+
+\subsubsection{O que o compilador gera}
+
+A transformação é conhecida: a função vira uma \textbf{máquina de estados}, e as
+variáveis locais que sobrevivem a uma suspensão migram para o \emph{frame}. O
+subprojeto reconstrói o esqueleto à mão --- um \texttt{switch} sobre o estado,
+com \texttt{goto} para o ponto de retomada --- o que torna imediatamente óbvio
+por que variáveis locais precisam ser realocadas: a pilha original já não existe
+quando a co-rotina é retomada.
+
+\begin{armadilha}[cadeias longas de co-rotinas estouram a pilha sem \emph{symmetric transfer}]
+Se \texttt{await\_suspend} chamar \texttt{outro\_handle.resume()}, cada retomada
+empilha um \emph{frame} de chamada sobre o anterior, e uma cadeia longa termina
+em \emph{stack overflow}. A correção é devolver o \emph{handle} em vez de
+retomá-lo: \texttt{auto await\_suspend(handle h) \{ return outro\_handle; \}}.
+O compilador transforma isso numa \emph{tail call} --- a pilha fica constante.
+\end{armadilha}
+
+\subsubsection{Onde as co-rotinas realmente pagam: I/O}
+
+Com Asio, três co-rotinas concorrentes rodam em \textbf{uma} \emph{thread}, e a
+ordem de término é a das esperas, não a da criação. Um servidor de eco dá uma
+co-rotina por cliente, e uma \emph{thread} gerencia todas --- escalável a
+milhares de conexões sem o custo de criar uma \emph{thread} por conexão
+(\cref{sec:network}).
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Uma sessão inteira, escrita como se fosse síncrona.}]
+asio::awaitable<void> echo_session(tcp::socket socket) {
+    char buffer[1024];
+    while (true) {
+        auto n = co_await socket.async_read_some(
+            asio::buffer(buffer), asio::use_awaitable);
+        co_await asio::async_write(
+            socket, asio::buffer(buffer, n), asio::use_awaitable);
+    }
+}
+\end{lstlisting}
+
+\begin{table}[htbp]
+\centering
+\caption{Qual primitiva para qual problema.}
+\label{tab:escolha-corotina}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Caso de uso} & \textbf{Use} \\
+\midrule
+gerar sequência de valores                & \texttt{Generator<T>} com \texttt{co\_yield} \\
+operação assíncrona que devolve um valor  & \texttt{Task<T>} com \texttt{co\_await} \\
+I/O de rede ou disco sem bloquear         & \texttt{asio::awaitable<T>} \\
+máquina de estados explícita              & co-rotina com vários \texttt{co\_yield} \\
+concorrência leve em vez de \emph{threads}& \emph{pool} de co-rotinas num \texttt{io\_context} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{regra}[co-rotinas são para concorrência; \emph{threads}, para paralelismo]
+Co-rotinas não usam mais de um núcleo: elas trocam de tarefa dentro da mesma
+\emph{thread}, e o ganho é sobre \emph{espera} --- I/O, temporizadores, protocolos
+de rede. Trabalho que consome CPU não fica mais rápido por virar co-rotina, e o
+Mandelbrot da \cref{sec:mandelbrot} é o exemplo oposto: puro cálculo, que só
+melhora com núcleos de verdade.
+\end{regra}
+
+% =============================================================================
+\subsection{Paralelismo aplicado: dois Mandelbrots}
+\label{sec:mandelbrot}
+% =============================================================================
+
+O conjunto de Mandelbrot é o problema didático perfeito para paralelismo:
+\textbf{cada pixel é independente de todos os outros}. Não há dado
+compartilhado, não há ordem obrigatória, não há sincronização necessária --- o
+que o torna \emph{embaraçosamente paralelo}, e o que permite comparar duas
+implementações sem que a comparação seja poluída por diferenças de correção.
+
+O algoritmo é o tempo de escape: para cada ponto $c$ do plano complexo, itera-se
+$z_{n+1} = z_n^2 + c$ a partir de $z_0 = 0$, contando quantos passos a sequência
+leva para escapar do disco de raio 2. Se não escapar dentro do limite, o ponto é
+considerado pertencente ao conjunto.
+
+\subsubsection{O laço interno, e por que ele não usa \classe{std::complex}}
+
+Escrito com \classe{std::complex<double>} e \texttt{std::abs(z) <= 2.0}, o
+algoritmo cabe em quatro linhas e é o que aparece em toda apresentação do
+assunto. Os dois renderizadores do repositório não o escrevem assim, e a razão
+está no caminho quente:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O laço de escape, em
+             \texttt{src/mandelbrot/mandelbrot\_renderer.cpp}.}]
+            // iteracao de Mandelbrot:  z_{n+1} = z_n^2 + c
+            double zr = 0.0, zi = 0.0;
+            int iter = 0;
+            while (iter < max_iter_ && zr*zr + zi*zi < 4.0) {
+                double zr2 = zr*zr - zi*zi + cr;
+                zi = 2.0 * zr * zi + ci;
+                zr = zr2;
+                ++iter;
+            }
+\end{lstlisting}
+
+Duas otimizações estão embutidas aí, e as duas são gerais o bastante para valer
+fora do fractal. A primeira: o teste de escape é $|z| > 2$, mas
+$|z| = \sqrt{z_r^2 + z_i^2}$ --- e comparar $z_r^2 + z_i^2$ com $4$ dá o
+\emph{mesmo} resultado sem a raiz quadrada, que é uma das operações mais caras
+do processador. A segunda: \texttt{zr2} é uma variável temporária obrigatória,
+porque calcular \texttt{zi} depois de já ter sobrescrito \texttt{zr} usaria o
+valor errado --- o tipo de erro que \classe{std::complex} esconde e o código
+manual expõe. Escrever o laço à mão custa quatro linhas a mais e devolve o
+controle sobre exatamente estas duas decisões.
+
+\begin{regra}[a comparação com o quadrado é o idioma, não uma esperteza local]
+Toda vez que um teste envolve distância --- colisão de esferas, raio de busca,
+vizinho mais próximo ---, compare os quadrados. A raiz quadrada é monótona, de
+modo que $a < b \Leftrightarrow a^2 < b^2$ para valores não negativos, e a
+comparação sem raiz é sempre válida. O mesmo idioma reaparece na detecção de
+colisões da \cref{sec:collision}.
+\end{regra}
+
+\subsubsection{Com \texttt{std::thread}: paralelismo por \emph{tiles}}
+
+O subprojeto \projeto{mandelbrot} divide o quadro em faixas horizontais, uma por
+\emph{thread}, e usa exatamente os primitivos da \cref{sec:concurrency} para
+saber quando todas terminaram: um contador protegido por \emph{mutex} e uma
+\texttt{condition\_variable} com predicado.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A divisão em faixas e a espera pelo término, em
+             \texttt{src/mandelbrot/mandelbrot\_renderer.cpp}.}]
+    int rows_per_tile = h_ / num_threads_;
+    int y0 = 0;
+
+    for (int t = 0; t < num_threads_; ++t) {
+        int y1 = (t == num_threads_ - 1) ? h_ : y0 + rows_per_tile;
+        // Captura vp por valor para que cada thread tenha sua copia
+        workers.emplace_back([this, y0, y1, vp](){
+            compute_tile(y0, y1, vp);
+        });
+        y0 = y1;
+    }
+
+    // Aguarda todos os tiles via condition_variable
+    {
+        std::unique_lock<std::mutex> lk(done_mutex_);
+        done_cv_.wait(lk, [this]{ return done_count_ == num_threads_; });
+    }
+
+    for (auto& w : workers) w.join();
+\end{lstlisting}
+
+O \texttt{y1} da última faixa é \texttt{h\_}, e não \texttt{y0 + rows\_per\_tile}:
+é assim que as linhas que sobram da divisão inteira ($h$ raramente é múltiplo do
+número de \emph{threads}) vão todas para a última faixa em vez de simplesmente
+não serem calculadas. O erro oposto --- deixar de tratar o resto --- produz uma
+tira preta no rodapé da imagem que só aparece em certas resoluções.
+
+\begin{armadilha}[capturar por referência o que vai morrer antes da \emph{thread}]
+A \emph{lambda} captura \texttt{vp} \textbf{por valor}, e o comentário no fonte
+diz por quê. Capturar por referência é o reflexo natural --- o objeto é pequeno,
+copiá-lo parece desperdício --- e é exatamente o que cria um ponteiro pendente
+quando o chamador retorna antes de a \emph{thread} terminar. Numa
+\texttt{std::thread} que se junta na mesma função o risco é contido; num
+\emph{thread pool}, num \texttt{std::async} ou num \texttt{detach} ele é
+certeza. A regra prática é a inversa da que vale para parâmetros de função:
+\textbf{o que atravessa uma fronteira de \emph{thread} vai por valor}, a menos
+que se possa provar que o dono sobrevive.
+\end{armadilha}
+
+Cada \emph{thread} escreve num intervalo disjunto de linhas: sem sobreposição,
+não há \gls{datarace} --- e a ausência de sincronização no caminho quente é o
+que faz o paralelismo valer a pena. Ainda assim, o renderizador toma um
+\emph{mutex} uma vez por faixa, e a estrutura merece atenção porque é o padrão
+correto para o caso geral:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Calcular fora do \emph{lock}, copiar dentro, em
+             \texttt{src/mandelbrot/mandelbrot\_renderer.cpp}.}]
+    // buffer local da tile (sem precisar do mutex durante o calculo)
+    std::vector<uint8_t> local((y1 - y0) * w_ * 4);
+    // ... o laco de escape preenche `local` ...
+    {
+        std::lock_guard<std::mutex> lock(tile_mutex_);
+        int dst_off = y0 * w_ * 4;
+        std::copy(local.begin(), local.end(), pixels_.begin() + dst_off);
+    }
+
+    // Sinaliza conclusao desta tile
+    {
+        std::lock_guard<std::mutex> lk(done_mutex_);
+        ++done_count_;
+    }
+    done_cv_.notify_one();
+\end{lstlisting}
+
+Todo o cálculo --- que é 99\% do tempo --- acontece num \texttt{vector} local,
+sem \emph{lock} nenhum; a região crítica contém apenas um \texttt{std::copy}. É
+a mesma decisão do \emph{thread pool} da \cref{sec:concurrency}, que executa a
+tarefa fora do \emph{lock}, e ela responde à única pergunta que importa ao
+dimensionar uma seção crítica: \emph{o que aqui dentro precisa mesmo estar aqui
+dentro?} O comentário do fonte é honesto ao dizer que, com faixas disjuntas, o
+\emph{lock} é ``educativo'' --- ele não protege contra corrida nenhuma neste
+desenho, e existe para mostrar a forma que se usa quando as regiões
+\emph{não} são disjuntas.
+
+Repare também no segundo bloco: o contador \texttt{done\_count\_} é incrementado
+sob o \texttt{done\_mutex\_} e a notificação sai \emph{fora} do escopo do
+\emph{lock}. Notificar com o \emph{mutex} na mão faz a \emph{thread} acordada
+esbarrar imediatamente num \emph{mutex} tomado e voltar a dormir --- o
+\emph{hurry up and wait} clássico.
+
+\begin{armadilha}[a divisão estática desequilibra justamente neste problema]
+Faixas de mesmo tamanho não significam trabalho de mesmo tamanho: os pixels
+\emph{dentro} do conjunto rodam o número máximo de iterações, enquanto os de
+fora escapam em poucas. As faixas centrais custam muito mais que as das bordas,
+e o tempo total é o da \emph{thread} mais lenta --- de modo que boa parte dos
+núcleos fica ociosa esperando. É precisamente o problema que o
+\emph{scheduling} dinâmico da próxima seção resolve.
+\end{armadilha}
+
+\subsubsection{Com OpenMP: uma linha}
+
+O subprojeto \projeto{mandelbrot\_openmp} resolve o mesmo problema com uma
+diretiva:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A diretiva que substitui a criação, a divisão e a espera.}]
+#pragma omp parallel for schedule(dynamic, 4) num_threads(num_threads_)
+for (int y = 0; y < h_; ++y) {
+    for (int x = 0; x < w_; ++x) {
+        /* ... o mesmo cálculo ... */
+    }
+}
+\end{lstlisting}
+
+O \texttt{schedule(dynamic, 4)} é o que corrige o desequilíbrio: em vez de
+distribuir as linhas de antemão, cada \emph{thread} pega o próximo lote de
+quatro linhas quando termina o atual. Lotes menores equilibram melhor e custam
+mais sincronização; quatro é um compromisso razoável para este problema.
+
+\begin{table}[htbp]
+\centering
+\caption{As duas implementações do mesmo fractal, comparadas.}
+\label{tab:mandelbrot-comparacao}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Aspecto} & \texttt{std::thread} & \textbf{OpenMP} \\
+\midrule
+código necessário    & dezenas de linhas       & uma diretiva \\
+controle             & total                   & limitado ao padrão \\
+balanceamento        & manual                  & \texttt{schedule(dynamic)} \\
+portabilidade        & STL                     & precisa de \texttt{-fopenmp} \\
+depurável            & sim, é código comum     & o \emph{runtime} é opaco \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{porque}[por que o repositório mantém as duas versões]
+A comparação é o conteúdo. A versão com \texttt{std::thread} ensina o que
+acontece --- criação, divisão, sincronização, \texttt{join} --- e é a única em
+que se pode intervir quando o padrão não cobre o caso. A versão OpenMP mostra
+que, para o laço paralelo simples, tudo aquilo já foi escrito por alguém, com
+balanceamento melhor do que o que se faria à mão. Saber as duas é saber quando o
+custo de escrever a primeira se justifica.
+\end{porque}
+
+Do vocabulário OpenMP, vale reter quatro construções além do laço paralelo:
+\texttt{reduction(+:soma)}, que dá a cada \emph{thread} um acumulador privado e
+combina no fim --- é o \texttt{accumulate} paralelo, e é o motivo de
+\texttt{std::reduce} não garantir ordem (\cref{sec:stl});
+\texttt{critical}, que é um \emph{mutex} com sintaxe de bloco;
+\texttt{barrier}, ponto em que todas esperam; e
+\texttt{omp\_get\_max\_threads()}, para dimensionar em tempo de execução.
+
+\begin{regra}[meça o \emph{speedup}, e espere menos que o número de núcleos]
+A lei de Amdahl limita o ganho pela fração serial: com $p$ a fração
+paralelizável e $N$ núcleos, o \emph{speedup} é
+$S = 1 / \left((1-p) + p/N\right)$. Para o Mandelbrot, $p \approx 0{,}99$ e o
+ganho fica próximo do ideal --- é por isso que ele é um bom exemplo, e também
+por que ele é um mau preditor: quase nenhum problema real tem $p$ tão alto.
+\end{regra}
+
+% =============================================================================
+\subsection{Síntese}
+% =============================================================================
+
+Os cinco subprojetos ocupam pontos diferentes de um mesmo espectro, e a escolha
+entre eles é quase sempre determinada pela natureza do gargalo
+(\cref{tab:sintese-concorrencia}).
+
+\begin{table}[htbp]
+\centering
+\caption{O que usar conforme o que está esperando.}
+\label{tab:sintese-concorrencia}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{O gargalo é} & \textbf{Ferramenta} & \textbf{Onde} \\
+\midrule
+cálculo, muitos núcleos ociosos & \emph{threads} ou OpenMP     & \ref{sec:mandelbrot} \\
+espera por I/O                  & co-rotinas                    & \ref{sec:coroutines} \\
+muitas tarefas curtas           & \emph{thread pool}            & \ref{sec:concurrency} \\
+um resultado de outra \emph{thread} & \texttt{future}/\texttt{promise} & \ref{sec:concurrency} \\
+um contador compartilhado       & \classe{std::atomic}          & \ref{sec:concurrency} \\
+uma invariante entre dois dados & \emph{mutex} (não atômico)    & \ref{sec:concurrency} \\
+o fim de $N$ tarefas, uma vez   & \classe{std::latch}           & \ref{sec:concurrency2} \\
+rodadas repetidas em fases      & \classe{std::barrier}         & \ref{sec:concurrency2} \\
+limitar a $K$ acessos simultâneos & \texttt{counting\_semaphore} & \ref{sec:concurrency2} \\
+cancelar uma \emph{thread} em execução & \texttt{jthread} e \texttt{stop\_token} & \ref{sec:concurrency2} \\
+a garantia de progresso, não a velocidade & estrutura \emph{lock-free} & \ref{sec:lockfree} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Vale reunir num só lugar os quatro números que \projeto{concurrency2} mediu,
+porque três deles contrariam o que se costuma afirmar sobre o assunto:
+\texttt{seq\_cst} custou \textbf{1,01$\times$} o \texttt{relaxed} num
+\texttt{fetch\_add} sem contenção no x86-64 (a otimização mais repetida do
+ramo não pagou nada); reimplementar \texttt{fetch\_add} com CAS gerou
+\textbf{43\% a 60\%} de retrabalho com quatro \emph{threads}; a fila SPSC
+entregou \textbf{cerca de 90 milhões de itens por segundo} sem um único CAS; e a
+pilha \emph{lock-free} ficou \textbf{2,7$\times$ mais lenta} que um
+\texttt{vector::push\_back} sob \emph{mutex}. Nenhum desses números é
+transportável para outra máquina ou outra arquitetura --- e é justamente por isso
+que eles estão aqui: para mostrar o que medir, e com que ceticismo ler o
+resultado.
+
+E a regra que atravessa o capítulo inteiro é sobre o que \emph{não} fazer:
+\begin{regra}[o dado que não é compartilhado não precisa de sincronização]
+Todo primitivo deste capítulo existe para gerenciar compartilhamento, e todo
+primitivo custa. O Mandelbrot não precisa de nenhum \emph{mutex} no caminho
+quente porque as \emph{threads} escrevem em regiões disjuntas; o \emph{thread
+pool} executa a tarefa fora do \emph{lock} pelo mesmo motivo. Antes de escolher
+o primitivo certo, pergunte se dá para eliminar o compartilhamento --- por
+partição, por cópia, ou por passar o dado em vez de referenciá-lo.
+\end{regra}

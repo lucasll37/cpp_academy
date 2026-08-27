@@ -1,0 +1,70 @@
+% =============================================================================
+%  Capa, folha de rosto e sumarios (executado logo apos \begin{document})
+% =============================================================================
+
+% ------------------------------------------
+% LETTER
+% ------------------------------------------
+% MASA Letterhead
+% \MASALetterhead
+%     {2603 Draper Dr.\\Ann Arbor, MI 48109\\(555) 555-5555} % From
+%     {Sergei Korolev, Chief Engineer\\Michigan Aeronautical Science Association (MASA)\\2603 Draper Dr.\\Ann Arbor, MI 48109}                             % To
+%     {Some subject goes here}                              % Subject
+
+% % Letter Body
+% Dear Mr. Korolev:
+
+% \lipsum[2-4]
+
+% Andrei Tupolev, Burt Rutan, Kelly Johnson, Robert Goddard, Theodore von Karman, Wernher von Braun
+
+% % Signatures
+% \begin{flushright}
+%     \begin{tabularx}{0.5\textwidth}{l l @{}}
+%         Sincerely, & \\
+%         \signature{4}{Andrei Tupolev} & \signature{3.2}{Burt Rutan}\\
+%         \signature{4}{Kelly Johnson} & \signature{3.2}{Robert Goddard}\\
+%         \signature{4}{Theodore von Karman} & \signature{3.2}{Wernher von Braun}
+%     \end{tabularx}
+% \end{flushright}
+% enc.
+% \hfuzz=0pt
+
+% ------------------------------------------
+% TITLE PAGE, COVER PAGE, ACKNOWLEDGEMENTS, TABLES
+% ------------------------------------------
+% Cover and title pages
+% \makeCoverPage
+\makeTitlePage{ASA Team} % (Prepared for)
+
+% % Acknowledgements page
+% \MASAacknowledgements{
+%     \lipsum[3]\vspace{5mm}\\
+%     This project was supported by funding provided by MASA at the University of Michigan, Ann Arbor.
+% }
+\ClearWallPaper % (Removes letter/cover footer graphic from subsequent pages)
+\pagenumbering{roman}
+
+% Tables of contents, figures, tables
+\newpage
+\tableofcontents
+\newpage
+\listoffigures
+\newpage
+\listoftables
+
+% ------------------------------------------
+% REPORT BODY
+% ------------------------------------------
+
+\newpage \pagenumbering{arabic} \setcounter{page}{1}
+
+% O corpo abre com a caixa `aviso' (declaracao unica sobre a producao do
+% documento), emitida no topo de chapters/01-introducao.tex -- e nao aqui,
+% porque o \include daquele capitulo forcaria uma quebra de pagina entre os
+% dois e deixaria o aviso sozinho na pagina 1.
+
+
+% =============================================================================
+%  C++ Academy - Relatório de Tópicos de C++
+% =============================================================================

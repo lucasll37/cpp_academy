@@ -1,0 +1,218 @@
+% =============================================================================
+%  Glossario do relatorio
+%
+%  Entradas para os termos que o texto usa repetidamente e que nao sao obvios
+%  para quem chega ao C++ moderno pela primeira vez. Regra de inclusao: o termo
+%  aparece em mais de um capitulo E nao e auto-explicativo em portugues.
+%
+%  No texto, use \gls{chave} para a primeira ocorrencia relevante de um termo
+%  numa secao; as demais podem ser \texttt{} normal.
+% =============================================================================
+
+% --- O modelo de objeto e de valor -------------------------------------------
+
+\newglossaryentry{raii}{
+  sort={RAII},
+  name={RAII},
+  description={\emph{Resource Acquisition Is Initialization}. O idioma central
+    do C++: o tempo de vida de um recurso (memória, arquivo, \emph{lock},
+    \emph{socket}) é amarrado ao tempo de vida de um objeto. Adquirir é
+    construir; liberar é destruir. Como o destrutor roda também durante o
+    desenrolamento da pilha, o idioma é o que torna exceções seguras}}
+
+\newglossaryentry{ub}{
+  sort={UB comportamento indefinido},
+  name={UB (comportamento indefinido)},
+  description={Situação em que o padrão não impõe nenhuma exigência ao
+    programa. Não é ``dá erro'': é o compilador autorizado a supor que aquilo
+    nunca acontece, e a otimizar a partir dessa suposição. Ler variável não
+    inicializada, estourar um índice, violar \emph{strict aliasing} e escrever
+    num objeto genuinamente \texttt{const} são casos deste relatório}}
+
+\newglossaryentry{categoriadevalor}{
+  sort={categoria de valor},
+  name={categoria de valor},
+  description={A classificação de uma \emph{expressão} segundo duas perguntas
+    independentes --- tem identidade? pode ser movida? --- que produzem
+    \emph{lvalue}, \emph{xvalue} e \emph{prvalue}. É do que depende a escolha
+    entre copiar e mover, e a fonte da regra de que tudo o que tem nome é
+    \emph{lvalue}}}
+
+\newglossaryentry{move}{
+  sort={move},
+  name={move},
+  description={Transferência do conteúdo de um objeto para outro, deixando a
+    origem num estado válido porém não especificado. \texttt{std::move} não
+    move nada: é um \texttt{static\_cast} para \emph{rvalue reference} que
+    apenas \emph{autoriza} a operação, executada pelo construtor ou pela
+    atribuição de \emph{move} do tipo}}
+
+\newglossaryentry{elisao}{
+  sort={elisao de copia},
+  name={elisão de cópia},
+  description={Omissão da construção de um temporário: o objeto é construído
+    diretamente no destino. Desde o C++17 é \emph{obrigatória} para
+    \emph{prvalues} (RVO) e opcional para variáveis locais retornadas (NRVO).
+    Escrever \texttt{return std::move(local)} desliga a segunda}}
+
+\newglossaryentry{forwarding}{
+  sort={perfect forwarding},
+  name={\emph{perfect forwarding}},
+  description={Repasse de um argumento preservando tipo, constância e
+    categoria de valor. Exige as duas peças juntas: o parâmetro \texttt{T\&\&}
+    deduzido (referência universal) e o \texttt{std::forward<T>} na hora de
+    repassar}}
+
+\newglossaryentry{slicing}{
+  sort={object slicing},
+  name={\emph{object slicing}},
+  description={Cópia de um objeto derivado para uma variável do tipo base:
+    o que não cabe em \texttt{sizeof(Base)} é amputado, e com ele o
+    polimorfismo. Nenhum \emph{warning} é emitido. Passar hierarquia por valor
+    e usar \texttt{std::vector<Base>} são as duas formas usuais de cometê-lo}}
+
+\newglossaryentry{vtable}{
+  sort={vtable vptr},
+  name={vtable / vptr},
+  description={A implementação usual do despacho dinâmico: cada classe
+    polimórfica tem uma tabela de ponteiros de função (\emph{vtable}) e cada
+    objeto guarda um ponteiro para a tabela da sua classe real (\emph{vptr}).
+    O custo é um ponteiro por objeto e uma indireção por chamada --- mas o
+    preço maior costuma ser a impossibilidade de \emph{inline}}}
+
+\newglossaryentry{rtti}{
+  sort={RTTI},
+  name={RTTI},
+  description={\emph{Run-Time Type Information}. O mecanismo que sustenta
+    \texttt{typeid} e \texttt{dynamic\_cast}. Exige pelo menos uma função
+    virtual na base e pode ser desligado com \texttt{-fno-rtti}}}
+
+% --- Genericidade e compilacao -----------------------------------------------
+
+\newglossaryentry{sfinae}{
+  sort={SFINAE},
+  name={SFINAE},
+  description={\emph{Substitution Failure Is Not An Error}. Se a substituição
+    dos parâmetros de \emph{template} produz um tipo inválido na assinatura,
+    o candidato é apenas descartado da resolução de sobrecarga em vez de gerar
+    erro. Era a forma pré-C++20 de restringir \emph{templates}; \emph{concepts}
+    a substitui com mensagens legíveis}}
+
+\newglossaryentry{crtp}{
+  sort={CRTP},
+  name={CRTP},
+  description={\emph{Curiously Recurring Template Pattern}: a classe derivada
+    passa a si mesma como argumento de \emph{template} da base
+    (\texttt{struct D : Base<D>}). Dá polimorfismo resolvido em compilação ---
+    sem \emph{vtable}, sem indireção e com \emph{inline} --- ao preço de
+    perder a base comum em tempo de execução}}
+
+\newglossaryentry{concept}{
+  sort={concept},
+  name={\emph{concept}},
+  description={Predicado sobre tipos, avaliado em compilação, que restringe
+    quais argumentos um \emph{template} aceita. Move o erro do interior da
+    instanciação para o ponto da chamada e participa da resolução de
+    sobrecarga por \emph{subsumption}}}
+
+\newglossaryentry{constexpr}{
+  sort={constexpr consteval},
+  name={\texttt{constexpr} / \texttt{consteval}},
+  description={\texttt{constexpr} marca o que \emph{pode} ser avaliado em
+    compilação; \texttt{consteval} marca o que \emph{tem} de ser. A diferença
+    entre ``o compilador talvez calcule'' e ``o compilador calcula ou recusa
+    o programa''}}
+
+\newglossaryentry{typeerasure}{
+  sort={type erasure},
+  name={\emph{type erasure}},
+  description={Guardar objetos de tipos não relacionados atrás de uma
+    interface uniforme, apagando o tipo estático mas preservando o
+    comportamento. \texttt{std::function}, \texttt{std::any} e o
+    \texttt{std::type\_index} do ECS deste repositório são três realizações
+    diferentes da mesma ideia}}
+
+% --- Biblioteca padrao -------------------------------------------------------
+
+\newglossaryentry{iterador}{
+  sort={iterador},
+  name={iterador},
+  description={A abstração que separa algoritmos de containers: um objeto que
+    aponta para um elemento e sabe avançar. As categorias (\emph{input},
+    \emph{forward}, \emph{bidirectional}, \emph{random access}) definem que
+    algoritmos podem operar sobre qual container e a que custo}}
+
+\newglossaryentry{view}{
+  sort={view},
+  name={\emph{view} (C++20)},
+  description={Um \emph{range} que não possui os elementos e cujas operações
+    de cópia e destruição são O(1). \emph{Views} são preguiçosas: compor
+    \texttt{filter} com \texttt{transform} não percorre nada até que alguém
+    itere o resultado}}
+
+\newglossaryentry{invalidacao}{
+  sort={invalidacao de iteradores},
+  name={invalidação de iteradores},
+  description={A perda de validade de iteradores, ponteiros e referências
+    após uma modificação do container. As regras variam por container e são a
+    origem mais comum de \gls{ub} em código que ``funcionava''}}
+
+\newglossaryentry{pmr}{
+  sort={pmr},
+  name={\texttt{std::pmr}},
+  description={\emph{Polymorphic Memory Resources} (C++17). Permite trocar a
+    estratégia de alocação de um container em tempo de execução, sem que a
+    escolha entre no tipo --- ao contrário do parâmetro \texttt{Allocator}
+    clássico, que faz \texttt{vector<int,A>} e \texttt{vector<int,B>} serem
+    tipos distintos}}
+
+% --- Concorrencia ------------------------------------------------------------
+
+\newglossaryentry{datarace}{
+  sort={data race},
+  name={\emph{data race}},
+  description={Dois acessos concorrentes ao mesmo endereço, ao menos um deles
+    de escrita, sem sincronização entre eles. É \gls{ub} --- não ``valor
+    errado ocasional''. O detector prático é o ThreadSanitizer}}
+
+\newglossaryentry{atomico}{
+  sort={operacao atomica},
+  name={operação atômica},
+  description={Operação indivisível sobre uma variável compartilhada, com uma
+    ordem de memória associada. Resolve a corrida sobre \emph{aquela}
+    variável; não estabelece invariantes entre duas variáveis --- para isso
+    ainda é preciso um \emph{mutex}}}
+
+\newglossaryentry{corotina}{
+  sort={co-rotina},
+  name={co-rotina (C++20)},
+  description={Função que pode suspender a própria execução e ser retomada
+    depois, preservando o estado local num \emph{frame} alocado à parte.
+    A linguagem fornece só o mecanismo (\texttt{co\_await},
+    \texttt{co\_yield}, \texttt{co\_return}); os tipos \texttt{generator} e
+    \texttt{task} são escritos pelo usuário ou pela biblioteca}}
+
+% --- Ferramentas e ecossistema -----------------------------------------------
+
+\newglossaryentry{meson}{
+  sort={Meson},
+  name={Meson},
+  description={O sistema de \emph{build} deste repositório. Descreve o projeto
+    numa DSL declarativa e gera arquivos do Ninja; a compilação em si é do
+    Ninja. Todo subprojeto tem um \texttt{meson.build} próprio, registrado em
+    \texttt{src/meson.build}}}
+
+\newglossaryentry{conan}{
+  sort={Conan},
+  name={Conan 2},
+  description={O gerenciador de dependências do repositório. Lê o
+    \texttt{conanfile.py}, resolve e compila as bibliotecas de terceiros e
+    gera os arquivos que fazem o \texttt{dependency()} do Meson encontrá-las}}
+
+\newglossaryentry{abi}{
+  sort={ABI},
+  name={ABI},
+  description={\emph{Application Binary Interface}: o contrato em nível de
+    binário --- convenção de chamada, \emph{layout} de objetos, decoração de
+    nomes. É o que decide se dois \texttt{.o} compilados separadamente podem
+    ser ligados, e o que \texttt{extern "C"} e o ABI System V x86-64 fixam}}

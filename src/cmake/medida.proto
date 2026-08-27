@@ -1,0 +1,32 @@
+// =============================================================================
+//  src/cmake/medida.proto
+//
+//  O schema que o CMake compila DURANTE o build.
+//  ─────────────────────────────────────────────
+//  O ponto didático não é o Protobuf em si — é que este arquivo NÃO é C++, e
+//  ainda assim vira dois arquivos C++ (`medida.pb.h` e `medida.pb.cc`) antes
+//  de o compilador ser chamado. O CMake precisa:
+//
+//    1. saber que `medida.pb.cc` DEPENDE de `medida.proto`;
+//    2. rodar o `protoc` quando o .proto mudar, e só então;
+//    3. colocar o .pb.h num diretório que o alvo consiga incluir.
+//
+//  É o assunto de demo_geracao.hpp e da seção 4 do CMakeLists.txt.
+// =============================================================================
+syntax = "proto3";
+
+package academy.cmake;
+
+// Uma medição de benchmark — o que os demos deste subprojeto produzem.
+message Medida {
+  string tecnologia   = 1;   // "serial", "openmp", "mpi", "cuda"
+  uint64 elementos    = 2;
+  double milissegundos = 3;
+  uint32 unidades     = 4;   // threads, processos ou blocos
+  double erro_maximo  = 5;   // contra a referência serial
+}
+
+message Relatorio {
+  string          maquina = 1;
+  repeated Medida medidas = 2;
+}

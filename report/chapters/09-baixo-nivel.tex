@@ -1,0 +1,1563 @@
+% =============================================================================
+%  Baixo nível e hardware
+%  Cobre a Etapa 8 da trilha: inline_asm, outline_asm, asm_course.
+% =============================================================================
+
+% =============================================================================
+\section{Baixo nível e hardware}
+\label{sec:baixo-nivel}
+% =============================================================================
+
+Este capítulo desce abaixo do C++. Não porque o C++ seja insuficiente --- em
+2026, o compilador vence o assembly escrito à mão em quase todo caso --- mas
+porque \emph{ler} o que o compilador gera é a única forma de entender por que um
+código é rápido e outro não, e porque existe um punhado de instruções sem
+equivalente na linguagem.
+
+Três subprojetos, em ordem de escopo crescente: \projeto{inline\_asm} para
+trechos curtos embutidos no C++; \projeto{outline\_asm} para rotinas inteiras em
+arquivo separado, o que traz a \gls{abi} para o primeiro plano; e
+\projeto{asm\_course}, quinze lições numeradas que vão dos registradores ao
+\emph{disassembly} de código de produção.
+
+Os três são alvos construídos e instalados: além de \texttt{inline\_asm} e
+\texttt{outline\_asm}, o curso produz quinze executáveis próprios --- de
+\texttt{asm\_01\_registers} a \texttt{asm\_15\_capstone} --- entre os 98
+binários que o repositório instala em \texttt{dist/bin}. Isso não é detalhe de
+empacotamento: é a condição sob a qual dois defeitos de \gls{abi} deste
+capítulo puderam ser encontrados, e o assunto da \cref{sec:alvo-apodrece}.
+Todas as saídas de terminal reproduzidas adiante foram medidas nesses binários,
+compilados com \texttt{-O2 -msse4.2 -mavx2 -mfma}.
+
+\begin{regra}[antes de escrever assembly, leia o que o compilador escreveu]
+A pergunta correta quase nunca é ``como escrevo isto em assembly?'', e sim ``o
+que o compilador gerou, e por quê?''. As ferramentas são
+\texttt{g++ -O2 -S -masm=intel}, \texttt{objdump -d -M intel} passado por
+\texttt{c++filt}, e o Compiler Explorer. O módulo 14 do \texttt{asm\_course} é
+inteiramente sobre isso --- e é, na prática, o mais útil dos quinze.
+\end{regra}
+
+% =============================================================================
+\subsection{Assembly inline}
+\label{sec:inline-asm}
+% =============================================================================
+
+O subprojeto \projeto{inline\_asm} percorre doze demonstrações progressivas, do
+\texttt{nop} sem operandos até laços completos, CPUID e RDTSC. Tudo em sintaxe
+AT\&T, que é o padrão do GCC e do Clang no Linux --- e cuja principal diferença
+para a sintaxe Intel é a ordem dos operandos, invertida
+(\cref{tab:att-intel}).
+
+\begin{table}[htbp]
+\centering
+\caption{As duas sintaxes, lado a lado.}
+\label{tab:att-intel}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Aspecto} & \textbf{AT\&T (GCC/Linux)} & \textbf{Intel (NASM/Windows)} \\
+\midrule
+ordem dos operandos & \texttt{src, dst}        & \texttt{dst, src} \\
+registradores       & \texttt{\%rax}           & \texttt{rax} \\
+imediatos           & \texttt{\$42}            & \texttt{42} \\
+sufixo de tamanho   & \texttt{movl}, \texttt{movq} & no operando \\
+desreferência       & \texttt{(\%rax)}         & \texttt{[rax]} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{A forma de um \texttt{asm} estendido}
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={As quatro seções, três delas opcionais.}]
+asm [volatile] (
+    "instruções"          // template de código assembly
+    : outputs             // [opcional] operandos de saída
+    : inputs              // [opcional] operandos de entrada
+    : clobbers            // [opcional] registradores que o asm modifica
+);
+\end{lstlisting}
+
+O que faz o mecanismo funcionar é o \emph{contrato} declarado nessas três
+listas: o compilador não lê o assembly, ele apenas confia no que você declarou.
+As \emph{constraints} são a linguagem desse contrato
+(\cref{tab:constraints-asm}), e cada símbolo tem consequência direta no código
+que o compilador gera em volta.
+
+\begin{table}[htbp]
+\centering
+\caption{As \emph{constraints} usadas no subprojeto.}
+\label{tab:constraints-asm}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Constraint} & \textbf{Significado} \\
+\midrule
+\texttt{"r"} & qualquer registrador de propósito geral \\
+\texttt{"a"}, \texttt{"b"}, \texttt{"c"}, \texttt{"d"} & especificamente \texttt{rax}, \texttt{rbx}, \texttt{rcx}, \texttt{rdx} \\
+\texttt{"m"} & operando em memória (o compilador gera o endereçamento) \\
+\texttt{"i"} & imediato inteiro \\
+\texttt{"0"} & o mesmo registrador que o operando 0 \\
+\texttt{"="} & \emph{write-only} --- é saída \\
+\texttt{"+"} & \emph{read-write} --- entrada e saída \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{armadilha}[o compilador acredita no que você declarou, não no que você escreveu]
+Se o bloco modifica \texttt{\%eax} e \texttt{\%eax} não está nos \emph{outputs}
+nem nos \emph{clobbers}, o compilador continua supondo que o valor que ele havia
+posto lá permanece --- e usa esse valor depois. O bug resultante aparece só com
+otimização ligada, muda com a versão do compilador, e não tem nada de errado no
+assembly em si. As duas declarações mais esquecidas são \texttt{"cc"} (o bloco
+altera as \emph{flags}) e \texttt{"memory"} (o bloco pode ler ou escrever
+memória arbitrária, e serve como barreira).
+\end{armadilha}
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Os registradores usados internamente declarados como \emph{clobbers}.}]
+asm(
+    "movl %2, %%eax\n\t"
+    "movl %3, %%ebx\n\t"
+    "xchgl %%eax, %%ebx\n\t"
+    "movl %%eax, %0\n\t"
+    "movl %%ebx, %1"
+    : "=r"(troca_a), "=r"(troca_b)
+    : "r"(x), "r"(y)
+    : "%eax", "%ebx"  // ← clobbers: esses regs foram usados internamente
+);
+\end{lstlisting}
+
+\subsubsection{\texttt{volatile}: quando o compilador apagaria o bloco}
+
+Um bloco \texttt{asm} sem \emph{outputs} não tem, do ponto de vista do
+compilador, efeito nenhum --- e portanto pode ser removido, movido ou duplicado.
+\texttt{volatile} é o que impede isso, e é o que torna possível a barreira de
+memória mais usada em código de baixo nível:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A barreira que não gera instrução alguma.}]
+asm volatile ("" ::: "memory");
+\end{lstlisting}
+
+Ela não emite nenhum \emph{opcode}: o efeito inteiro está na declaração
+\texttt{"memory"}, que impede o compilador de reordenar leituras e escritas
+através daquele ponto. Note que isso é uma barreira de \emph{compilação}, não de
+\emph{hardware} --- ela não substitui \texttt{std::atomic} nem as ordens de
+memória da \cref{sec:concurrency}, que também controlam a reordenação feita pelo
+processador.
+
+\subsubsection{Instruções sem equivalente em C++}
+
+Duas justificativas do subprojeto são incontestáveis, porque a linguagem não
+oferece alternativa.
+
+\paragraph{CPUID} identifica o processador e as extensões disponíveis, e é a
+base de qualquer despacho por capacidade em tempo de execução --- escolher entre
+uma rotina AVX2 e uma SSE conforme o que a máquina tem. O padrão é distribuir os
+quatro registradores de saída para quatro variáveis por meio de
+\emph{constraints} específicas:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Cada \emph{constraint} nomeia um registrador exato.}]
+asm volatile (
+    "cpuid"
+    : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+    : "a"(0)  // leaf 0 = vendor info
+);
+\end{lstlisting}
+
+\paragraph{RDTSC} lê o contador de ciclos do processador, e é a medição de menor
+granularidade disponível.
+
+\begin{armadilha}[RDTSC não mede tempo, e nem sempre mede ciclos]
+Em processadores modernos, o TSC é \emph{invariante} --- avança a uma frequência
+fixa, independente do estado de energia --- de modo que ele mede tempo, não
+ciclos executados. Pior: a execução fora de ordem permite que instruções ao
+redor do \texttt{rdtsc} sejam reordenadas, o que borra a medição de trechos
+curtos (a correção usual é \texttt{rdtscp} ou uma serialização com
+\texttt{cpuid}). E o valor não é comparável entre núcleos sem garantia de
+sincronização. Para medir desempenho, \texttt{std::chrono::steady\_clock} está
+certo em quase todos os casos; RDTSC é para quando a granularidade dele não
+basta, e com essas ressalvas em mente.
+\end{armadilha}
+
+\subsubsection{Legibilidade: operandos nomeados}
+
+O último demo do subprojeto é o mais imediatamente aplicável: em vez de
+\texttt{\%0}, \texttt{\%1}, \texttt{\%2}, dar nomes aos operandos.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A mesma multiplicação, legível.}]
+asm (
+    "movl %[w], %[out]\n\t"
+    "imull %[h], %[out]"
+    : [out] "=r"(area)
+    : [w]   "r"(largura),
+      [h]   "r"(altura)
+);
+\end{lstlisting}
+
+Com numeração posicional, acrescentar um \emph{input} no meio renumera todos os
+seguintes e quebra o bloco em silêncio. Com nomes, não.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída medida de \texttt{dist/bin/inline\_asm} (recortada): CPUID e
+             RDTSC lendo a máquina em que este relatório foi compilado.}]
+== 8. CPUID -- lendo informacoes da CPU ==
+  CPUID leaf 0:
+    eax (max leaf) = 13
+    vendor string  = "AuthenticAMD"
+
+== 9. RDTSC -- contando ciclos de CPU ==
+  TSC antes : 61820684363285
+  TSC depois: 61820684365690
+  Ciclos para loop de 1000 somas: 2405
+\end{lstlisting}
+
+Os dois números dizem coisas diferentes e igualmente úteis. A \emph{vendor
+string} é a única forma portátil de descobrir em que máquina o código está
+rodando, e é o alicerce de qualquer despacho por capacidade. Já os 2405 ciclos
+para mil somas --- pouco mais de dois por soma --- só fazem sentido com as
+ressalvas da armadilha acima: são ciclos de um TSC invariante, num laço que o
+compilador não pôde eliminar porque o bloco é \texttt{volatile}.
+
+\begin{regra}[assembly inline é a última opção, não a primeira]
+Antes dele, na ordem: uma função \emph{intrinsic} (\texttt{\_mm\_add\_ps},
+\texttt{\_\_builtin\_popcount}), que o compilador entende e otimiza em volta;
+um atributo ou \emph{pragma} que diga ao compilador o que fazer; e uma
+reformulação do C++ que exponha a propriedade que faltava. Assembly inline
+bloqueia otimizações --- o compilador não pode enxergar dentro do bloco --- e
+amarra o código a um compilador, a uma arquitetura e a uma sintaxe.
+\end{regra}
+
+% =============================================================================
+\subsection{Assembly em arquivo separado}
+\label{sec:outline-asm}
+% =============================================================================
+
+O subprojeto \projeto{outline\_asm} move o assembly para um arquivo
+\texttt{.s}, montado pelo GAS e ligado ao objeto do C++. A troca é clara
+(\cref{tab:inline-outline}), e o divisor de águas é o tamanho da rotina.
+
+\begin{table}[htbp]
+\centering
+\caption{Assembly embutido contra assembly em arquivo próprio.}
+\label{tab:inline-outline}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Aspecto} & \textbf{Inline} & \textbf{Arquivo \texttt{.s}} \\
+\midrule
+tamanho ideal    & 1--5 instruções          & rotinas longas \\
+ferramenta       & \emph{extended asm} do GCC & GAS, NASM, qualquer \emph{assembler} \\
+otimizador       & pode interferir           & o código é exatamente o escrito \\
+portabilidade    & só GCC/Clang              & qualquer \emph{toolchain} \\
+manutenção       & difícil de ler            & separado e comentável \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{A fronteira: \texttt{extern "C"} e a ABI}
+
+Do lado do C++, a declaração precisa suprimir a decoração de
+nomes~\cite{itaniumabi} --- o \emph{assembler} conhece \texttt{asm\_add}, não
+\texttt{\_Z7asm\_addii}:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A interface, em \texttt{src/outline\_asm/asm\_funcs.hpp} (recortada).}]
+extern "C" {
+
+// 3. Valor absoluto sem branch
+int      asm_valor_absoluto(int n);
+
+// 5. Máximo de dois inteiros (branchless via CMOV)
+int      asm_maximo(int a, int b);
+
+// 8. Memcpy de N blocos de 64 bits com REP MOVSQ
+void     asm_memcpy_64(void* dst, const void* src, int64_t n);
+
+} // extern "C"
+\end{lstlisting}
+
+Do lado do assembly, a implementação precisa concordar com a
+\gls{abi}~\cite{sysvabi} sobre onde os argumentos chegam e onde o retorno é
+deixado (\cref{tab:sysv}). Não há verificação: uma discordância compila, liga e
+produz lixo.
+
+\begin{table}[htbp]
+\centering
+\caption{O essencial da ABI System~V AMD64 (Linux).}
+\label{tab:sysv}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Papel} & \textbf{Registradores} \\
+\midrule
+argumentos inteiros e ponteiros & \texttt{rdi}, \texttt{rsi}, \texttt{rdx}, \texttt{rcx}, \texttt{r8}, \texttt{r9} \\
+argumentos em ponto flutuante   & \texttt{xmm0}--\texttt{xmm7} \\
+retorno inteiro/ponteiro        & \texttt{rax} (e \texttt{rdx} para 128 bits) \\
+retorno em ponto flutuante      & \texttt{xmm0} \\
+preservados pelo chamado        & \texttt{rbx}, \texttt{rbp}, \texttt{r12}--\texttt{r15} \\
+livres para o chamado           & \texttt{rax}, \texttt{rcx}, \texttt{rdx}, \texttt{rsi}, \texttt{rdi}, \texttt{r8}--\texttt{r11}, \texttt{xmm*} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{armadilha}[usar um registrador \emph{callee-saved} sem salvá-lo]
+Se a rotina em assembly escrever em \texttt{rbx}, \texttt{rbp} ou
+\texttt{r12}--\texttt{r15} sem empilhar e restaurar o valor original, ela
+corrompe estado que o chamador presumia intacto. O sintoma não aparece na função
+em si: aparece depois, no C++, como uma variável que mudou de valor sem que
+nada a tenha atribuído. É a razão de as rotinas do subprojeto usarem apenas
+registradores livres.
+\end{armadilha}
+
+\subsubsection{Duas instruções que valem a leitura}
+
+O arquivo \texttt{.s} do subprojeto tem dez rotinas, e três delas ensinam mais
+do que o tamanho sugere.
+
+\paragraph{\texttt{cmov} --- comparação sem desvio.}
+
+\begin{lstlisting}[style=bt, language=GAS,
+    caption={\texttt{asm\_maximo} sem \emph{branch}, em
+             \texttt{src/outline\_asm/asm\_funcs.s}.}]
+    .globl asm_maximo
+    .type  asm_maximo, @function
+asm_maximo:
+    movl    %edi, %eax      # eax = a  (resultado inicial)
+    cmpl    %esi, %edi      # compara a com b (afeta flags, não escreve)
+    cmovll  %esi, %eax      # se a < b (less): eax = b
+                            # cmov não cria branch → pipeline não quebra
+    ret
+    .size asm_maximo, .-asm_maximo
+\end{lstlisting}
+
+Um desvio condicional sobre dado imprevisível é predito errado em torno de
+metade das vezes, e cada erro custa o esvaziamento do \emph{pipeline} --- dezenas
+de ciclos. O \texttt{cmov} executa sempre, sem desviar, e troca essa loteria por
+um custo fixo. A lição é geral: para \emph{dados imprevisíveis}, sem desvio
+ganha; para dados com padrão claro, o preditor acerta e o desvio é mais barato.
+
+\paragraph{\texttt{rep movsq} --- a instrução que o hardware reescreveu.}
+A rotina de cópia do subprojeto cabe em três linhas, e duas delas são a
+convenção:
+
+\begin{lstlisting}[style=bt, language=GAS,
+    caption={\texttt{asm\_memcpy\_64}, em
+             \texttt{src/outline\_asm/asm\_funcs.s}.}]
+    .globl asm_memcpy_64
+    .type  asm_memcpy_64, @function
+asm_memcpy_64:
+    movq    %rdx, %rcx      # rcx = n  (REP usa rcx como contador)
+    rep     movsq           # copia rcx qwords: [rsi] → [rdi], rsi++, rdi++
+    ret
+    .size asm_memcpy_64, .-asm_memcpy_64
+\end{lstlisting}
+
+O \texttt{rep} usa \texttt{rcx} como contador e \texttt{rsi}/\texttt{rdi} como
+origem e destino --- que são, por sorte da ABI, exatamente onde os dois
+ponteiros já chegaram. Semanticamente é um laço; em processadores modernos com
+ERMSB (\emph{Enhanced REP MOVSB/STOSB}), o hardware reconhece o padrão e move
+blocos de 16, 32 ou 64 bytes internamente, tornando a instrução competitiva com
+--- ou superior a --- um laço manual com SSE ou AVX. É o exemplo mais claro de
+por que ``contar instruções'' deixou de ser uma métrica de desempenho.
+
+\paragraph{Máscara de sinal --- valor absoluto sem desvio.} A terceira rotina do
+arquivo faz \texttt{abs()} com um deslocamento aritmético, um XOR e uma
+subtração: \texttt{n >> 31} produz \texttt{0} para não negativos e
+\texttt{0xFFFFFFFF} para negativos, e \texttt{(n \textasciicircum{} mask) - mask}
+é a identidade que devolve \texttt{n} num caso e \texttt{-n} no outro. Não é
+curiosidade: é o mesmo truque que o compilador emite para \texttt{std::abs} em
+\texttt{-O2}, e vê-lo escrito à mão explica por que a versão com \texttt{if}
+gera o mesmo código.
+
+\subsubsection{O \emph{build} não precisa de nada especial}
+
+O Meson reconhece \texttt{.s} pela extensão e chama o \emph{assembler}
+correspondente. Basta listar o arquivo entre as fontes do alvo, junto com os
+\texttt{.cpp} --- o que é, em si, uma pequena demonstração de por que o
+\cref{sec:meson} vale a leitura.
+
+\subsubsection{O que a execução revela --- e que a compilação não revelaria}
+
+O \texttt{main.cpp} do subprojeto não apenas chama as dez rotinas: compara cada
+resultado com uma referência em C++ ou da libc. Nove passam. Uma não.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída medida de \texttt{dist/bin/outline\_asm}, recortada.}]
+-- 5. asm_maximo (branchless CMOV) --
+  max(3, 7) = 7 ... max(-1, 1) = 1        [ok] todos corretos
+-- 6. asm_popcount (instrucao POPCNT) --
+  popcount(0xFFFFFFFF) = 32               [ok] todos corretos
+-- 7. asm_strlen (REPNE SCASB) --
+  strlen("")      = -1   [FALHOU] igual a strlen() da libc
+  strlen("hello") =  4   [FALHOU] igual a strlen() da libc
+-- 10. asm_eh_primo (preserva %rbx) --
+  7919 -> primo                           [ok] igual a referencia C++
+\end{lstlisting}
+
+O defeito é um \emph{off-by-one} no idioma de \texttt{strlen} com
+\texttt{repne scasb}, e reaparece --- copiado literalmente --- em dois módulos
+do curso. Ele é dissecado na \cref{sec:asm-abi-bug} e seguintes, junto com a
+razão de ter sobrevivido tanto tempo: durante boa parte da história deste
+repositório, esses alvos não eram construídos.
+
+% =============================================================================
+\subsection{O curso de assembly}
+\label{sec:asm-course}
+% =============================================================================
+
+O diretório \projeto{asm\_course} é diferente de todos os outros do repositório:
+não é um subprojeto com um \texttt{README} e um executável, e sim uma sequência
+de \textbf{quinze lições numeradas}, cada uma um par \texttt{.cpp} mais
+\texttt{.s} (a partir da sexta), para serem estudadas na ordem dos arquivos. O
+material didático está nos comentários de cabeçalho de cada arquivo --- e cada
+lição é um executável independente, instalado como \texttt{asm\_NN\_nome}, de
+modo que o curso inteiro se estuda \emph{rodando}, e não lendo.
+
+O restante desta seção percorre os quinze módulos na ordem, ensinando cada
+conceito do zero e citando as saídas medidas de cada binário. Quem já conhece
+assembly pode ir direto aos módulos 7, 10, 13 e 15: são os que contêm os
+defeitos reais encontrados no repositório, e é neles que este capítulo tem algo
+a dizer que um manual de arquitetura não diria.
+
+\begin{table}[htbp]
+\centering
+\caption{As quinze lições, e o assunto de cada uma.}
+\label{tab:asm-course}
+\footnotesize
+\begin{tabular}{@{}rll@{}}
+\toprule
+\textbf{\#} & \textbf{Módulo} & \textbf{Assunto} \\
+\midrule
+1  & \texttt{registers}     & os 16 registradores e o mapa de \emph{aliases} \\
+2  & \texttt{memory}        & modos de endereçamento \\
+3  & \texttt{arithmetic}    & aritmética e o registrador RFLAGS \\
+4  & \texttt{bitwise}       & operações bit a bit \\
+5  & \texttt{control\_flow} & saltos condicionais, \texttt{cmov}, \texttt{setcc} \\
+6  & \texttt{stack\_frames} & \texttt{push}, \texttt{pop}, \texttt{call}, \texttt{ret} \\
+7  & \texttt{calling\_conv} & a ABI System~V completa \\
+8  & \texttt{simd\_sse}     & registradores XMM, 128 bits \\
+9  & \texttt{simd\_avx}     & registradores YMM, 256 bits \\
+10 & \texttt{string\_ops}   & \texttt{rep movs}, \texttt{stos}, \texttt{scas}, \texttt{cmps} \\
+11 & \texttt{syscalls}      & a fronteira com o \emph{kernel}, sem libc \\
+12 & \texttt{fp\_x87}       & a FPU legada e a pilha de 80 bits \\
+13 & \texttt{optimization}  & \emph{unrolling}, \emph{prefetch}, previsão de desvio \\
+14 & \texttt{disassembly}   & ler o que o compilador gerou \\
+15 & \texttt{capstone}      & \texttt{memcpy}, \texttt{strlen}, \texttt{memset} de produção \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Três ideias que atravessam o curso}
+
+\paragraph{O registrador é uma hierarquia de memória em miniatura.} A primeira
+lição enquadra tudo o que vem depois: um registrador tem latência zero, o cache
+L1 custa cerca de quatro ciclos, e a RAM cerca de duzentos. São \emph{duas ordens
+de grandeza} entre estar dentro da CPU e estar fora dela --- e é essa razão que
+explica por que a \texttt{std::list} perde para o \texttt{std::vector} na
+\cref{sec:stl}, por que o \emph{pool allocator} da \cref{sec:memory} rende, e
+por que o ECS da \cref{sec:ecs} organiza componentes por tipo.
+
+\paragraph{Um \emph{syscall} é uma fronteira, não uma chamada.} A lição 11
+mostra \texttt{write} e \texttt{exit} feitos direto pela instrução
+\texttt{syscall}, sem libc: número em \texttt{rax}, argumentos em \texttt{rdi},
+\texttt{rsi}, \texttt{rdx}, \texttt{r10}, \texttt{r8}, \texttt{r9}, retorno em
+\texttt{rax} com valor negativo indicando \texttt{errno}. Repare que
+\texttt{r10} ocupa o lugar de \texttt{rcx}: a convenção de \emph{syscall} não é
+a mesma da ABI de funções, porque \texttt{rcx} é destruído pela própria
+instrução.
+
+\paragraph{SIMD é sobre \emph{layout}, não sobre instruções.} As lições 8 e 9
+apresentam XMM (128 bits) e YMM (256 bits), com um registrador comportando
+quatro \texttt{float} ou dois \texttt{double}. O que o curso deixa claro é que a
+dificuldade real não são os \emph{opcodes} --- é organizar os dados para que
+quatro valores adjacentes façam sentido juntos. É a diferença entre \emph{array
+of structs} e \emph{struct of arrays}, e é uma decisão de tipo, tomada muito
+antes de qualquer instrução vetorial.
+
+\begin{armadilha}[medir com o relógio errado, e medir código que não existe]
+A lição 13 depende de medição, e medir assembly tem duas armadilhas próprias. A
+primeira: o compilador remove código cujo resultado não é usado --- um
+\emph{benchmark} que descarta o resultado mede um laço vazio. A segunda: a
+frequência do processador varia (\emph{turbo}, térmica, escalonamento), de modo
+que a mesma rotina medida duas vezes dá números diferentes. Some a isso o
+aquecimento de cache, e fica claro por que \emph{microbenchmark} é uma
+disciplina própria --- e por que a resposta certa quase sempre é medir o
+programa inteiro com \texttt{perf}, não a função isolada.
+\end{armadilha}
+
+% =============================================================================
+\subsubsection{Módulo 1 --- o que é, afinal, um registrador}
+% =============================================================================
+
+\begin{porque}[por que a CPU precisa de ``variáveis'' próprias]
+O processador não sabe somar coisas que estão na memória: ele sabe somar coisas
+que estão \emph{dentro dele}. Um \textbf{registrador} é exatamente isso --- uma
+célula de armazenamento fixa, dentro do núcleo, com nome próprio e tamanho
+fixo. Não tem endereço, não pode crescer, não se aloca: existem dezesseis de
+propósito geral no x86-64, e é com esses dezesseis que todo programa do mundo é
+executado.
+
+O motivo de eles existirem cabe numa lista de latências, que o módulo 1 usa
+como abertura do curso: registrador, 0 ciclos; cache L1, $\approx 4$; L2,
+$\approx 12$; L3, $\approx 40$; RAM, $\approx 200$. São \emph{duas ordens de
+grandeza} entre estar dentro da CPU e estar fora dela, e é essa razão que
+explica por que a \classe{std::list} perde para o \classe{std::vector} na
+\cref{sec:stl}, por que o \emph{pool allocator} da \cref{sec:memory} rende, e
+por que o ECS da \cref{sec:ecs} agrupa componentes por tipo.
+\end{porque}
+
+Os dezesseis são \texttt{rax}, \texttt{rbx}, \texttt{rcx}, \texttt{rdx},
+\texttt{rsi}, \texttt{rdi}, \texttt{rbp}, \texttt{rsp} e
+\texttt{r8}--\texttt{r15}. Cada um tem \emph{nomes menores}, que não são outros
+registradores e sim \emph{janelas} sobre o mesmo silício:
+\texttt{rax} de 64 bits contém \texttt{eax} de 32, que contém \texttt{ax} de
+16, que se divide em \texttt{ah} e \texttt{al} de 8. Os registradores novos
+seguem o mesmo padrão com sufixos: \texttt{r8}, \texttt{r8d}, \texttt{r8w},
+\texttt{r8b}.
+
+\begin{armadilha}[escrever em \texttt{eax} zera a metade alta de \texttt{rax}]
+Esta é a regra mais contraintuitiva do x86-64, e o módulo 1 a mede. Escrever
+num registrador de 32 bits \textbf{zera} os 32 bits superiores do de 64;
+escrever num de 16 ou de 8 bits \textbf{não} zera nada. A decisão é do projeto
+do processador --- zerar a metade alta quebra a dependência com o valor
+anterior e libera o renomeador de registradores --- mas significa que
+\texttt{movl} e \texttt{movw} têm efeitos colaterais opostos.
+\end{armadilha}
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída medida de \texttt{dist/bin/asm\_01\_registers}
+             (cores removidas).}]
+--- 1.1 Aliases -- mesmo registrador, visoes diferentes ---
+  rax = 0xDEADBEEFCAFEBABE
+  eax = 0xCAFEBABE  (32 bits baixos de rax)
+  ax  = 0xBABE      | al = 0xBE | ah = 0xBA
+
+--- 1.2 Armadilha: escrever em eax ZERA os 32 bits altos ---
+  antes:  rax = 0xDEADBEEF00000000
+  movl $0x12345678, %eax
+  depois: rax = 0x0000000012345678
+  apos movw $0x1234, %ax:  rax = 0xDEADBEEFCAFE1234
+\end{lstlisting}
+
+Com \texttt{movl}, \texttt{0xDEADBEEF} sumiu; com \texttt{movw}, sobreviveu.
+Nada no código C++ mudou entre os dois casos --- mudou o sufixo de tamanho da
+instrução.
+
+Três registradores especiais aparecem o tempo todo daqui em diante:
+\texttt{rip} (o endereço da instrução atual, que o hardware avança sozinho e
+que nenhum \texttt{mov} escreve), \texttt{rsp} (o topo da pilha, módulo 6) e
+\texttt{rflags} (o estado da última operação, módulo 3). E duas instruções
+existem porque um \emph{byte} precisa virar um \texttt{int64}: \texttt{movzx}
+preenche com zeros (é o \texttt{unsigned char} do C++) e \texttt{movsx} replica
+o bit de sinal (é o \texttt{signed char}). O módulo mede: \texttt{0xFF} vira
+\texttt{255} sob a primeira e \texttt{-1} sob a segunda.
+
+% =============================================================================
+\subsubsection{Módulo 2 --- endereçar memória}
+% =============================================================================
+
+\begin{porque}[por que um modo de endereçamento tão elaborado]
+\texttt{arr[i]} é uma multiplicação, uma soma e uma leitura. Se cada etapa
+fosse uma instrução, todo acesso a vetor custaria três \emph{slots} de
+\emph{pipeline}. O x86 põe a conta inteira \emph{dentro} do operando de
+memória: há uma unidade dedicada de cálculo de endereço, e ela computa base,
+índice, escala e deslocamento de graça, em paralelo com o resto.
+\end{porque}
+
+A forma geral, em AT\&T, é \texttt{disp(base, índice, escala)}, com endereço
+efetivo \texttt{base + índice$\times$escala + disp}. A escala só pode ser 1, 2,
+4 ou 8 --- exatamente os tamanhos de \texttt{char}, \texttt{short},
+\texttt{int} e \texttt{int64\_t}, o que não é coincidência.
+
+\begin{table}[htbp]
+\centering
+\caption{Modos de endereçamento e a construção C++ correspondente
+         (de \texttt{src/asm\_course/02\_memory.cpp}).}
+\label{tab:enderecamento}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{AT\&T} & \textbf{Intel} & \textbf{Em C++} \\
+\midrule
+\texttt{\$42}                & \texttt{42}              & literal \\
+\texttt{(\%rax)}             & \texttt{[rax]}           & \texttt{*p} \\
+\texttt{8(\%rax)}            & \texttt{[rax+8]}         & \texttt{p->campo} \\
+\texttt{(\%rax,\%rbx,4)}     & \texttt{[rax+rbx*4]}     & \texttt{arr[i]} \\
+\texttt{-8(\%rbp)}           & \texttt{[rbp-8]}         & variável local \\
+\texttt{x(\%rip)}            & \texttt{[rip+x]}         & global ou \texttt{static} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Duas linhas merecem comentário. \texttt{-8(\%rbp)} é onde moram as variáveis
+locais: uma variável local não é uma entidade do hardware, é um deslocamento
+negativo a partir da base do quadro de pilha. E \texttt{x(\%rip)} é o
+endereçamento relativo ao ponteiro de instrução --- o mecanismo que torna o
+código independente de posição e que toda biblioteca compartilhada usa para
+alcançar suas globais sem saber onde foi carregada.
+
+\paragraph{\texttt{lea} --- calcular sem ler.} A instrução \texttt{lea}
+(\emph{load effective address}) executa a conta de endereçamento e entrega o
+\emph{resultado da conta}, sem tocar na memória. Isso a torna o canivete
+aritmético do x86 --- e, ao contrário de \texttt{add} e \texttt{imul}, ela
+\textbf{não altera as \emph{flags}}, o que permite intercalá-la entre um
+\texttt{cmp} e o salto que depende dele.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída medida de \texttt{dist/bin/asm\_02\_memory}.}]
+--- 2.4 LEA -- calcula endereco SEM acessar memoria ---
+  leaq (,x,4)  -> x*4 = 28  (x=7)
+  leaq (x,x,4) -> x*5 = 35  (x=7)
+  leaq (x,x,8) -> x*9 = 63
+  leaq 10(x,y) -> x+y+10 = 20  (x=7, y=3)
+  LEA nao altera RFLAGS -- vantagem sobre ADD/IMUL!
+\end{lstlisting}
+
+Ver \texttt{leaq (x,x,4)} produzir \texttt{x*5} explica de uma vez por que o
+compilador quase nunca emite \texttt{imul} para constantes pequenas: ele
+decompõe a constante em somas de \texttt{lea} e deslocamentos.
+
+% =============================================================================
+\subsubsection{Módulo 3 --- aritmética e o registrador RFLAGS}
+% =============================================================================
+
+\begin{porque}[como o processador se lembra do resultado de uma comparação]
+Não existe \texttt{if} no hardware. O que existe é um registrador de estado,
+\textbf{RFLAGS}, cujos bits são atualizados como efeito colateral de quase toda
+operação aritmética ou lógica, e saltos que \emph{leem} esses bits. Um
+\texttt{if (a < b)} do C++ vira, invariavelmente, duas instruções: uma que
+escreve nas \emph{flags} (\texttt{cmp}) e uma que as consulta (\texttt{jl}).
+\end{porque}
+
+\begin{table}[htbp]
+\centering
+\caption{Os bits de RFLAGS que importam, do cabeçalho de
+         \texttt{src/asm\_course/03\_arithmetic.cpp}.}
+\label{tab:rflags}
+\footnotesize
+\begin{tabular}{@{}rlll@{}}
+\toprule
+\textbf{Bit} & \textbf{Sigla} & \textbf{Nome} & \textbf{Significa} \\
+\midrule
+0  & CF & \emph{carry}     & estouro \textbf{sem} sinal \\
+6  & ZF & \emph{zero}      & resultado igual a zero \\
+7  & SF & \emph{sign}      & bit mais alto do resultado é 1 \\
+10 & DF & \emph{direction} & direção das operações de \emph{string} \\
+11 & OF & \emph{overflow}  & estouro \textbf{com} sinal \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A distinção que o módulo existe para ensinar é a de \textbf{CF contra OF}. Os
+mesmos bits somados dão o mesmo resultado --- o processador não sabe se você
+considera o operando com ou sem sinal. Ele calcula as duas condições de estouro
+e guarda \emph{as duas}: CF é o estouro da leitura sem sinal, OF o da leitura
+com sinal. Quem escolhe qual consultar é a instrução de salto, e é aí que a
+assinatura do tipo em C++ vira uma decisão de \emph{opcode}.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída medida de \texttt{dist/bin/asm\_03\_arithmetic}: cada
+             operação é seguida pelas \emph{flags} capturadas dentro do mesmo
+             bloco \texttt{asm}.}]
+--- 3.1 ADD -- flags em diferentes cenarios ---
+          -1 +           1 =           0 | resultado zero
+   CF=1 PF=1 ZF=1 SF=0 OF=0
+  2147483647 +           1 = -2147483648 | overflow com sinal
+   CF=0 PF=1 ZF=0 SF=1 OF=1
+\end{lstlisting}
+
+As duas linhas são a demonstração inteira. Somar $-1$ com $1$ levanta CF (houve
+vai-um na leitura sem sinal) mas não OF. Somar \texttt{INT32\_MAX} com $1$
+levanta OF mas não CF. O mesmo circuito, dois veredictos --- e note que a
+segunda dessas somas é \gls{ub} em C++ e aqui aparece como o que ela é no
+hardware: previsível, e completamente inútil como garantia, porque o
+compilador tem o direito de supor que ela nunca acontece.
+
+\begin{armadilha}[ler RFLAGS de fora do bloco não mede nada]
+O módulo traz uma função \texttt{read\_flags()} feita com
+\texttt{pushfq; popq} --- a única maneira de ler RFLAGS, já que não existe
+\texttt{mov} a partir dele. E o próprio comentário do arquivo avisa que ela é
+quase inútil: entre a instrução que se quer observar e o \texttt{pushfq}, o
+compilador pode inserir qualquer coisa, e \emph{quase toda} instrução mexe nas
+\emph{flags}. Por isso todos os demos capturam as \emph{flags} dentro do mesmo
+bloco \texttt{asm} da operação --- e a saída ainda imprime, antes, o estado
+``ambiente'', justamente para o leitor ver que ele não corresponde a operação
+nenhuma.
+\end{armadilha}
+
+Três notas fecham o módulo. \texttt{sub} e \texttt{cmp} são a mesma subtração
+com as mesmas \emph{flags}; \texttt{cmp} apenas descarta o resultado.
+\texttt{mul} e \texttt{imul} produzem um resultado do \emph{dobro} da largura,
+em \texttt{rdx:rax} --- é como se implementa \texttt{\_\_int128} e como uma
+multiplicação de 64 bits detecta o próprio estouro. E \texttt{inc}/\texttt{dec},
+ao contrário de \texttt{add \$1}/\texttt{sub \$1}, \emph{preservam} CF, para não
+destruir o vai-um de uma aritmética de precisão múltipla em andamento
+(\texttt{adc} e \texttt{sbb}, na seção 3.6, são o outro lado dessa moeda).
+
+% =============================================================================
+\subsubsection{Módulo 4 --- operações bit a bit}
+% =============================================================================
+
+O módulo 4 percorre \texttt{and}, \texttt{or}, \texttt{xor}, \texttt{not}, os
+três deslocamentos e as rotações, além do quarteto de busca de bits
+(\texttt{bsf}, \texttt{bsr}, \texttt{lzcnt}, \texttt{tzcnt}). A distinção que
+mais rende está na \cref{tab:shifts}.
+
+\begin{table}[htbp]
+\centering
+\caption{As três direitas do x86, com os valores medidos em
+         \texttt{dist/bin/asm\_04\_bitwise}.}
+\label{tab:shifts}
+\footnotesize
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Instrução} & \textbf{Preenche com} & \textbf{Equivale a} & \textbf{Medido} \\
+\midrule
+\texttt{shr} & zeros          & divisão sem sinal       & \texttt{-8 >> 3 = 536870911} \\
+\texttt{sar} & cópia do sinal & divisão com sinal       & \texttt{-8 >> 3 = -1} \\
+\texttt{ror} & o bit que saiu & rotação (nada se perde) & \texttt{0x80000001 -> 0xC0000000} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A primeira linha é a razão pela qual \texttt{unsigned} e \texttt{signed} geram
+\emph{instruções diferentes} para o mesmo operador \texttt{>>} do C++: o tipo
+escolhe entre \texttt{shr} e \texttt{sar}. A terceira é a razão pela qual
+rotação não existia como operador da linguagem até o C++20.
+
+\begin{regra}[o \cabecalho{bit} do C++20 cobre quase tudo deste módulo]
+\texttt{std::popcount}, \texttt{std::rotl}, \texttt{std::rotr},
+\texttt{std::countl\_zero}, \texttt{std::countr\_zero},
+\texttt{std::bit\_width} e \texttt{std::has\_single\_bit} compilam exatamente
+para \texttt{popcnt}, \texttt{rol}, \texttt{ror}, \texttt{lzcnt} e
+\texttt{tzcnt} --- e são \texttt{constexpr}, portáteis e sem \gls{ub} quando o
+deslocamento é grande demais. Estude o módulo 4 para entender o que a instrução
+faz; escreva o \cabecalho{bit} no código de produção. O subprojeto
+\projeto{bits} cobre esse lado da fronteira.
+\end{regra}
+
+% =============================================================================
+\subsubsection{Módulo 5 --- controle de fluxo}
+% =============================================================================
+
+\begin{porque}[não existe \texttt{if}, existe \texttt{cmp} seguido de salto]
+Todo controle de fluxo do x86 se reduz a uma instrução que escreve nas
+\emph{flags} e outra que salta (ou não) conforme elas. O que muda de um
+\texttt{if} para um \texttt{while}, um \texttt{switch} ou um \texttt{?:} é
+apenas \emph{qual} salto e \emph{para onde}.
+\end{porque}
+
+A tabela de saltos tem uma coluna a mais do que o esperado: o x86 oferece
+\emph{dois conjuntos completos} de comparações, um com sinal
+(\texttt{jg}, \texttt{jge}, \texttt{jl}, \texttt{jle}) e outro sem
+(\texttt{ja}, \texttt{jae}, \texttt{jb}, \texttt{jbe}); só a igualdade
+(\texttt{je}/\texttt{jne}) é comum aos dois, porque bits iguais são bits iguais
+em qualquer interpretação.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída medida de \texttt{dist/bin/asm\_05\_control\_flow}: os
+             mesmos 32 bits, dois veredictos opostos.}]
+--- 5.2 Jumps condicionais: JL vs JB (signed vs unsigned) ---
+  -1 (0xFFFFFFFF) vs 5:
+    JL  (signed  <): SIM -> -1 < 5 = verdadeiro
+    JB  (unsigned<): NAO -> 4294967295 < 5 = falso
+  Mesmos bits, interpretacoes OPOSTAS!
+\end{lstlisting}
+
+Essa é, medida no metal, a origem de toda a classe de bugs de comparação mista
+entre \texttt{int} e \texttt{size\_t} --- inclusive a que o \projeto{http-client}
+carregava, onde \texttt{40 - title.size()} dá a volta por ser aritmética sem
+sinal. O compilador escolheu \texttt{jb} porque o tipo mandou; o autor esperava
+\texttt{jl}.
+
+Duas alternativas ao salto fecham o módulo: \texttt{setcc}, que escreve
+\texttt{0} ou \texttt{1} num \emph{byte} conforme a condição --- é assim que o
+compilador materializa um \texttt{bool} --- e \texttt{cmov}, já visto na
+\cref{sec:outline-asm}.
+
+\begin{armadilha}[a instrução \texttt{loop} é mais lenta que escrever o laço à mão]
+O x86 tem uma instrução \texttt{loop}, que decrementa \texttt{rcx} e salta se
+ele não zerou: exatamente o que um laço faz, numa instrução só. E ela é
+\emph{mais lenta} que o par \texttt{dec} + \texttt{jnz} em qualquer processador
+moderno, por ser microcodificada. É o exemplo canônico de que ``menos
+instruções'' deixou de significar ``mais rápido'' ainda nos anos noventa.
+\end{armadilha}
+
+% =============================================================================
+\subsubsection{Módulo 6 --- a pilha, e onde moram as variáveis locais}
+% =============================================================================
+
+\begin{porque}[por que uma função sabe para onde voltar]
+Chamar uma função exige guardar duas coisas em algum lugar: o endereço de
+retorno e as variáveis locais de quem chamou. O ``algum lugar'' é a
+\textbf{pilha} --- uma região de memória que cresce para baixo, e cujo topo
+\texttt{rsp} sempre aponta. Não há nada de mágico nela: é memória comum, e o
+único motivo de funcionar é que todos concordam em usá-la da mesma forma.
+\end{porque}
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={As quatro instruções da pilha e o quadro que elas montam (resumo de
+             (de \texttt{src/asm\_course/06\_stack\_frames.cpp}).}]
+  PUSH val   ->  RSP -= 8;  [RSP] = val
+  POP  dst   ->  dst = [RSP];  RSP += 8
+  CALL alvo  ->  PUSH(endereco da proxima instrucao);  JMP alvo
+  RET        ->  POP RIP
+
+  Enderecos altos
+  +--------------------+  <- RSP antes do CALL
+  |  endereco de ret.  |  <- o CALL empurrou isto
+  +--------------------+  <- RSP ao entrar na funcao
+  |  RBP anterior      |  <- pushq %rbp   (prologo)
+  +--------------------+  <- RBP = RSP    (base do quadro)
+  |  variavel local 1  |     -8(%rbp)
+  |  variavel local 2  |     -16(%rbp)
+  +--------------------+  <- RSP atual
+  Enderecos baixos
+\end{lstlisting}
+
+O par \texttt{pushq \%rbp} / \texttt{movq \%rsp, \%rbp} é o \textbf{prólogo};
+\texttt{leave} (que é \texttt{mov rsp,rbp} seguido de \texttt{pop rbp}) e
+\texttt{ret} formam o \textbf{epílogo}. Com o quadro montado,
+\texttt{8(\%rbp)} é sempre o endereço de retorno e \texttt{-8(\%rbp)} a
+primeira variável local --- e o módulo comprova isso lendo os dois em tempo de
+execução.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída medida de \texttt{dist/bin/asm\_06\_stack\_frames}.}]
+--- 6.1 PUSH / POP ---
+  RSP antes:       0x00007FFF646AD0A0
+  RSP apos 2 PUSH: 0x00007FFF646AD090  (decrementou -16 bytes)
+  RSP apos 2 POP:  0x00007FFF646AD0A0  (restaurado)
+  Primeiro pop: 0xBBBBBBBB (era val2)  -> LIFO
+
+--- 6.2 Prologo/Epilogo -- frame convencional ---
+    RSP = 0x00007FFF646AD0C0  (topo da stack)
+    RBP = 0x00007FFF646AD0C0  (base do frame)
+    [RBP+8] = endereco de retorno = 0x0000561EC97A6815
+\end{lstlisting}
+
+Dois \texttt{push} moveram \texttt{rsp} em exatamente 16 \emph{bytes}; dois
+\texttt{pop} o devolveram ao valor original. É trivial, e é a única coisa que
+separa um programa que funciona de um que não volta: se as contas de
+\texttt{rsp} não fecharem, o \texttt{ret} salta para o que quer que esteja no
+topo da pilha.
+
+A função \texttt{asm\_fibonacci} do módulo é o exemplo completo: é recursiva,
+precisa de \texttt{n} vivo \emph{depois} da primeira chamada recursiva e do
+resultado dela vivo \emph{durante} a segunda --- e por isso usa \texttt{rbx} e
+\texttt{r12}, que são \emph{callee-saved}, empilhando-os no prólogo e
+restaurando-os na ordem inversa no epílogo.
+
+\begin{armadilha}[a \emph{red zone} são 128 bytes que só uma função-folha tem]
+A \gls{abi} reserva 128 \emph{bytes} \emph{abaixo} de \texttt{rsp} que uma
+função pode usar sem mover o ponteiro de pilha --- é o que permite a uma função
+sem chamadas dispensar o prólogo inteiro. A pegadinha está em ``sem
+chamadas'': se a função chamar qualquer outra, o \texttt{call} escreve
+exatamente ali. E código de \emph{kernel}, onde interrupções não respeitam a
+convenção, é compilado com \texttt{-mno-red-zone} por essa razão.
+\end{armadilha}
+
+% =============================================================================
+\subsubsection{Módulo 7 --- a ABI, e o bug que explica por que ela existe}
+\label{sec:asm-abi-bug}
+% =============================================================================
+
+\begin{porque}[por que duas linguagens conseguem se chamar]
+Nada no formato binário obriga uma função a receber o primeiro argumento em
+\texttt{rdi}. Essa é uma \emph{convenção}: a \gls{abi} System~V
+AMD64~\cite{sysvabi}, que todo compilador de Linux x86-64 implementa. Ela é o
+motivo de o C++ conseguir chamar Rust, Fortran, uma rotina \texttt{.s} escrita
+à mão e a libc do sistema sem que nenhum deles conheça o outro. E é uma
+convenção sem fiscal: quando um dos lados a desobedece, ninguém avisa --- o
+programa compila, liga, executa e produz lixo, ou estoura em outro lugar.
+\end{porque}
+
+A tabela de registradores já apareceu na \cref{tab:sysv}. O módulo 7 acrescenta
+três regras que ela não cabe e que respondem por quase todo bug de fronteira:
+
+\begin{enumerate}
+\item Do sétimo argumento em diante, os valores vão pela \textbf{pilha}, na
+      ordem inversa --- e a função os lê em \texttt{16(\%rbp)},
+      \texttt{24(\%rbp)}, e assim por diante, \emph{depois} do prólogo.
+\item Numa função \textbf{variádica}, o registrador \texttt{al} deve conter
+      \emph{quantos} registradores XMM carregam argumentos em ponto flutuante.
+      Chamar \texttt{printf} de assembly sem zerar \texttt{al} é uma das formas
+      mais rápidas de derrubar um programa.
+\item No instante em que a instrução \texttt{call} é \textbf{executada},
+      \texttt{rsp} tem de ser múltiplo de 16.
+\end{enumerate}
+
+A terceira é a que interessa aqui, e a aritmética dela é curta o bastante para
+caber num parágrafo. Como o \texttt{call} empurra 8 bytes de endereço de
+retorno, ao \emph{entrar} numa função \texttt{rsp mod 16} vale 8. O
+\texttt{pushq \%rbp} do prólogo empurra mais 8 e devolve o valor a 0. A partir
+daí, a função já está pronta para chamar outra: qualquer ajuste extra tem de
+ser múltiplo de 16.
+
+\begin{lstlisting}[style=bt, language=GAS,
+    caption={A conta, linha a linha --- resumo de
+             \texttt{src/asm\_course/07\_calling\_asm.s}.}]
+  entrada de asm_apply ....... RSP mod 16 = 8
+  pushq %rbp ................. RSP mod 16 = 0   <- JA ALINHADO
+  subq $8, %rsp .............. RSP mod 16 = 8   <- e aqui QUEBRAMOS
+  call *%rax ................. o destino recebe RSP mod 16 = 0  ERRADO
+\end{lstlisting}
+
+\paragraph{O primeiro bug de ABI.} A versão anterior de \texttt{asm\_apply}
+--- a rotina que chama um ponteiro de função vindo do C++ --- trazia um
+\texttt{subq \$8, \%rsp} antes do \texttt{call}, com o comentário ``após push
+rbp: rsp está \emph{misaligned} por 8''. A conta estava invertida: o
+\texttt{push} já havia alinhado, e o \texttt{sub} desalinhou. A rotina
+funcionava --- até o destino executar uma instrução SSE alinhada.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={A pilha do \emph{crash}, do relato em
+             \texttt{src/asm\_course/07\_calling\_asm.s}.}]
+  #0  fmt::v10::detail::vformat_to<char>
+  #4  cpp_callback  (07_calling_conv.cpp:52)
+  #5  asm_apply     (07_calling_asm.s:124)   <- o culpado
+\end{lstlisting}
+
+\begin{armadilha}[o bug de alinhamento estoura em quem \emph{usa} SSE, nunca em quem o quebrou]
+Esta é a assinatura do defeito, e a razão de ele ser tão caro de encontrar.
+Quebrar o alinhamento de 16 bytes não causa falha nenhuma: \texttt{sub},
+\texttt{mov} e \texttt{call} funcionam com \texttt{rsp} em qualquer valor. A
+falha aparece quando alguém, quatro quadros acima, emite um \texttt{movaps} ou
+\texttt{movdqa} --- os \emph{loads} SSE \textbf{alinhados}, que o compilador usa
+à vontade em \texttt{-O2} para copiar 16 bytes de uma vez --- sobre um endereço
+que herdou o deslocamento. O resultado é um \texttt{SIGSEGV} dentro de código
+de terceiros, perfeitamente correto, com a pilha apontando para a biblioteca de
+formatação. O culpado está no quadro de baixo, e não fez nada errado no
+instante em que estourou.
+\end{armadilha}
+
+A correção foi remover uma linha. O que ela ensina não é ``cuidado com o
+\texttt{sub}'': é que a \gls{abi} não é burocracia, e sim um conjunto de
+invariantes das quais o código \emph{gerado} depende sem nunca verificar.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída medida de \texttt{dist/bin/asm\_07\_calling\_conv} depois da
+             correção: o \emph{callback} em C++ agora retorna.}]
+--- 7.5 Ponteiro de funcao como argumento ---
+  asm_apply(cpp_callback, 7):
+    [cpp_callback chamado com 7]
+  resultado = 49 (esperado: 49 = 7 ao quadrado)
+
+--- 7.7 Alinhamento de 16 bytes da stack no CALL ---
+  RSP atual: 0x00007FFD80B04AA0
+  RSP mod 16 = 0
+  Alinhado a 16 bytes? SIM (apos push rbp)
+\end{lstlisting}
+
+% =============================================================================
+\subsubsection{Módulos 8 e 9 --- SIMD: XMM, YMM e o custo de misturá-los}
+% =============================================================================
+
+\begin{porque}[por que somar quatro números custa o mesmo que somar um]
+SIMD é \emph{Single Instruction, Multiple Data}: um registrador largo dividido
+em faixas independentes, e uma instrução que opera em todas ao mesmo tempo. Um
+XMM tem 128 bits e cabe quatro \texttt{float}; um YMM tem 256 e cabe oito.
+\texttt{addps} soma quatro pares de \texttt{float} no mesmo tempo em que
+\texttt{addss} soma um. O ganho não vem de mais silício por operação --- vem de
+não pagar decodificação, despacho e controle de laço quatro vezes.
+\end{porque}
+
+\begin{table}[htbp]
+\centering
+\caption{O que cabe num registrador vetorial, e o sufixo que o diz
+         (de \texttt{08\_simd\_sse.cpp} e \texttt{09\_simd\_avx.cpp}).}
+\label{tab:simd-lanes}
+\footnotesize
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Sufixo} & \textbf{Significa} & \textbf{XMM (128 bits)} & \textbf{YMM (256 bits)} \\
+\midrule
+\texttt{ps} & \emph{packed single} & 4 \texttt{float}  & 8 \texttt{float} \\
+\texttt{pd} & \emph{packed double} & 2 \texttt{double} & 4 \texttt{double} \\
+\texttt{ss} & \emph{scalar single} & 1 \texttt{float}  & --- \\
+\texttt{sd} & \emph{scalar double} & 1 \texttt{double} & --- \\
+\texttt{d}  & \emph{packed dword}  & 4 \texttt{int32}  & 8 \texttt{int32} (AVX2) \\
+\texttt{b}  & \emph{packed byte}   & 16 \texttt{int8}  & 32 \texttt{int8} (AVX2) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Ler o sufixo é ler a instrução: \texttt{mulps} multiplica quatro
+\texttt{float}, \texttt{mulsd} multiplica um \texttt{double}, \texttt{paddd}
+soma oito \texttt{int32} num YMM. O \texttt{p} inicial das instruções de
+inteiro é de \emph{packed}, e o \texttt{v} das versões AVX
+(\texttt{vaddps}) é a codificação VEX de três operandos, que preserva os dois
+fontes em vez de destruir um deles.
+
+\begin{armadilha}[\texttt{movaps} exige alinhamento; \texttt{movups} não]
+As instruções de carga vêm em dois sabores: \texttt{movaps} (\emph{aligned})
+falha com \texttt{SIGSEGV} se o endereço não for múltiplo de 16, e
+\texttt{movups} (\emph{unaligned}) aceita qualquer um. Em processadores atuais
+a diferença de custo entre as duas, quando o dado \emph{está} alinhado, é
+praticamente nula --- de modo que a versão alinhada compra pouco desempenho e
+vende muita fragilidade. É a mesma instrução do bug de ABI do módulo 7, agora
+vista de frente: escrever \texttt{alignas(16)} no dado (ou \texttt{alignas(32)}
+para AVX) é o que torna \texttt{movaps} seguro, e é o assunto do subprojeto
+\projeto{layout}.
+\end{armadilha}
+
+\paragraph{A redução horizontal é o gargalo, não a soma.} O produto interno de
+quatro \texttt{float} do módulo 8 mostra a assimetria fundamental do SIMD: a
+parte vetorial é uma instrução (\texttt{mulps}), e reduzir os quatro resultados
+a um único número exige duas rodadas de \texttt{shufps} + \texttt{addps}. As
+operações \emph{verticais} (faixa com faixa) são baratas; as \emph{horizontais}
+(entre faixas do mesmo registrador) são caras. É por isso que o conselho
+prático de SIMD é sempre o mesmo: mantenha o acumulador vetorial, reduza uma
+vez só, no fim.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída medida de \texttt{dist/bin/asm\_08\_simd\_sse} e
+             \texttt{dist/bin/asm\_09\_simd\_avx}.}]
+--- 8.2 Aritmetica Packed -- 4 operacoes em 1 instrucao ---
+  ADDPS [1,2,3,4] + [10,20,30,40] = [11,22,33,44]
+  SQRTPS raiz de [4,9,16,25] = [2,3,4,5]
+
+--- 8.3 Produto interno 4D via SSE ---
+  a.b = 1x5 + 2x6 + 3x7 + 4x8 = 70  (esperado: 70)
+
+--- 9.1 Registradores YMM -- 8 floats em paralelo ---
+  VADDPS (8 floats): [11,22,33,44,55,66,77,88]
+
+--- 9.2 FMA -- Fused Multiply-Add (a*b + c em uma instrucao) ---
+  FMA: a[i]*2 + 10: [12,14,16,18,20,22,24,26]
+  FMA e mais preciso que MUL+ADD separados (1 arredondamento vs 2)
+\end{lstlisting}
+
+A observação sobre FMA merece destaque porque é frequentemente lida ao
+contrário: \texttt{vfmadd} não é apenas mais rápido, é \emph{mais preciso} ---
+calcula $a \times b + c$ com um único arredondamento no fim, em vez de dois. Essa
+é exatamente a razão pela qual o compilador \textbf{não} funde
+\texttt{a*b + c} em FMA por conta própria sem \texttt{-ffast-math}: o resultado
+seria diferente do que o IEEE~754 manda, ainda que melhor.
+
+\begin{armadilha}[misturar AVX e SSE sem \texttt{vzeroupper} custa dezenas de ciclos]
+Quando código AVX deixa a metade alta de um registrador YMM ``suja'' e em
+seguida se executa uma instrução SSE legada, o processador precisa salvar e
+restaurar esse estado --- uma penalidade de transição que chegou a 70 ciclos no
+Sandy Bridge. A instrução \texttt{vzeroupper} zera as metades altas e elimina o
+problema; o compilador a emite sozinho ao fim de funções AVX, mas em assembly
+escrito à mão ela é responsabilidade de quem escreve, e o momento certo é antes
+de retornar para um chamador SSE ou de chamar qualquer função da libc.
+\end{armadilha}
+
+% =============================================================================
+\subsubsection{Módulo 10 --- operações de \emph{string}, e o segundo bug de ABI}
+% =============================================================================
+
+As instruções de \emph{string} do x86 são as mais antigas do conjunto e as
+únicas que usam registradores \emph{implícitos}: elas não recebem operandos, e
+sim leem \texttt{rsi}, \texttt{rdi} e \texttt{rcx} por decreto.
+
+\begin{table}[htbp]
+\centering
+\caption{As quatro operações de \emph{string} e seus registradores implícitos
+         (de \texttt{src/asm\_course/10\_string\_ops.cpp}).}
+\label{tab:string-ops}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Instrução} & \textbf{Faz} & \textbf{Serve para} \\
+\midrule
+\texttt{movs} & \texttt{[rdi] <- [rsi]}, avança ambos       & \texttt{memcpy} \\
+\texttt{stos} & \texttt{[rdi] <- al/eax/rax}, avança        & \texttt{memset} \\
+\texttt{scas} & compara \texttt{[rdi]} com \texttt{al}      & \texttt{strlen}, \texttt{memchr} \\
+\texttt{cmps} & compara \texttt{[rdi]} com \texttt{[rsi]}   & \texttt{memcmp} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Os prefixos que as tornam laços são três: \texttt{rep} repete enquanto
+\texttt{rcx} não zera; \texttt{repe} repete enquanto \texttt{rcx} não zera
+\emph{e} ZF=1; \texttt{repne}, enquanto \texttt{rcx} não zera \emph{e} ZF=0. E a
+direção da caminhada é ditada pela \emph{flag} DF: \texttt{cld} a zera
+(endereços crescentes, o normal) e \texttt{std} a liga (decrescentes).
+
+\begin{regra}[a ABI garante DF=0 na entrada de toda função --- e cobra a volta]
+Se a sua rotina emite \texttt{std}, ela \textbf{deve} emitir \texttt{cld} antes
+de retornar. Uma função chamada depois, que suponha o padrão, copiaria memória
+para trás. É uma das poucas cláusulas da \gls{abi} sobre \emph{flags}, e é
+silenciosa: a violação não gera nem \emph{warning} nem falha imediata.
+\end{regra}
+
+\paragraph{O segundo bug de ABI.} O demo 10.5 usa \texttt{std} + \texttt{rep
+movsb} num bloco de \texttt{asm} inline. A versão anterior declarava assim:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A declaração errada --- os três registradores como \emph{entrada
+             pura}.}]
+asm volatile (
+    "std\n\t"
+    "rep movsb\n\t"
+    "cld"
+    :                                        // sem saidas
+    : "D"(&rev[7]), "S"(&arr[7]), "c"((size_t)8)
+    : "memory"
+);
+\end{lstlisting}
+
+Declarar um operando como \emph{input} é uma promessa ao compilador: ``este
+bloco lê esse registrador e não o altera''. Mas \texttt{rep movsb} altera os
+três --- move \texttt{rdi} e \texttt{rsi} a cada byte e zera \texttt{rcx}. O GCC
+acreditou na promessa, manteve outros valores vivos nesses registradores e os
+reutilizou depois do bloco. O sintoma foi um ponteiro corrompido, e o
+\emph{crash} apareceu na linha \emph{seguinte} ao \texttt{asm}, no laço de
+verificação --- não no assembly.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A correção, em \texttt{src/asm\_course/10\_string\_ops.cpp}:
+             \texttt{"+"} = \emph{read-write}.}]
+void*       d = &rev[7];
+const void* o = &arr[7];
+std::size_t n = 8;
+
+asm volatile (
+    "std\n\t"
+    "rep movsb\n\t"
+    "cld"
+    : "+D"(d), "+S"(o), "+c"(n)   // read-write: o bloco os ALTERA
+    :
+    : "memory"
+);
+\end{lstlisting}
+
+\begin{armadilha}[não se pode ``consertar'' isso com \emph{clobber}]
+O reflexo natural é listar \texttt{"rdi"}, \texttt{"rsi"} e \texttt{"rcx"} nos
+\emph{clobbers}. O GCC recusa: um registrador não pode ser simultaneamente
+operando e \emph{clobber}. É exatamente o vazio que a \emph{constraint}
+\texttt{"+"} preenche --- e ela exige que o operando seja uma \emph{variável},
+mesmo que o valor final não interesse a ninguém. A alternativa equivalente é
+declarar saídas \texttt{"=D"}, \texttt{"=S"}, \texttt{"=c"} e amarrar as
+entradas a elas com \texttt{"0"}, \texttt{"1"}, \texttt{"2"}.
+\end{armadilha}
+
+\begin{regra}[os dois bugs contam a mesma história]
+O do módulo 7 quebrou um contrato entre \emph{duas funções} (o alinhamento de
+16 bytes no \texttt{call}); o do módulo 10 quebrou um contrato entre
+\emph{o programador e o compilador} (a lista de operandos do \texttt{asm}). Nos
+dois casos o compilador não verificou nada, o código montou e ligou sem uma
+única mensagem, e a falha se manifestou longe do erro --- quatro quadros acima
+num, uma linha abaixo no outro. É a definição operacional do que uma ABI é: uma
+promessa que ninguém confere e todo mundo usa.
+\end{regra}
+
+% =============================================================================
+\subsubsection{Módulo 11 --- \emph{syscalls}: a fronteira com o \emph{kernel}}
+% =============================================================================
+
+Um \emph{syscall} não é uma chamada de função: é uma troca de nível de
+privilégio. A instrução \texttt{syscall} salva o estado, entra no
+\emph{kernel}, executa e volta --- e por isso tem uma convenção \emph{própria},
+parecida com a da \gls{abi} mas não igual.
+
+\begin{table}[htbp]
+\centering
+\caption{Convenção de \emph{syscall} contra convenção de função
+         (de \texttt{src/asm\_course/11\_syscalls.cpp}).}
+\label{tab:syscall-abi}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Papel} & \textbf{Função (System~V)} & \textbf{\emph{Syscall}} \\
+\midrule
+seletor            & ---                  & \texttt{rax} = número \\
+argumentos 1--3    & \texttt{rdi rsi rdx} & \texttt{rdi rsi rdx} \\
+argumento 4        & \texttt{rcx}         & \textbf{\texttt{r10}} \\
+argumentos 5--6    & \texttt{r8 r9}       & \texttt{r8 r9} \\
+retorno            & \texttt{rax}         & \texttt{rax}, negativo = \texttt{-errno} \\
+destruídos         & \texttt{rax rcx rdx \dots} & \texttt{rcx}, \texttt{r11} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A troca de \texttt{rcx} por \texttt{r10} não é capricho: a própria instrução
+\texttt{syscall} guarda o \texttt{rip} de retorno em \texttt{rcx} e o RFLAGS em
+\texttt{r11}, para que o \texttt{sysret} saiba voltar. Os dois registradores
+são, portanto, \emph{destruídos pelo hardware} --- e omiti-los do
+\emph{clobber} de um \texttt{asm} inline é a mesma classe de erro do módulo 10.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída medida de \texttt{dist/bin/asm\_11\_syscalls}: a prova de que
+             \texttt{rcx} é destruído, e o retorno negativo como \texttt{errno}.}]
+--- 11.3 Clobbers importantes do SYSCALL ---
+  rcx antes do syscall: 0x0000000000000000
+  rcx apos  do syscall: 0x00005566635B78A4  (modificado pelo kernel!)
+
+--- 11.4 Verificacao de erro -- retorno negativo = -errno ---
+  open("/arquivo_que_nao_existe") -> -2
+  -ret = 2 = ENOENT (arquivo nao encontrado)
+\end{lstlisting}
+
+Note também o que a libc faz e o \emph{syscall} cru não faz: traduzir
+\texttt{-2} em ``retorne \texttt{-1} e ponha \texttt{2} em \texttt{errno}''. A
+variável \texttt{errno} é uma invenção de biblioteca, não do \emph{kernel}.
+
+% =============================================================================
+\subsubsection{Módulo 12 --- a FPU x87, e por que ela não deve ser usada}
+% =============================================================================
+
+Antes do SSE2, ponto flutuante em x86 era feito numa unidade separada, a x87,
+cujos oito registradores formam uma \emph{pilha} --- \texttt{st(0)} é o topo, e
+as instruções empurram (\texttt{fld}), leem (\texttt{fst}) e retiram
+(\texttt{fstp}). O módulo 12 existe por três razões honestas: o formato interno
+de 80 bits ainda é a maior precisão disponível no hardware x86; instruções como
+\texttt{fsin}, \texttt{fpatan} e \texttt{fyl2x} não têm equivalente em SSE; e
+código legado (e o modo 32 bits) ainda a produzem, de modo que ela aparece em
+\emph{disassembly} de terceiros.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída medida de \texttt{dist/bin/asm\_12\_fp\_x87}.}]
+--- 12.1 A pilha x87 -- FLD, FADD, FSTP ---
+  3.0 + 4.0 via x87 = 7.0
+  3.0 x 4.0 via x87 = 12.0
+
+--- 12.2 Funcoes trigonometricas x87 ---
+  sin(pi/6) = 0.500000  (esperado: 0.500000)
+  atan2(1,1) = 0.785398  (esperado: pi/4 = 0.785398)
+\end{lstlisting}
+
+\begin{armadilha}[80 bits internos são a causa, não a cura, de resultados irreproduzíveis]
+O x87 calcula em 80 bits e arredonda ao guardar em memória. Isso significa que
+o mesmo \texttt{double} pode valer uma coisa enquanto está no registrador e
+outra depois de passar pela pilha --- e que o resultado muda conforme o
+compilador decidiu ou não derramar um valor intermediário. É a origem do
+folclore de que ``ponto flutuante é imprevisível''. O SSE2 encerrou o assunto
+calculando em exatamente 64 bits, e é por isso que ele, e não a maior precisão,
+é o padrão em x86-64: reprodutibilidade vale mais do que dígitos extras.
+\end{armadilha}
+
+% =============================================================================
+\subsubsection{Módulo 13 --- otimização, e a medição que contrariou a expectativa}
+% =============================================================================
+
+O módulo 13 compara três versões da mesma soma de um vetor de 1024
+\texttt{int32}: um laço escrito em assembly inline, uma versão com
+\emph{unrolling} de fator 4 (\texttt{asm\_sum\_unrolled}) e uma versão SIMD com
+SSE2 (\texttt{asm\_sum\_simd}). As três produzem o mesmo número --- o que já é
+metade do valor do exercício --- e a medição é feita com RDTSC sobre dez mil
+repetições.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída medida de \texttt{dist/bin/asm\_13\_optimization},
+             seção 13.1.}]
+--- 13.1 Loop Unrolling -- reduz overhead do loop ---
+  N=1024, soma esperada: 523776
+  loop simples:  523776
+  loop unrolled: 523776
+  loop SIMD:     523776
+  simples        :  8222658 ciclos/10k iteracoes
+  unrolled(4x)   :  7702105 ciclos/10k iteracoes
+  SIMD(SSE2)     :  4103781 ciclos/10k iteracoes
+\end{lstlisting}
+
+Os números dizem o que se esperava, e com proporções instrutivas. O
+\emph{unrolling} de fator 4 rendeu $1{,}07\times$ --- pouco, porque o que ele
+elimina (incremento, comparação e salto) já era quase de graça num
+\emph{pipeline} com predição de desvio quase perfeita. O SIMD rendeu
+$2{,}00\times$ --- muito, e ainda assim menos do que os $4\times$ que a
+aritmética ingênua prometeria, porque quatro somas por instrução não compram
+nada quando o gargalo passa a ser trazer os dados até a ALU.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Mesma execução, seção 13.3: a medição que contrariou a
+             expectativa.}]
+--- 13.3 PREFETCHNTA -- pre-carrega dados no cache ---
+  Copia simples:     1887 ciclos
+  Copia c/ prefetch: 3441 ciclos
+\end{lstlisting}
+
+\begin{armadilha}[o \emph{prefetch} saiu quase duas vezes mais lento --- e o resultado está certo]
+A rotina \texttt{asm\_prefetch\_copy} emite \texttt{prefetchnta 256(\%rdi)} a
+cada iteração, pedindo à CPU que traga a linha de cache quatro linhas à frente.
+A expectativa era ganhar; o medido foi perder $1{,}8\times$. Três razões, todas
+verificáveis no código do módulo:
+
+\textbf{(1) O dado já estava no cache.} O vetor tem 4096 \texttt{int64}, ou
+32~KiB --- cabe no L1/L2 --- e o laço \emph{simples} roda \emph{primeiro},
+deixando tudo quente. A ``cópia com \emph{prefetch}'' foi medida sobre dados que
+o \emph{prefetch} não precisava buscar.
+
+\textbf{(2) \texttt{nta} significa \emph{non-temporal}.} Essa variante diz ao
+processador ``vou usar isto uma vez, não polua o cache com ele'' --- e portanto
+trabalha contra a reutilização que o \emph{benchmark} acabara de criar.
+
+\textbf{(3) A instrução não é de graça.} Uma leitura extra por iteração, num
+laço em que o dado já está a quatro ciclos de distância, é custo puro.
+
+A lição de método é maior que a de \emph{prefetch}: um número que contraria a
+hipótese quase nunca é ``ruído''. Aqui ele diz que o \emph{benchmark} media
+outra coisa --- ordem de execução, estado de cache e semântica da instrução ---
+e não a pergunta que se queria fazer. Compare com a advertência já feita neste
+capítulo sobre medir o relógio errado: as duas apontam para a mesma conclusão,
+a de que \emph{microbenchmark} é uma disciplina própria e que a resposta certa
+quase sempre é medir o programa inteiro com \texttt{perf}.
+\end{armadilha}
+
+O módulo fecha com \texttt{.p2align} --- a diretiva que alinha o início de um
+laço a 16 bytes (SSE) ou 32 (AVX), para que a primeira iteração não desperdice
+ciclos esperando a busca de instruções completar --- e com a versão sem desvio
+de \texttt{clamp}, dois \texttt{cmov} encadeados que substituem dois
+\texttt{if}.
+
+% =============================================================================
+\subsubsection{Módulo 14 --- ler o que o compilador escreveu}
+% =============================================================================
+
+Este é, na prática, o módulo mais útil dos quinze, e o único cujo conteúdo se
+aplica a todo dia de trabalho. Ele não ensina a escrever assembly: ensina a
+\emph{ler} o que já existe.
+
+\begin{table}[htbp]
+\centering
+\caption{As ferramentas, do cabeçalho de
+         \texttt{src/asm\_course/14\_disassembly.cpp}.}
+\label{tab:ferramentas-disasm}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Comando} & \textbf{Serve para} \\
+\midrule
+\texttt{objdump -d -M intel bin} & desmontar o binário inteiro \\
+\texttt{objdump -d -M intel bin | c++filt} & o mesmo, com nomes C++ legíveis \\
+\texttt{g++ -O2 -S -masm=intel a.cpp} & o assembly do compilador, sem montar \\
+\texttt{gdb: disassemble /m f} & fonte e assembly intercalados \\
+\texttt{godbolt.org} & comparar compiladores e níveis de otimização \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O formato da saída do \texttt{objdump} é sempre o mesmo --- endereço,
+\emph{bytes} em hexadecimal, mnemônico, operandos --- e a barreira de entrada
+não é a sintaxe, é o vocabulário de expressões idiomáticas
+(\cref{tab:idiomas-asm}). Reconhecer meia dúzia delas transforma uma parede de
+texto em prosa.
+
+\begin{table}[htbp]
+\centering
+\caption{Expressões idiomáticas que o compilador emite o tempo todo.}
+\label{tab:idiomas-asm}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{O que aparece} & \textbf{O que significa} \\
+\midrule
+\texttt{xor eax, eax}        & \texttt{eax = 0} (dois \emph{bytes} em vez de cinco) \\
+\texttt{test eax, eax}       & \texttt{eax == 0?} (sem imediato) \\
+\texttt{lea eax, [rdi+rdi]}  & multiplicação, sem tocar nas \emph{flags} \\
+\texttt{movsx} / \texttt{movzx} & conversão com / sem sinal \\
+\texttt{mov rax,[rdi]} + \texttt{call [rax]} & despacho virtual pela \gls{vtable} \\
+\texttt{jmp outra\_funcao}   & \emph{tail call} --- \texttt{call}+\texttt{ret} fundidos \\
+\texttt{endbr64}             & alvo válido de salto indireto (CET) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída medida de \texttt{dist/bin/asm\_14\_disassembly}: os
+             primeiros \emph{bytes} de uma função real deste repositório.}]
+  Primeiros bytes: F3 0F 1E FA 41 55 BA 0C 00 00 00 BE 23 00 00 00
+  (prologo tipico: 55=push rbp, 48 89 E5=mov rbp,rsp)
+\end{lstlisting}
+
+\begin{armadilha}[o prólogo do livro-texto não é o prólogo do seu binário]
+O próprio módulo imprime a legenda ``prólogo típico: \texttt{55} = push rbp'' e
+os \emph{bytes} medidos começam com \texttt{F3 0F 1E FA} --- que é
+\texttt{endbr64}, a marca de alvo legítimo de salto indireto que o GCC insere
+por causa de \texttt{-fcf-protection} (Intel CET), ligada por padrão nas
+distribuições atuais. Só depois vem \texttt{41 55}, que é \texttt{push r13} e
+não \texttt{push rbp}: com \texttt{-O2} o compilador dispensou o ponteiro de
+quadro (\texttt{-fomit-frame-pointer}) e usa \texttt{rsp} diretamente. Dois
+desencontros entre o material didático e o binário real, na mesma linha de
+saída --- e nenhum deles é erro: o hardware e as políticas de segurança
+mudaram debaixo do texto. Ler o \emph{seu} binário é a única leitura que vale.
+\end{armadilha}
+
+% =============================================================================
+\subsubsection{Módulo 15 --- o \emph{capstone}, e o defeito que só aparece rodando}
+% =============================================================================
+
+O módulo final reimplementa cinco funções da libc em assembly ---
+\texttt{memcpy} com blocos de 16 \emph{bytes} via XMM, \texttt{memset} com
+\texttt{rep stosq} e o truque de replicar o \emph{byte} multiplicando por
+\texttt{0x0101010101010101}, \texttt{memcmp}, \texttt{strlen} com
+\texttt{repne scasb} e um \emph{insertion sort} --- e, crucialmente, compara
+cada uma com a implementação do sistema.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída medida de \texttt{dist/bin/asm\_15\_capstone}, recortada.}]
+--- 15.1 asm_memcpy -- copia com SIMD ---
+  [ok] n=   0 ... n=1024: conteudo correto   (12 tamanhos)
+  [ok] retorno == dst
+--- 15.2 asm_memset -- preenchimento rapido ---
+  [ok] todos os bytes == 0xAB / zeragem completa / retorno == dst
+--- 15.3 asm_memcmp -- comparacao de memoria ---
+  [ok] iguais -> 0 / diferentes -> != 0 / sinal correto
+--- 15.4 asm_strlen -- comprimento de string ---
+  [FALHOU] strlen("") = 18446744073709551615 (esperado 0)
+  [FALHOU] strlen("hello") = 4 (esperado 5)
+  [FALHOU] strlen("cpp_academy") = 10 (esperado 11)
+--- 15.5 asm_isort -- insertion sort ---
+  [ok] array ordenado corretamente / igual ao std::sort
+\end{lstlisting}
+
+\begin{aviso}
+Esta é uma falha \textbf{aberta} no repositório no momento em que este capítulo
+foi escrito, e está registrada aqui deliberadamente: o valor didático de uma
+medição está em publicá-la como ela saiu.
+\end{aviso}
+
+A aritmética do defeito é curta. O idioma de \texttt{strlen} com
+\texttt{repne scasb} carrega \texttt{rcx} com $-1$ e deixa a instrução
+decrementá-lo uma vez por \emph{byte} comparado. Para \texttt{"hello"} são seis
+comparações --- cinco letras mais o \texttt{'\textbackslash 0'}, que é o que
+faz a busca parar --- de modo que \texttt{rcx} termina em $-7$. O
+\texttt{notq \%rcx} converte isso em $6$, o número de \emph{bytes} varridos. O
+comprimento é, portanto, $6 - 1 = 5$: subtrai-se \emph{um} pelo terminador. A
+rotina subtrai dois.
+
+\begin{lstlisting}[style=bt, language=GAS,
+    caption={O trecho (resumo de \texttt{src/asm\_course/15\_capstone\_asm.s}) --- e,
+             idêntico, em \texttt{10\_string\_asm.s} e em
+             \texttt{src/outline\_asm/asm\_funcs.s}.}]
+asm_strlen:
+    movq    %rdi, %rcx          # dead store: sobrescrito duas linhas abaixo
+    xorb    %al, %al            # al = 0 -- o byte procurado
+    movq    $-1, %rdx
+    movq    %rdx, %rcx          # rcx = -1 (contador "infinito")
+    repne   scasb               # rdi++, rcx-- ate [rdi] == al
+    notq    %rcx                # rcx = numero de bytes varridos
+    leaq    -2(%rcx), %rax      # <- deveria ser -1(%rcx)
+    ret
+\end{lstlisting}
+
+Para a cadeia vazia o efeito é espetacular: um \emph{byte} varrido, menos dois,
+$-1$ --- que num \texttt{size\_t} é \texttt{18446744073709551615}. Alocar essa
+quantidade de memória é o tipo de bug que derruba um servidor.
+
+\begin{armadilha}[o mesmo defeito, copiado em três arquivos]
+A mesma receita de sete linhas aparece em \texttt{15\_capstone\_asm.s}, em
+\texttt{10\_string\_asm.s} (onde o módulo 10 acusa
+\texttt{strlen("hello, assembly!") = 15}, um a menos que os 16 corretos) e em
+\texttt{src/outline\_asm/asm\_funcs.s} (onde a comparação com a libc falha nos
+quatro casos testados). Três alvos distintos, três verificações independentes,
+e todas as três dizem a mesma coisa --- porque o trecho foi copiado antes de
+ser conferido. O que mudou não foi o código: foi o repositório passar a
+\emph{construir e executar} os três alvos.
+\end{armadilha}
+
+\paragraph{E uma segunda descoberta, no módulo 10.} Depois que a declaração de
+operandos do \texttt{rep movsb} foi corrigida, o programa deixou de estourar e
+passou a imprimir o veredicto que a verificação sempre teve:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída medida de \texttt{dist/bin/asm\_10\_string\_ops}, seção 10.5.}]
+--- 10.5 Direction Flag -- CLD vs STD ---
+  [FALHOU] STD+REP MOVSB inverteu o array
+  original: [1,2,3,4,5,6,7,8]
+  invertido:[1,2,3,4,5,6,7,8]
+\end{lstlisting}
+
+A verificação esperava \texttt{rev[i] == arr[7-i]}, e o que saiu foi uma cópia
+idêntica. O programa está certo e a expectativa é que estava errada:
+\texttt{std} inverte o sentido da \emph{caminhada}, não a ordem dos
+\emph{dados}. Com \texttt{rdi} e \texttt{rsi} apontando ambos para o último
+\emph{byte} e ambos decrementando, copia-se \texttt{arr[7]} para
+\texttt{rev[7]}, \texttt{arr[6]} para \texttt{rev[6]}, e assim por diante --- o
+resultado é o mesmo vetor. Inverter exigiria os dois ponteiros caminhando em
+\emph{sentidos opostos}, e nenhum prefixo \texttt{rep} faz isso. O
+\texttt{std} tem exatamente um uso legítimo, e é o oposto do pretendido aqui:
+copiar regiões que se \emph{sobrepõem}, quando o destino está acima da origem
+--- que é como \texttt{memmove} se distingue de \texttt{memcpy}.
+
+% =============================================================================
+\subsection{Um alvo que não é construído é um alvo que apodrece}
+\label{sec:alvo-apodrece}
+% =============================================================================
+
+Os dois bugs de \gls{abi} deste capítulo não foram encontrados por revisão de
+código, nem por uma ferramenta de análise estática. Foram encontrados no dia em
+que o repositório passou a construir \emph{todos} os alvos e a executá-los.
+Antes disso, o \texttt{asm\_course} compilava --- e não rodava.
+
+\begin{regra}[um alvo desabilitado é dívida técnica com juros compostos]
+Enquanto um alvo não é construído, ele não é compilado, não é ligado, não é
+executado e não é verificado. Nada nele é falso ainda; simplesmente nada nele é
+\emph{verdadeiro}. Ao serem habilitados, os alvos ``pesados'' do repositório
+entregaram, de uma vez: quatro \texttt{\#include} faltando (entre eles o
+\cabecalho{fmt/core.h} de \texttt{src/aws/s3/main.cpp}, que compilava na
+cabeça de quem escreveu e em lugar nenhum além dela), uma API de terceiros que
+mudou de forma sem que ninguém notasse (os \emph{callbacks} de ciclo de vida do
+AMQP-CPP migraram do \texttt{TcpConnection} para o \emph{handler}), um
+\texttt{demo} de banco de dados que só funcionava na primeira execução, uma
+constante de caractere multibyte truncada em silêncio, uma subtração sem sinal
+que dava a volta --- e os dois defeitos de ABI descritos aqui.
+\end{regra}
+
+A regra prática que se extrai disso é curta, e vale para qualquer repositório:
+\textbf{comente um \texttt{subdir()} e você não desabilitou um alvo, criou um
+prazo}. Hoje o \texttt{src/meson.build} do repositório constrói os 57
+subprojetos, sem nenhuma linha comentada, produzindo 98 binários instalados em
+\texttt{dist/bin} --- dos quais 15 são os módulos deste curso, de
+\texttt{asm\_01\_registers} a \texttt{asm\_15\_capstone} --- e tudo isso sob
+\texttt{-Wall -Wextra -Wpedantic} sem um único \emph{warning}. Não é uma
+métrica de vaidade: é a condição sob a qual os bugs deste capítulo puderam ser
+vistos.
+
+% =============================================================================
+\subsection{Síntese}
+% =============================================================================
+
+O capítulo tem uma conclusão que contraria a expectativa: \textbf{o principal
+produto de aprender assembly não é escrever assembly}. É passar a ler o que o
+compilador gera, e com isso entender de onde vem o desempenho --- por que
+\texttt{final} permite devirtualizar (\cref{sec:oop}), por que o \emph{pipeline}
+de \emph{ranges} some em \texttt{-O2} e não em \texttt{-O0}
+(\cref{sec:ranges}), por que um \emph{functor} é inlinável e
+\texttt{std::function} não (\cref{sec:lambdas}).
+
+E tem uma segunda conclusão, que só apareceu quando o repositório passou a
+construir e executar tudo: os defeitos deste capítulo não estavam no assembly
+difícil. Estavam nos \emph{contratos} --- 16 bytes de alinhamento no
+\texttt{call}, três registradores declarados como entrada quando eram
+entrada-e-saída, uma subtração a mais num \texttt{lea}. Nenhum deles é uma
+questão de esperteza com \emph{opcodes}; todos são questões de dizer a verdade
+a quem confia em você sem conferir. É essa, e não a habilidade de escrever
+\texttt{movaps}, a competência que descer de nível ensina.
+
+\begin{table}[htbp]
+\centering
+\caption{Quando descer de nível --- e por qual porta.}
+\label{tab:quando-asm}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Necessidade} & \textbf{Ferramenta} \\
+\midrule
+entender por que está lento          & \texttt{objdump}, \texttt{-S}, \texttt{perf} \\
+usar uma instrução vetorial          & \emph{intrinsic}, não assembly \\
+contar bits, girar, trocar \emph{bytes} & \cabecalho{bit} do C++20 \\
+identificar a CPU em execução        & CPUID por \texttt{asm} \\
+barreira só de compilação            & \texttt{asm volatile ("" ::: "memory")} \\
+rotina longa e crítica               & arquivo \texttt{.s} com ABI respeitada \\
+\emph{syscall} sem libc              & instrução \texttt{syscall} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{regra}[o C++20 absorveu boa parte do que exigia assembly]
+\texttt{<bit>} trouxe \texttt{std::popcount}, \texttt{std::rotl},
+\texttt{std::countl\_zero} e \texttt{std::bit\_cast} --- todos com a mesma
+instrução gerada pelo compilador, e todos \texttt{constexpr}, portáteis e sem
+\gls{ub}. Antes de escrever um bloco \texttt{asm} para uma manipulação de bits,
+verifique se o cabeçalho já a oferece: o subprojeto \projeto{bits} --- hoje
+construído e instalado como \texttt{dist/bin/bits}, e não mais um item de
+\texttt{ROADMAP} --- cobre justamente esse terreno.
+\end{regra}

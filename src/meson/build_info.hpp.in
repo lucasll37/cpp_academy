@@ -1,0 +1,47 @@
+// =============================================================================
+//  src/meson/build_info.hpp.in   →   build/src/meson/build_info.hpp
+//
+//  ⚠ Este arquivo é um TEMPLATE. Não inclua daqui: o `configure_file()` do
+//    meson.build gera a versão real dentro do diretório de build, e é ela que
+//    o compilador enxerga (o Meson põe o build dir no include path sozinho).
+//
+//  Duas sintaxes convivem aqui (escritas com <at> e sem o `#` de propósito —
+//  o configure_file não sabe o que é comentário e substituiria os literais,
+//  avisando "variable NOME is not present in the configuration data"):
+//
+//    <at>NOME<at>        → substituição textual do valor definido com
+//                          conf.set() / conf.set_quoted()
+//    mesondefine NOME    → com `#` na coluna 1, vira `#define NOME` se o valor
+//                          for `true`, e `/* #undef NOME */` se for `false`
+//
+//  É assim que uma decisão tomada no build (uma opção `-D`, o buildtype, a
+//  versão do projeto) atravessa a fronteira e chega ao código C++.
+// =============================================================================
+#pragma once
+
+// ── Identidade do projeto, vinda de project() na raiz ────────────────────────
+#define BUILD_PROJETO_NOME     @PROJETO_NOME@
+#define BUILD_PROJETO_VERSAO   @PROJETO_VERSAO@
+
+// ── Como este build foi configurado ──────────────────────────────────────────
+#define BUILD_TIPO             @BUILD_TIPO@
+#define BUILD_PADRAO_CPP       @PADRAO_CPP@
+#define BUILD_NIVEL_WARNING    @NIVEL_WARNING@
+#define BUILD_OTIMIZACAO       @OTIMIZACAO@
+#define BUILD_PREFIX           @PREFIX@
+
+// ── Quem compilou ────────────────────────────────────────────────────────────
+#define BUILD_COMPILADOR_ID    @COMPILADOR_ID@
+#define BUILD_COMPILADOR_VER   @COMPILADOR_VER@
+#define BUILD_MAQUINA_CPU      @MAQUINA_CPU@
+#define BUILD_MAQUINA_SO       @MAQUINA_SO@
+
+// ── Valores numéricos: sem aspas, porque foram definidos com conf.set() ──────
+#define BUILD_QTD_ITENS_TABELA @QTD_ITENS_TABELA@
+
+// ── #mesondefine: a forma canônica de expor um booleano ao pré-processador ───
+//  Ligue com:  meson configure build -Dtest_option=true
+#mesondefine COM_TEST_OPTION
+
+// ── set10(): o mesmo booleano como 0/1, para usar em `if constexpr` ──────────
+#define BUILD_TEM_DOXYGEN      @TEM_DOXYGEN@

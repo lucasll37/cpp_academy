@@ -1,0 +1,1537 @@
+% =============================================================================
+%  Ferramentas: meson, cmake, parser (build), doxygen, sandbox
+%  Não pertencem a nenhuma etapa da trilha — consulta, não sequência.
+% =============================================================================
+
+% =============================================================================
+\section{Ferramentas do repositório}
+\label{sec:ferramentas}
+% =============================================================================
+
+Os subprojetos deste capítulo não estão em nenhuma etapa da trilha porque não
+são \emph{sequência}: são \emph{consulta}. O \projeto{meson} descreve o sistema
+de \emph{build} que compila todos os outros; o \projeto{cmake} descreve o
+sistema de \emph{build} que o resto do mundo usa, e é construído por si mesmo,
+fora do Meson; o \projeto{parser} mostra o que acontece quando o fonte de
+entrada \emph{não é} C++ e precisa virar C++ antes da compilação; o
+\projeto{doxygen} descreve como documentar o que se escreve; e o
+\projeto{sandbox} é o espaço livre para experimentar antes de comprometer um
+subprojeto novo.
+
+Os dois primeiros merecem mais espaço que todos os outros somados --- são os
+dois maiores \texttt{README} do repositório --- porque um sistema de
+\emph{build} mal entendido produz a categoria de problema mais frustrante que
+existe: aquela em que o código está certo.
+
+% =============================================================================
+\subsection{O estado do \emph{build}, em números}
+\label{sec:build-estado}
+% =============================================================================
+
+Antes de qualquer explicação, os números medidos. Este capítulo, e o relatório
+inteiro, descrevem um repositório em que \textbf{tudo é construído}: não existe
+nenhum \texttt{subdir()} comentado em \texttt{src/meson.build}, e os alvos
+historicamente ``pesados'' --- Qt, SFML, Bullet, ONNX Runtime, JSBSim, AWS SDK,
+RabbitMQ, SOCI --- estão habilitados e compilando junto com o resto
+(\cref{tab:build-numeros}).
+
+\begin{table}[htbp]
+\centering
+\caption{O \emph{build} completo, medido com \texttt{make configure \&\& make}
+         numa árvore limpa.}
+\label{tab:build-numeros}
+\footnotesize
+\begin{tabular}{@{}lr@{}}
+\toprule
+\textbf{Grandeza} & \textbf{Valor} \\
+\midrule
+subprojetos em \texttt{src/} construídos pelo Meson  & 57 \\
+subprojetos com sistema de \emph{build} próprio (\texttt{cmake}, \texttt{modules}) & 2 \\
+binários instalados em \texttt{dist/bin}             & 98 \\
+\emph{warnings} sob \texttt{-Wall -Wextra -Wpedantic} & 0 \\
+alvos registrados no \texttt{meson test}             & 6 \\
+casos de teste GoogleTest sob o Meson                & 41 \\
+casos de teste sob o CTest (em \projeto{cmake})      & 11 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{aviso}
+Números como estes envelhecem. O que \emph{não} envelhece é o método: todos
+eles são reproduzíveis com dois comandos --- \texttt{ninja -C build} para os
+\emph{warnings} e \texttt{meson test -C build} para os testes --- e o critério
+de aceitação deste repositório é que os três primeiros continuem em ``tudo'' e
+o quarto continue em zero.
+\end{aviso}
+
+% =============================================================================
+\subsection{Meson: o sistema de \emph{build}}
+\label{sec:meson}
+% =============================================================================
+
+O subprojeto \projeto{meson} é um guia ancorado no \emph{build} real do
+repositório: cada conceito é explicado e apontado para o arquivo em que já está
+em uso. E vem com um exemplo vivo --- o próprio \texttt{meson.build} da pasta
+exercita os recursos principais, e o executável \texttt{meson\_demo} imprime, em
+tempo de execução, tudo o que o \emph{build} injetou nele.
+
+\subsubsection{Três programas, e a divisão que explica tudo}
+
+\begin{table}[htbp]
+\centering
+\caption{Quem faz o quê, e quando.}
+\label{tab:tres-programas}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Programa} & \textbf{Papel} & \textbf{Quando roda} \\
+\midrule
+\gls{conan} & baixa e compila as dependências, gera os \texttt{.pc} & \texttt{make configure} \\
+\gls{meson} & lê os \texttt{meson.build} e \textbf{gera arquivos de \emph{build}} & \texttt{meson setup} \\
+Ninja       & executa o \emph{build}, em paralelo e incrementalmente & \texttt{meson compile} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{regra}[o Meson não compila nada]
+Ele é um \emph{gerador}: transforma a descrição declarativa em
+\texttt{build.ninja}. Quem chama o \texttt{g++} é o Ninja. Entender essa divisão
+explica quase todo comportamento estranho --- inclusive por que existem duas
+fases distintas, ``configuração'' e ``\emph{build}'', e por que mudar um
+\texttt{meson.build} às vezes exige reconfigurar e às vezes não.
+\end{regra}
+
+\subsubsection{Os dois tempos}
+
+Esta é a ideia que organiza todo o resto (\cref{tab:dois-tempos}). O que existe
+em tempo de configuração são \emph{variáveis} do Meson; o que existe em tempo de
+\emph{build} são \emph{arquivos}.
+
+\begin{table}[htbp]
+\centering
+\caption{Configuração e \emph{build} são universos distintos.}
+\label{tab:dois-tempos}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+ & \textbf{Configuração} & \textbf{\emph{Build}} \\
+\midrule
+quem roda    & \texttt{meson setup}            & \texttt{ninja} \\
+frequência   & uma vez, ou quando um \texttt{meson.build} muda & a cada compilação \\
+o que ocorre & procura o compilador, resolve \texttt{dependency()}, avalia \texttt{if} & compila, liga, roda \texttt{custom\_target} \\
+o que existe & as \emph{variáveis} (\texttt{fmt\_dep}, \texttt{qtd\_itens}) & os \emph{arquivos} (\texttt{.o}, executáveis) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O exemplo da pasta põe os dois lado a lado sobre o \emph{mesmo} arquivo:
+\texttt{fs.read('tabela.txt')} conta as linhas na \emph{configuração}, e um
+\texttt{custom\_target} gera um cabeçalho a partir dele no \emph{build}. O
+programa imprime os dois números, e eles batem --- o que é uma demonstração
+melhor da distinção do que qualquer explicação.
+
+\subsubsection{Anatomia do \texttt{meson.build} da raiz}
+
+\begin{lstlisting}[style=bt, language=Meson,
+    caption={As primeiras linhas de \texttt{meson.build}, na raiz do repositório.}]
+project('academy', 'cpp', 'c',
+    version: '1.0.0',
+    default_options: [
+        'cpp_std=c++20',
+        'warning_level=3',
+    ],
+)
+\end{lstlisting}
+
+Três consequências práticas desse arranjo merecem ser sabidas de cor:
+
+\begin{enumerate}
+    \item \textbf{\texttt{project()} é a primeira linha executável}, e só existe
+          na raiz. Nenhum \texttt{src/*/meson.build} tem um --- eles são
+          \emph{incluídos}, não são projetos.
+    \item \textbf{\texttt{subdir()} não cria escopo novo.} É inclusão textual:
+          \texttt{fmt\_dep}, declarado na raiz, está visível em
+          \texttt{src/syntax/meson.build} sem nenhuma importação. É por isso que
+          a ordem importa --- \texttt{subdir('proto')} vem antes de
+          \texttt{subdir('src')} porque \texttt{src/} consome o que
+          \texttt{proto/} gera.
+    \item \textbf{\texttt{default\_options} é padrão, não imposição.} Um alvo
+          discorda com \texttt{override\_options}, que é como \texttt{errors} e
+          \texttt{operators} chegam a C++23 sem mexer na raiz
+          (\cref{sec:ambiente}).
+\end{enumerate}
+
+\begin{porque}[\texttt{warning\_level=3} é uma decisão didática]
+Equivale a \texttt{-Wall -Wextra -Wpedantic}. Boa parte das armadilhas do
+\cref{sec:fundamentos} só é apontada nesse nível --- \texttt{-Wreorder},
+\texttt{-Wcatch-value}, \texttt{-Wpessimizing-move} --- e um repositório que
+existe para ensinar armadilhas não pode silenciá-las. O custo é que código de
+terceiros incluído por cabeçalho passa a gerar ruído; o benefício é que o
+código próprio não passa.
+\end{porque}
+
+\subsubsection{\texttt{declare\_dependency()}: o recurso que separa um \emph{build} limpo}
+
+Uma biblioteca interna tem três coisas que os consumidores precisam saber: o que
+ligar, onde procurar cabeçalhos, e de que ela mesma depende. Sem
+\texttt{declare\_dependency}, cada consumidor repete as três --- e erra uma
+delas cedo ou tarde.
+
+\begin{lstlisting}[style=bt, language=Meson,
+    caption={O empacotamento, em \texttt{src/meson/meson.build}.}]
+saudacao_dep = declare_dependency(
+    link_with:            lib_saudacao,
+    include_directories:  include_directories('.'),
+    dependencies:         [fmt_dep],
+)
+\end{lstlisting}
+
+Consumir passa a ser uma linha, e --- o detalhe que importa --- com
+\emph{exatamente} a mesma sintaxe de uma dependência externa:
+\texttt{dependencies: [saudacao\_dep]}. É a inversão de dependência da
+\cref{sec:solid} aplicada ao \emph{build}: o consumidor não sabe se aquilo é uma
+biblioteca interna, um pacote do Conan ou um subprojeto baixado por
+\emph{wrap}.
+
+\subsubsection{Dependências, e o par que torna uma delas opcional}
+
+\texttt{dependency()} procura, nesta ordem: \texttt{pkg-config} (os
+\texttt{.pc} que o Conan gerou em \texttt{build/}, graças ao
+\texttt{-Dpkg\_config\_path}), os métodos nativos do sistema, e por fim o
+\texttt{fallback} --- um subprojeto declarado em um \texttt{.wrap}.
+
+\begin{armadilha}[sem \texttt{required: false}, um programa ausente aborta o projeto inteiro]
+\begin{lstlisting}[style=bt, language=Meson, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+doxygen_prog = find_program('doxygen', required: false)
+if doxygen_prog.found()
+    custom_target('docs', ...)
+else
+    warning('doxygen não encontrado — target `docs` desabilitado.')
+endif
+\end{lstlisting}
+É exatamente o que \texttt{src/doxygen/meson.build} faz. Sem o
+\texttt{required: false}, a máquina que não tiver Doxygen instalado não
+configura \emph{nada} --- nem os 98 binários que não têm relação com
+documentação.
+\end{armadilha}
+
+E vale a mesma lição em outra chave: o objeto do compilador responde a
+perguntas --- \texttt{cpp.get\_id()}, \texttt{cpp.has\_header('sys/mman.h')},
+\texttt{cpp.compiles(...)}. Escrever um \emph{build} portátil é testar o
+ambiente, não adivinhar.
+
+\subsubsection{Do \emph{build} para dentro do C++}
+
+Duas funções atravessam a fronteira, uma em cada tempo
+(\cref{tab:configure-custom}).
+
+\begin{table}[htbp]
+\centering
+\caption{As duas formas de gerar arquivo.}
+\label{tab:configure-custom}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+ & \texttt{configure\_file()} & \texttt{custom\_target()} \\
+\midrule
+quando roda   & configuração         & \emph{build} \\
+o que faz     & substitui \texttt{@VAR@} num \emph{template} & executa um comando \\
+reexecuta     & ao reconfigurar      & quando a entrada muda \\
+uso típico    & versão, opções, \emph{flags} no cabeçalho & \texttt{protoc}, gerador em Python \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{lstlisting}[style=bt, language=Meson,
+    caption={Um gerador rodando no \emph{build}, em \texttt{src/meson/meson.build}.}]
+tabela_gerada_h = custom_target('tabela_gerada',
+    input:   'tabela.txt',
+    output:  'tabela_gerada.hpp',
+    command: [python, files('gerar_tabela.py'), '@INPUT@', '@OUTPUT@'],
+)
+\end{lstlisting}
+
+\begin{regra}[passe o \texttt{custom\_target} na lista de \emph{fontes} de quem o consome]
+\begin{lstlisting}[style=bt, language=Meson, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+demo_exe = executable('meson_demo',
+    files('main.cpp'),
+    build_info_h,
+    tabela_gerada_h,
+    dependencies: [saudacao_dep],
+    ...
+)
+\end{lstlisting}
+Os dois cabeçalhos gerados não estão ali para serem compilados: estão para o
+Ninja saber que precisa gerá-los \emph{antes} do \texttt{main.cpp}. Sem isso o
+\emph{build} funciona por acaso --- e falha no primeiro \emph{build} limpo, com
+``arquivo não encontrado''. É o sintoma clássico de dependência não declarada, e
+o subprojeto o descreve como ``erro só no primeiro \emph{build}, some no
+segundo''.
+\end{regra}
+
+\begin{armadilha}[o \texttt{configure\_file} não sabe o que é comentário]
+Um \texttt{@NOME@} escrito dentro de um comentário do \emph{template} também é
+substituído --- e, se \texttt{NOME} não existir na configuração, o \emph{setup}
+emite \texttt{WARNING: The variable(s) 'NOME' … are not present}. Por isso o
+\emph{template} do subprojeto escreve \texttt{<at>NOME<at>} quando precisa
+documentar a própria sintaxe.
+\end{armadilha}
+
+\subsubsection{Testes, e a dívida que foi quitada}
+
+\texttt{test()} só precisa de um comando que devolva zero em caso de sucesso ---
+GoogleTest é conveniência, não requisito. O executável de teste não é instalado:
+existe apenas para o \texttt{meson test}, que aceita filtrar por nome, por suíte
+e repetir para caçar instabilidade (\texttt{-{}-repeat 10}).
+
+Isso importa porque durante muito tempo existiu na raiz do repositório um
+diretório \texttt{tests/} cujo \texttt{meson.build} estava \textbf{inteiramente
+comentado} --- ele nunca construiu nada, e figurava como dívida no
+\texttt{ROADMAP}. Esse diretório foi \textbf{removido}, e com ele a dívida: os
+testes passaram a morar nos subprojetos que os ensinam e os exercitam de
+verdade (\cref{tab:onde-moram-testes}).
+
+\begin{table}[htbp]
+\centering
+\caption{Onde os testes moram hoje. Fonte: o comentário de
+         \texttt{meson.build} da raiz e \texttt{src/testing/README.md}.}
+\label{tab:onde-moram-testes}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Onde} & \textbf{O quê} & \textbf{Como rodar} \\
+\midrule
+\texttt{src/testing/} & 5 alvos: fixtures, \texttt{TEST\_P}, gmock, \emph{death tests} & \texttt{meson test -C build} \\
+\texttt{src/meson/}   & 1 alvo: o \texttt{test()} do próprio Meson                    & \texttt{meson test -C build} \\
+\texttt{src/cmake/}   & CTest, 11 casos, \emph{build} próprio                         & \texttt{ctest -{}-test-dir build} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O total sob o Meson é de \textbf{6 alvos e 41 casos}, todos passando.
+
+\begin{porque}[por que apagar um diretório é melhor que deixá-lo comentado]
+Um \texttt{tests/} que não constrói nada é pior que a ausência de testes: ele
+\emph{parece} cobertura. Quem chega ao repositório vê a pasta, conclui que
+existe uma suíte e não procura mais; quem já está nele vê a linha comentada e
+adia. E, pela lição da \cref{sec:alvo-apodrece}, o conteúdo comentado
+apodreceu de qualquer forma --- ele referenciava alvos que já não existiam.
+Apagar foi mais honesto e mais barato do que ressuscitar, e a cobertura real
+foi reconstruída onde ela também ensina alguma coisa.
+\end{porque}
+
+\subsubsection{As armadilhas, e o diagnóstico de cada uma}
+
+\begin{table}[htbp]
+\centering
+\caption{Sintoma, causa e correção --- a tabela mais útil do subprojeto.}
+\label{tab:meson-armadilhas}
+\footnotesize
+\begin{tabular}{@{}p{0.33\textwidth}p{0.28\textwidth}p{0.28\textwidth}@{}}
+\toprule
+\textbf{Sintoma} & \textbf{Causa} & \textbf{Solução} \\
+\midrule
+\texttt{Can't invoke target 'x': target not found} & alvo novo, \emph{build dir} antigo & \texttt{meson setup -{}-reconfigure build .} \\
+\texttt{Dependency "fmt" not found} & \texttt{.pc} fora do caminho & \texttt{source build/conanbuild.sh} \\
+\texttt{fatal error: gerado.hpp: No such file} & \texttt{custom\_target} fora das fontes & passe o alvo na lista de fontes \\
+\texttt{WARNING: The variable(s) 'X' … not present} & \texttt{@X@} no \emph{template} & defina \texttt{X} ou não escreva o literal \\
+\emph{flag} nova não fez efeito & \texttt{cpp\_args} é por alvo & \texttt{default\_options} na raiz \\
+\emph{build} quebra depois de \texttt{make clean} & dependência não declarada & declare a ordem \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{regra}[o \emph{build dir} é descartável]
+Ele nunca vai para o Git, e ter vários ao mesmo tempo --- \texttt{build},
+\texttt{build-asan}, \texttt{build-release} --- é o modo normal de trabalhar em
+Meson: eles não se atrapalham. Se algo ficou inexplicável,
+\texttt{rm -rf build \&\& make configure} resolve, e não perde nada. Um sistema
+de \emph{build} em que apagar o diretório de saída é arriscado tem um problema
+mais grave que o sintoma investigado.
+\end{regra}
+
+Para inspecionar em vez de adivinhar, quatro comandos:
+\texttt{meson introspect build -{}-targets} (todos os alvos, em JSON),
+\texttt{meson configure build} (todas as opções e valores atuais),
+\texttt{ninja -C build -t commands <alvo>} (a linha de compilação exata), e
+\texttt{build/meson-logs/meson-log.txt} (o log completo da configuração).
+
+% =============================================================================
+\subsection{Um alvo que não é construído é um alvo que apodrece}
+\label{sec:alvo-apodrece}
+% =============================================================================
+
+\begin{porque}[por que não basta comentar o \texttt{subdir()} do que ``ainda não compila'']
+Comentar uma linha de \emph{build} parece a decisão barata: o alvo sai do
+caminho, o \emph{build} volta a ficar verde, e o problema fica ``para depois''.
+O que essa decisão realmente faz é \textbf{desligar o único verificador
+automático que aquele código tinha}. Um arquivo \texttt{.cpp} que ninguém
+compila não é código dormindo --- é código que continua a ser lido, copiado e
+editado por humanos sem que nada verifique nenhuma das edições. Ele apodrece em
+silêncio, e o apodrecimento só é descoberto no dia em que alguém precisa dele,
+que é sempre o pior dia possível.
+\end{porque}
+
+Este repositório pagou essa conta e resolveu documentá-la, porque o
+diagnóstico é bom material didático. Ao habilitar os \texttt{subdir()} que
+estavam comentados, seis defeitos apareceram no minuto seguinte --- e nenhum
+deles era novo: todos estavam lá havia meses.
+
+\subsubsection{Quatro \texttt{\#include} que faltavam}
+
+O primeiro grupo é o mais banal, e por isso o mais instrutivo
+(\cref{tab:includes-faltando}). Cabeçalho faltando não é erro de lógica: é o
+tipo de defeito que \emph{qualquer} compilação pega, e que \emph{nenhuma}
+revisão humana pega de forma confiável.
+
+\begin{table}[htbp]
+\centering
+\caption{Os quatro cabeçalhos ausentes, todos em alvos que não eram compilados.}
+\label{tab:includes-faltando}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Arquivo} & \textbf{Faltava} \\
+\midrule
+\texttt{src/solid/srp/demo\_pipeline.hpp}   & \texttt{\#include <algorithm>} \\
+\texttt{src/concepts/demo\_constraints.hpp} & \texttt{\#include <array>} \\
+\texttt{src/file\_io/demo\_sstream.hpp}     & \texttt{\#include <cmath>} \\
+\texttt{src/aws/s3/main.cpp}                & \texttt{\#include <fmt/core.h>} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{armadilha}[o \emph{include} transitivo funciona até parar de funcionar]
+Nenhum desses quatro arquivos estava ``errado'' quando foi escrito: cada um
+funcionava porque \emph{outro} cabeçalho, incluído antes, arrastava o que
+faltava. Isso é sorte, não contrato --- a implementação da biblioteca padrão
+pode reorganizar seus \emph{includes} entre duas versões do compilador, e o
+código que dependia do arraste quebra sem que nenhuma linha dele tenha mudado.
+A regra é a \emph{Include What You Use}: cada arquivo inclui o que ele mesmo
+usa, mesmo que já esteja lá por acidente.
+\end{armadilha}
+
+\subsubsection{Dois bugs de ABI, que só aparecem ao \emph{executar}}
+
+O segundo grupo é de outra natureza. Esses não compilavam errado --- compilavam
+perfeitamente, e quebravam na execução, em lugares que não têm relação nenhuma
+com a causa.
+
+\paragraph{O alinhamento de pilha.} Em \texttt{src/asm\_course/07\_calling\_asm.s},
+um \texttt{subq \$8, \%rsp} extra quebrava o alinhamento de 16 bytes que o
+System V ABI de x86-64 exige no momento do \texttt{CALL}
+(\cref{sec:asm-course}). O sintoma foi um \texttt{SIGSEGV}
+\emph{dentro do \texttt{fmt}}, quatro quadros de pilha acima do código
+culpado.
+
+\begin{regra}[quem quebra o alinhamento não é quem estoura]
+Essa distância entre causa e sintoma é a assinatura do bug de alinhamento, e
+vale memorizá-la. A ABI exige que \texttt{\%rsp} seja múltiplo de 16 na entrada
+de uma função porque as instruções SSE alinhadas (\texttt{movaps} e parentes)
+\emph{faltam} num endereço desalinhado. Quem escreve assembly com aritmética
+inteira nunca usa SSE, e por isso nunca sente o problema; a falha estoura na
+primeira função da cadeia que use SSE --- tipicamente uma biblioteca de
+terceiros, compilada com otimização, que vetorizou uma cópia de \emph{string}.
+Ao ver um estouro dentro de uma biblioteca madura e testada por milhões de
+pessoas, a hipótese certa é ``eu quebrei a ABI antes de chamá-la'', não
+``achei um bug no \texttt{fmt}''.
+\end{regra}
+
+\paragraph{A promessa falsa ao compilador.} Em
+\texttt{src/asm\_course/10\_string\_ops.cpp}, os registradores
+\texttt{RDI}, \texttt{RSI} e \texttt{RCX} estavam declarados como \emph{entrada
+pura} de um \texttt{asm} \emph{inline} --- e \texttt{rep movsb} modifica os
+três. O GCC acreditou na declaração, considerou que os valores continuavam
+válidos depois do bloco e reusou um registrador já corrompido.
+
+\begin{armadilha}[o \texttt{asm} \emph{inline} é um contrato, e o compilador confia nele]
+Uma restrição de entrada (\texttt{"D"(dst)}) promete que o bloco \emph{lê} e não
+\emph{escreve}. O compilador usa essa promessa para decidir o que precisa
+recarregar depois --- e se a promessa for falsa ele não tem como descobrir. A
+correção é declarar o que de fato acontece: saída (\texttt{"+D"}), ou a lista
+\texttt{clobber}. E o sintoma da promessa falsa é o pior possível: o código
+funciona sem otimização, porque aí o GCC recarrega tudo de qualquer jeito, e
+quebra com \texttt{-O2}.
+\end{armadilha}
+
+\subsubsection{Três bugs de biblioteca externa}
+
+O terceiro grupo é o que mais se parece com o dia a dia
+(\cref{tab:bugs-externos}). Nenhum deles é sobre C++: são sobre o mundo se
+mexer enquanto o alvo estava desligado.
+
+\begin{table}[htbp]
+\centering
+\caption{Defeitos revelados ao habilitar os alvos ``pesados''.}
+\label{tab:bugs-externos}
+\footnotesize
+\begin{tabular}{@{}p{0.24\textwidth}p{0.66\textwidth}@{}}
+\toprule
+\textbf{Onde} & \textbf{O quê} \\
+\midrule
+\texttt{src/http-client/main.cpp} &
+\texttt{std::string(n, '─')}: o traço U+2500 tem \textbf{três} \emph{bytes}, e
+entre aspas simples vira uma \emph{multi-character constant} truncada. E
+\texttt{40 - title.size()} é aritmética \textbf{sem sinal}: com um título de 45
+caracteres o resultado dá a volta e vira um número astronômico
+(\cref{sec:http-client}). \\
+\addlinespace
+\texttt{src/rabbitmq/} &
+a API do AMQP-CPP mudou: os \emph{callbacks} de ciclo de vida passaram a ser
+métodos virtuais do \textbf{handler}, não do \texttt{TcpConnection}
+(\cref{sec:rabbitmq}). \\
+\addlinespace
+\texttt{src/database/main.cpp} &
+o demo não era idempotente --- a segunda execução violava uma \emph{constraint}
+\texttt{UNIQUE} e abortava (\cref{sec:database}). \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{armadilha}[o demo que só funciona uma vez]
+O caso do \projeto{database} é o mais fácil de reproduzir em qualquer projeto:
+um exemplo que insere linhas numa base persistente funciona na primeira
+execução e falha em todas as demais. Enquanto o alvo não é construído nem
+executado por ninguém, o defeito é invisível; no primeiro CI que roda o binário
+duas vezes, ele vira ``falha intermitente''. Um demo com efeito colateral
+precisa ser idempotente por construção --- \texttt{DROP TABLE IF EXISTS},
+\texttt{INSERT OR REPLACE} ou uma base temporária por execução.
+\end{armadilha}
+
+\begin{regra}[se um subprojeto não pode ser construído, o problema é dele]
+Conserte-o ou apague-o --- não o esconda atrás de um \texttt{\#}. É exatamente
+o que o cabeçalho de \texttt{src/meson.build} diz por escrito, e a lista acima
+é a justificativa empírica: seis defeitos reais, zero deles detectáveis sem
+compilar, todos concentrados nos alvos que estavam desligados. Uma
+\emph{build farm} verde que não constrói metade do repositório mede a metade
+errada.
+\end{regra}
+
+% =============================================================================
+\subsection{CMake: alvos, escopos e o \emph{build} que o ecossistema fala}
+\label{sec:cmake}
+% =============================================================================
+
+O subprojeto \projeto{cmake} é o par do \projeto{meson}: ali o
+\texttt{meson.build} \emph{é} o material didático; aqui quem ensina é o
+\texttt{CMakeLists.txt}, com 419 linhas comentadas. Ele é o único subprojeto,
+junto com \texttt{src/modules/}, que \textbf{não é construído pelo Meson da
+raiz} --- e isso é de propósito: ele tem sistema de \emph{build} próprio porque
+o sistema de \emph{build} \emph{é} o assunto.
+
+\begin{porque}[por que um repositório que já usa Meson precisa ensinar CMake]
+Porque escolher a ferramenta e conhecer a ferramenta são decisões diferentes.
+O Meson é mais agradável de escrever, e este repositório o escolheu; o CMake é
+o que praticamente toda biblioteca C++ publicada nos últimos vinte anos fala.
+Quem consome uma biblioteca precisa entender o que o \texttt{find\_package}
+dela espera; quem \emph{publica} uma biblioteca precisa exportar um
+\texttt{<Nome>Config.cmake}, senão ninguém consegue usá-la com uma linha. Não
+saber CMake não é uma preferência de estilo --- é uma limitação de alcance.
+\end{porque}
+
+\subsubsection{Antes de tudo: o que o CMake é}
+
+CMake, como o Meson, é um \textbf{gerador} (\cref{sec:meson}): ele lê a
+descrição declarativa em \texttt{CMakeLists.txt} e \emph{escreve} os arquivos
+que outra ferramenta vai executar --- \texttt{Makefile}s para o \texttt{make},
+um \texttt{build.ninja} para o Ninja, uma \emph{solution} para o Visual Studio.
+Ele não chama o compilador. Daí as duas fases, com nomes diferentes dos do
+Meson mas com o mesmo significado (\cref{tab:cmake-fases}).
+
+\begin{table}[htbp]
+\centering
+\caption{As três fases do CMake, e o que existe em cada uma.}
+\label{tab:cmake-fases}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Fase} & \textbf{Comando} & \textbf{O que acontece} \\
+\midrule
+configuração & \texttt{cmake -S . -B build} & executa os \texttt{CMakeLists.txt}, resolve \texttt{find\_package} \\
+geração      & (a mesma chamada)            & avalia as \emph{generator expressions}, escreve os arquivos \\
+\emph{build} & \texttt{cmake -{}-build build} & \texttt{make}/\texttt{ninja} compila e liga \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A fase de \emph{geração}, que o Meson não tem separada, é a razão de existirem
+as \emph{generator expressions} --- e a explicação está logo adiante.
+
+\subsubsection{Alvos: a única ideia do ``CMake moderno''}
+
+\begin{porque}[o problema que as variáveis globais criam]
+No CMake anterior à versão 3.0, tudo era variável global de diretório: para
+acrescentar um \texttt{-D} a \emph{um} alvo, mexia-se numa variável que
+\emph{todos} os alvos daquele diretório e dos subdiretórios liam. Num projeto
+de vinte bibliotecas isso vira uma teia impossível de auditar: ninguém consegue
+responder ``com quais \emph{flags} este arquivo foi compilado?'' sem executar o
+\emph{build} e ler a linha de comando. E, quando dois alvos acabam compilados
+com definições diferentes e ligados no mesmo binário, o resultado é violação de
+ODR --- o defeito silencioso descrito em \texttt{src/linkage/}.
+\end{porque}
+
+``CMake moderno'' significa uma coisa só: \textbf{propriedades vivem em alvos,
+não em variáveis globais}. Um \emph{alvo} é uma biblioteca ou um executável
+com nome próprio, e cada alvo carrega consigo os seus \emph{includes}, suas
+\emph{flags}, suas definições e suas dependências. Todo o resto decorre daí
+(\cref{tab:cmake-antigo-moderno}).
+
+\begin{table}[htbp]
+\centering
+\caption{A tradução, comando a comando. Fonte: \texttt{src/cmake/CMakeLists.txt},
+         seção 2.}
+\label{tab:cmake-antigo-moderno}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{CMake antigo (global)} & \textbf{CMake moderno (por alvo)} \\
+\midrule
+\texttt{include\_directories(...)}        & \texttt{target\_include\_directories(alvo ...)} \\
+\texttt{add\_definitions(-DX)}            & \texttt{target\_compile\_definitions(alvo ...)} \\
+\texttt{set(CMAKE\_CXX\_FLAGS "-Wall")}   & \texttt{target\_compile\_options(alvo ...)} \\
+\texttt{link\_libraries(...)}             & \texttt{target\_link\_libraries(alvo ...)} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Os três escopos, e a pergunta que decide entre eles}
+
+Cada comando \texttt{target\_*} exige um escopo, e é aqui que está a densidade
+conceitual do CMake. O escopo responde a uma pergunta de \emph{propagação}:
+esta propriedade vale só para compilar este alvo, ou também para quem o
+\emph{usa}? (\cref{tab:cmake-escopos})
+
+\begin{table}[htbp]
+\centering
+\caption{Os três escopos de propagação.}
+\label{tab:cmake-escopos}
+\footnotesize
+\begin{tabular}{@{}lcc@{}}
+\toprule
+\textbf{Escopo} & \textbf{vale para o alvo} & \textbf{vale para quem o usa} \\
+\midrule
+\texttt{PRIVATE}   & sim & não \\
+\texttt{INTERFACE} & não & sim \\
+\texttt{PUBLIC}    & sim & sim \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{regra}[a pergunta única: isto aparece no meu cabeçalho público?]
+\begin{itemize}
+    \item o cabeçalho público faz \texttt{\#include <x.hpp>} $\rightarrow$ \texttt{PUBLIC};
+    \item só o \texttt{.cpp} usa $\rightarrow$ \texttt{PRIVATE};
+    \item biblioteca só de cabeçalho, que não compila nada $\rightarrow$ \texttt{INTERFACE}.
+\end{itemize}
+\end{regra}
+
+\begin{lstlisting}[style=bt, language=Meson,
+    morekeywords={add_library,add_executable,target_include_directories,
+                  target_compile_options,target_link_libraries,STATIC,PUBLIC,
+                  PRIVATE,INTERFACE,ALIAS},
+    caption={O alvo \texttt{nucleo}, em \texttt{src/cmake/CMakeLists.txt}: o
+             cabeçalho é público, os avisos são privados.}]
+add_library(nucleo STATIC nucleo.cpp)
+
+# `.` é PUBLIC porque nucleo.hpp aparece na API: quem usa precisa achá-lo.
+target_include_directories(nucleo PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+# Avisos são política de COMO compilar ESTE alvo — não se impõem a quem
+# apenas o consome.
+target_compile_options(nucleo PRIVATE
+    $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic>
+    $<$<CXX_COMPILER_ID:MSVC>:/W4>
+)
+
+add_library(academy::nucleo ALIAS nucleo)
+\end{lstlisting}
+
+\begin{armadilha}[marcar tudo como \texttt{PUBLIC} ``por segurança'' custa caro]
+É o erro mais comum, e ele tem dois preços. O primeiro é tempo: o projeto
+inteiro recompila quando qualquer detalhe interno da biblioteca muda, porque o
+detalhe interno virou parte da interface de compilação de todo mundo. O segundo
+é pior e é de \emph{design}: uma dependência que só o \texttt{.cpp} usava passa
+a ser vista pelos consumidores, e algum deles vai acabar usando-a --- e a partir
+daí você não pode mais trocá-la sem quebrar clientes. A dependência virou parte
+da sua API sem que ninguém tenha decidido isso.
+\end{armadilha}
+
+\begin{armadilha}[caminho relativo em \texttt{target\_include\_directories}]
+Escrever \texttt{'.'} em vez de \texttt{\$\{CMAKE\_CURRENT\_SOURCE\_DIR\}}
+parece equivalente e não é: caminhos relativos são resolvidos contra o
+diretório de quem \textbf{consome} o alvo, não de quem o declarou. Enquanto
+todo mundo estiver na mesma pasta ninguém percebe; no dia em que o alvo for
+consumido de outro diretório --- ou exportado com \texttt{install(EXPORT)} ---
+o \emph{include} aponta para o lugar errado.
+\end{armadilha}
+
+\begin{regra}[dê nomes com \texttt{::} aos seus alvos]
+\texttt{add\_library(academy::nucleo ALIAS nucleo)} custa uma linha e compra
+duas coisas. Primeiro, o uso interno fica idêntico ao uso via
+\texttt{find\_package}, de modo que mover a biblioteca para fora do projeto não
+muda nenhuma linha de quem a consome. Segundo, e mais importante: um nome
+\emph{com} \texttt{::} que não existe é \textbf{erro de configuração}, e o CMake
+diz qual nome não achou; um nome \emph{sem} \texttt{::} que não existe vira
+silenciosamente \texttt{-lnome\_que\_nao\_existe} e só falha no \emph{linker},
+com uma mensagem muito pior.
+\end{regra}
+
+\subsubsection{\emph{Generator expressions}: o \texttt{if} que roda tarde demais}
+
+Uma \emph{generator expression} é uma expressão da forma \texttt{\$<...>} que
+\textbf{não} é avaliada na configuração, e sim na \emph{geração} --- a fase
+intermediária da \cref{tab:cmake-fases}.
+
+\begin{lstlisting}[style=bt, language=Meson,
+    caption={As quatro formas que resolvem quase tudo. Fonte:
+             \texttt{src/cmake/README.md}, demo 1.}]
+$<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra>   # depende do compilador
+$<$<CONFIG:Debug>:-DDEPURACAO=1>                # depende do buildtype
+$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>   # caminho no build
+$<INSTALL_INTERFACE:include>                             # caminho instalado
+\end{lstlisting}
+
+\begin{porque}[por que não simplesmente um \texttt{if()}]
+Porque com geradores \emph{multi-config} --- Visual Studio, Xcode, Ninja
+Multi-Config --- o \emph{buildtype} não é escolhido na configuração: é escolhido
+na hora de compilar, com \texttt{cmake -{}-build build -{}-config Release}.
+Nesse momento o \texttt{if(CMAKE\_BUILD\_TYPE STREQUAL "Debug")} já rodou há
+muito tempo, e rodou uma vez só, para todos os \emph{buildtypes} de uma vez.
+\texttt{\$<CONFIG:Debug>} sobrevive até lá porque é escrito \emph{no arquivo
+gerado}, não resolvido antes dele. A mesma diferença vale para o par
+\texttt{BUILD\_INTERFACE}/\texttt{INSTALL\_INTERFACE}: o mesmo alvo precisa
+anunciar um caminho de \emph{include} enquanto está na árvore de \emph{build} e
+outro depois de instalado, e um \texttt{if} não consegue dizer as duas coisas.
+\end{porque}
+
+\begin{armadilha}[quatro erros de CMake que não parecem erros]
+\begin{itemize}
+    \item \texttt{file(GLOB)} é avaliado na \textbf{configuração}. Um arquivo
+          novo não é notado até você reconfigurar à mão, e o \emph{build}
+          ``funciona'' sem ele --- o que produz um \emph{link} com símbolo
+          faltando, ou pior, um binário sem o teste novo.
+          \textbf{Liste os arquivos.}
+    \item \texttt{target\_link\_libraries(a foo)} \textbf{sem escopo} ainda
+          compila: é a forma antiga, mantida por compatibilidade, e ela mistura
+          os dois modelos de propagação no mesmo projeto. Diga sempre
+          \texttt{PRIVATE}, \texttt{PUBLIC} ou \texttt{INTERFACE}.
+    \item \textbf{sem \texttt{CMAKE\_BUILD\_TYPE}}, o \emph{build} sai
+          \emph{sem} otimização e \emph{sem} \texttt{-g}: nem \emph{debug}, nem
+          \emph{release}. É a pegadinha número 1 para quem vem do Meson, cujo
+          padrão é \texttt{debug}. O \texttt{CMakeLists.txt} deste subprojeto
+          assume \texttt{Release} quando nada é informado, e imprime que assumiu.
+    \item o cache é \textbf{persistente}. Mudar uma opção que só é lida na
+          primeira configuração --- o \emph{toolchain file}, à frente --- não
+          tem efeito nenhum enquanto o diretório de \emph{build} existir.
+\end{itemize}
+\end{armadilha}
+
+\subsubsection{\texttt{find\_package}: os dois modos}
+
+\texttt{find\_package(Nome)} é a forma canônica de achar uma dependência, e ela
+tem \textbf{dois modos completamente distintos} que compartilham o mesmo nome
+--- confusão frequente de quem lê uma mensagem de erro do CMake pela primeira
+vez.
+
+\begin{description}
+    \item[Modo \texttt{CONFIG} (preferido)] procura um arquivo
+          \texttt{<Nome>Config.cmake} que a \textbf{própria biblioteca}
+          instalou junto com os seus binários. A biblioteca descreve a si mesma:
+          versão, alvos importados, dependências transitivas. Quem escreveu o
+          arquivo sabe do que a biblioteca precisa.
+    \item[Modo \texttt{MODULE} (legado)] procura um \texttt{Find<Nome>.cmake},
+          um \emph{script} que sai caçando a biblioteca com
+          \texttt{find\_library} e \texttt{find\_path}. É necessário para
+          bibliotecas antigas, que nunca instalaram um \texttt{Config}; o
+          próprio CMake traz dezenas prontos --- \texttt{FindThreads},
+          \texttt{FindMPI}, \texttt{FindOpenMP}. Quem escreveu o arquivo
+          \emph{adivinha} do que a biblioteca precisa.
+\end{description}
+
+\subsubsection{A detecção graciosa, e a máquina de quem não tem GPU}
+
+\begin{porque}[o projeto que não configura na máquina do outro]
+\texttt{find\_package(MPI)} sem mais nada \textbf{aborta a configuração inteira}
+quando não acha o MPI. O efeito prático: quem clonar o projeto numa máquina sem
+\texttt{libopenmpi-dev} não consegue construir \emph{nada} --- nem os alvos que
+não têm relação alguma com MPI. Isso não é uma limitação do ambiente; é um bug
+de \emph{build}, e é a razão de \texttt{src/cmake/CMakeLists.txt} usar o mesmo
+idioma em todas as dependências opcionais.
+\end{porque}
+
+\begin{lstlisting}[style=bt, language=Meson,
+    morekeywords={find_package,add_executable,target_link_libraries,QUIET,
+                  REQUIRED,COMPONENTS,PRIVATE,include,check_language,
+                  enable_language,set,if,endif},
+    caption={O idioma da dependência opcional, em \texttt{src/cmake/CMakeLists.txt},
+             seção 3.}]
+find_package(Threads REQUIRED)              # REQUIRED: aborta se faltar
+find_package(MPI QUIET COMPONENTS CXX)      # QUIET + if: opcional
+
+if(MPI_CXX_FOUND)
+    add_executable(mpi_anel mpi_anel.cpp)
+    target_link_libraries(mpi_anel PRIVATE MPI::MPI_CXX)
+endif()
+\end{lstlisting}
+
+CUDA é um caso à parte, e vale saber por quê: para o CMake, CUDA não é um
+\emph{pacote} --- é uma \textbf{linguagem}, como C ou C++. Perguntar por ela
+tem um comando próprio.
+
+\begin{lstlisting}[style=bt, language=Meson,
+    morekeywords={include,check_language,enable_language,set,if,endif},
+    caption={\texttt{check\_language} pergunta sem abortar. Resumo de
+             \texttt{src/cmake/CMakeLists.txt}, seção 3.}]
+include(CheckLanguage)
+check_language(CUDA)                        # pergunta, não exige
+if(CMAKE_CUDA_COMPILER)
+    enable_language(CUDA)
+    set(CMAKE_CUDA_ARCHITECTURES native)    # detecta a GPU local (3.24+)
+    add_executable(cuda_saxpy cuda_saxpy.cu)
+endif()
+\end{lstlisting}
+
+\begin{armadilha}[\texttt{enable\_language(CUDA)} direto aborta a configuração]
+Sem o \texttt{check\_language} antes, qualquer máquina sem \texttt{nvcc} deixa
+de configurar o projeto inteiro. E \texttt{CMAKE\_CUDA\_ARCHITECTURES} tem uma
+armadilha própria: sem defini-lo, o \texttt{nvcc} compila para a arquitetura
+padrão \emph{dele}, que pode não ser a da GPU presente --- o binário compila,
+liga, roda e falha na hora de lançar o \emph{kernel}.
+\end{armadilha}
+
+O resultado dessa disciplina é que a configuração termina com um resumo
+impresso que \textbf{diz o que achou e o que não achou} --- e, quando não achou,
+diz como resolver:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída real de \texttt{cmake -S . -B build} nesta máquina, copiada do
+             \texttt{README} de \texttt{src/cmake/}.}]
+--   Protobuf         : TRUE
+--   GoogleTest       : TRUE
+--   OpenMP           : TRUE
+--   MPI              : FALSE
+--   CUDA             : FALSE
+--      para MPI : sudo apt install libopenmpi-dev
+--      para CUDA : sudo apt install nvidia-cuda-toolkit
+\end{lstlisting}
+
+\begin{aviso}
+O \texttt{README} do subprojeto separa, numa tabela, o que foi
+\textbf{verificado} do que é \textbf{referência}: CMake 3.24 com Unix
+Makefiles, Protobuf, GoogleTest e OpenMP foram compilados e executados aqui;
+\texttt{mpi\_anel.cpp} e \texttt{cuda\_saxpy.cu} estão completos e comentados,
+mas \textbf{não foram compilados} --- não há MPI nesta máquina, e há GPU e
+\emph{driver} mas não há \texttt{nvcc}. Um livro que mede é um livro que também
+declara o que não mediu.
+\end{aviso}
+
+\subsubsection{\texttt{FetchContent} contra \texttt{find\_package}}
+
+\texttt{FetchContent} é a terceira forma de obter uma dependência: em vez de
+procurá-la instalada, o CMake \textbf{baixa o código-fonte} dela e a compila
+junto com o seu projeto, como se fosse um subdiretório seu. O trade-off é real
+nos dois sentidos (\cref{tab:fetchcontent}).
+
+\begin{table}[htbp]
+\centering
+\caption{As duas formas de obter uma dependência. Fonte:
+         \texttt{src/cmake/README.md}, demo 2.}
+\label{tab:fetchcontent}
+\footnotesize
+\begin{tabular}{@{}lcc@{}}
+\toprule
+\textbf{Aspecto} & \textbf{\texttt{FetchContent}} & \textbf{\texttt{find\_package}} \\
+\midrule
+funciona sem instalar nada     & \textbf{sim}   & não \\
+\emph{build} reprodutível      & \textbf{sim}   & depende da máquina \\
+precisa de rede                & sim            & \textbf{não} \\
+tempo do primeiro \emph{build} & alto           & \textbf{baixo} \\
+compila com os seus \emph{flags} & sim          & não \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A última linha corta nos dois sentidos, e é o ponto que costuma passar
+despercebido: compilar a dependência com os \emph{seus} \emph{flags} garante
+compatibilidade de ABI --- o assunto de \texttt{src/linkage/} --- e ao mesmo
+tempo triplica o tempo de \emph{build}, porque agora você compila também tudo
+o que antes vinha pronto.
+
+\begin{armadilha}[\texttt{GIT\_TAG main} faz o seu \emph{build} depender do dia]
+Apontar \texttt{FetchContent} para um \emph{branch} significa que dois
+\emph{builds} da mesma revisão do \emph{seu} código podem produzir binários
+diferentes, porque outra pessoa fez \emph{commit} no meio. \textbf{Tag ou
+\emph{hash}, sempre.} E prefira tentar \texttt{find\_package} primeiro: o CMake
+3.24 tem \texttt{FIND\_PACKAGE\_ARGS} exatamente para isso --- usa o instalado
+se existir, baixa se não existir.
+\end{armadilha}
+
+\subsubsection{Conan e vcpkg: eles não substituem o CMake, alimentam-no}
+
+Conan e vcpkg são \textbf{gerenciadores de pacotes}: baixam, compilam e
+armazenam dependências. É comum imaginá-los como alternativas ao CMake, e não
+são --- os dois terminam o trabalho \textbf{gerando os arquivos que o
+\texttt{find\_package} consome}. O CMake continua sendo quem procura; o
+gerenciador só garante que haja o que achar. É a mesma relação que o Conan tem
+com o Meson neste repositório, em que ele gera os \texttt{.pc} do
+\texttt{pkg-config} (\cref{sec:meson}).
+
+\begin{armadilha}[o \emph{toolchain file} só vale na primeira configuração]
+\texttt{-DCMAKE\_TOOLCHAIN\_FILE=...} é lido uma única vez, quando o cache é
+criado. Passá-lo de novo numa árvore de \emph{build} já configurada não tem
+efeito \emph{nenhum} --- e o CMake não avisa. O sintoma é ``mudei o
+\emph{toolchain} e nada aconteceu''. A solução é apagar o diretório de
+\emph{build}; a prevenção é tratá-lo como descartável, exatamente como o
+\emph{build dir} do Meson.
+\end{armadilha}
+
+A conexão com este repositório é literal: o \texttt{README} de
+\projeto{cmake} configura apontando \texttt{CMAKE\_PREFIX\_PATH} para os
+pacotes que o Conan da raiz já baixou, extraindo o prefixo dos próprios
+\texttt{.pc} com \texttt{sed}. Um gerenciador, dois sistemas de \emph{build},
+o mesmo cache de dependências.
+
+\subsubsection{Código gerado durante o \emph{build}}
+
+\begin{porque}[o arquivo que precisa virar C++ antes de o compilador rodar]
+\texttt{medida.proto} não é C++. Para que o programa o use, ele precisa virar
+\texttt{medida.pb.cc} e \texttt{medida.pb.h} \emph{antes} da compilação; precisa
+ser regerado \emph{se} o \texttt{.proto} mudar; e precisa \textbf{não} ser
+regerado se ele não mudar, senão todo \emph{build} incremental vira um
+\emph{build} completo. Escrever isso como um \emph{script} que roda ``antes de
+compilar'' resolve o primeiro requisito e falha nos outros dois. O assunto aqui
+não é Protobuf: é o padrão, e ele vale igual para Qt (\texttt{moc}/\texttt{uic}),
+FlatBuffers, gRPC, Flex/Bison e geradores caseiros.
+\end{porque}
+
+\begin{lstlisting}[style=bt, language=Meson,
+    morekeywords={add_custom_command,add_library,target_include_directories,
+                  target_link_libraries,target_compile_options,OUTPUT,COMMAND,
+                  DEPENDS,COMMENT,VERBATIM,STATIC,PUBLIC,PRIVATE},
+    caption={A regra, em \texttt{src/cmake/CMakeLists.txt}, seção 4.}]
+add_custom_command(
+    OUTPUT  ${PROTO_CC} ${PROTO_H}
+    COMMAND protobuf::protoc --cpp_out=${PROTO_GERADO_DIR}
+            -I${CMAKE_CURRENT_SOURCE_DIR} ${PROTO_FONTE}
+    DEPENDS ${PROTO_FONTE}          # <- a dependencia declarada
+    COMMENT "protoc: medida.proto -> medida.pb.{cc,h}"
+    VERBATIM)
+
+add_library(medida_proto STATIC ${PROTO_CC})
+target_include_directories(medida_proto PUBLIC ${PROTO_GERADO_DIR})
+target_link_libraries(medida_proto PUBLIC protobuf::libprotobuf)
+target_compile_options(medida_proto PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:-w>)
+\end{lstlisting}
+
+O que essas linhas declaram é uma frase: \emph{``estas saídas vêm destas
+entradas, por este comando''}. A partir daí o \texttt{make} ou o Ninja trata os
+\texttt{.pb.cc} como qualquer outro arquivo com dependência --- tocou no
+\texttt{.proto}, regera; não tocou, não regera. É a mesma ideia do
+\texttt{custom\_target} do Meson (\cref{tab:configure-custom}), com outro nome.
+
+\begin{armadilha}[a confusão clássica: \texttt{OUTPUT} contra \texttt{TARGET/POST\_BUILD}]
+\texttt{add\_custom\_command} tem \textbf{duas formas}, com o mesmo nome e
+propósitos opostos:
+\begin{itemize}
+    \item \texttt{add\_custom\_command(OUTPUT ...)} declara uma \textbf{regra}:
+          arquivos de saída, arquivos de entrada, comando. O grafo de
+          dependências passa a conhecê-la.
+    \item \texttt{add\_custom\_command(TARGET x POST\_BUILD ...)} pendura um
+          comando \textbf{depois} da construção do alvo \texttt{x}. Ele roda
+          \emph{sempre} que \texttt{x} é reconstruído e \emph{nunca} quando não
+          é --- não rastreia dependência nenhuma. Serve para copiar um arquivo
+          para o lado do executável ou assinar um binário.
+\end{itemize}
+Usar a segunda para gerar código produz um \emph{build} que regenera tudo toda
+vez, ou que não regenera nunca --- dependendo da ordem em que os alvos forem
+construídos. E, como os dois casos ``funcionam'' num \emph{build} limpo, o
+defeito só aparece depois, como ``preciso apagar o \texttt{build/} de vez em
+quando''.
+\end{armadilha}
+
+\begin{armadilha}[três detalhes que não são opcionais]
+\begin{itemize}
+    \item \textbf{\texttt{VERBATIM}}: sem ele, um caminho com espaço vira dois
+          argumentos. O erro só aparece na máquina de quem tem espaço no caminho
+          do projeto --- historicamente, todo mundo no Windows.
+    \item \textbf{a saída vai para o diretório de \emph{build}}, nunca para o de
+          fonte. Gerar dentro do fonte suja o \texttt{git status}, quebra
+          \emph{builds} paralelos e cria conflito entre \emph{Debug} e
+          \emph{Release}, que passam a disputar o mesmo arquivo.
+    \item \textbf{código gerado não é código seu}: ele dispara avisos que você
+          não pode corrigir. Suprima-os \emph{no alvo dele}
+          (\texttt{target\_compile\_options(medida\_proto PRIVATE -w)}), nunca
+          globalmente --- senão você silencia também os seus.
+\end{itemize}
+\end{armadilha}
+
+\paragraph{O Protobuf em si, medido.} O mesmo objeto, nas duas
+representações que a biblioteca oferece:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{./build/cmake\_guia} nesta máquina.}]
+serializado  :  66 bytes
+texto (debug): 210 bytes
+\end{lstlisting}
+
+O binário é compacto porque cada campo é identificado por um \textbf{número}
+--- o \texttt{= 1}, \texttt{= 2} do \texttt{.proto} --- e não pelo nome, e
+porque campos com valor padrão simplesmente não são escritos. É essa numeração
+que dá a compatibilidade entre versões: um campo novo com número novo não quebra
+quem lê com o \emph{schema} antigo, porque o leitor antigo ignora números que
+não conhece.
+
+\begin{armadilha}[reutilizar um número já usado é o pecado capital do Protobuf]
+Se o campo 3 era um \texttt{int32 id} e virou uma \texttt{string nome}, todos os
+dados gravados antes passam a ser lidos como o campo errado --- sem erro, sem
+aviso, com valores absurdos. A defesa é declarar
+\texttt{reserved 3, 7;} ao remover um campo, e o compilador passa a recusar
+quem tentar reusar o número. Segunda armadilha da mesma família: uma versão do
+\texttt{protoc} diferente da \texttt{libprotobuf} produz um erro críptico
+(\emph{``This file was generated by a newer version of protoc''}); a defesa é
+usar o alvo importado \texttt{protobuf::protoc} em vez de um \texttt{protoc}
+qualquer do \texttt{PATH} --- que é o que o \texttt{CMakeLists.txt} faz.
+\end{armadilha}
+
+\subsubsection{OpenMP, MPI e CUDA: a mesma conta, quatro caminhos}
+
+O subprojeto calcula a mesma operação --- \texttt{saxpy}, ou
+$y \leftarrow a \cdot x + y$, o nível 1 do BLAS --- em serial, com OpenMP, com
+MPI e com CUDA, e cada versão compara o resultado contra a referência serial.
+É o que torna a comparação honesta (\cref{tab:paralelismo}).
+
+\begin{table}[htbp]
+\centering
+\caption{Os três modelos de paralelismo, lado a lado. Fonte:
+         \texttt{src/cmake/README.md}, demo 4.}
+\label{tab:paralelismo}
+\footnotesize
+\begin{tabular}{@{}llll@{}}
+\toprule
+ & \textbf{OpenMP} & \textbf{MPI} & \textbf{CUDA} \\
+\midrule
+unidade        & \emph{thread}   & \textbf{processo}      & \emph{thread} de GPU \\
+quantidade     & dezenas         & dezenas a milhares     & dezenas de milhares \\
+memória        & compartilhada   & privada                & separada (VRAM) \\
+comunicação    & variáveis       & mensagens              & cópias \emph{host}/\emph{device} \\
+escala até     & 1 máquina       & um \emph{cluster}      & 1 GPU (ou N) \\
+como se lança  & \texttt{./prog} & \texttt{mpirun -np 4 ./prog} & \texttt{./prog} \\
+risco típico   & \emph{data race}& \textbf{deadlock}      & erro silencioso \\
+no CMake       & \texttt{OpenMP::OpenMP\_CXX} & \texttt{MPI::MPI\_CXX} & linguagem \texttt{CUDA} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Eles se \textbf{combinam}, e é o padrão em computação de alto desempenho: MPI
+entre os nós, OpenMP dentro de cada nó, CUDA nas GPUs de cada nó --- o modelo
+conhecido como ``MPI+X''.
+
+\paragraph{O resultado medido, que contraria a expectativa.}
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{./build/omp\_saxpy}, mediana de 7 execuções, 24
+             \emph{threads} disponíveis. Tempos em milissegundos.}]
+ elementos |       MB |   serial |   OpenMP | speedup
+-----------|----------|----------|----------|--------
+    250000 |        3 |     0.06 |     0.02 |   2.60x
+   2000000 |       23 |     0.52 |     0.17 |   3.09x
+  20000000 |      229 |     7.01 |     5.50 |   1.27x
+  60000000 |      687 |    22.10 |    18.49 |   1.20x
+\end{lstlisting}
+
+A expectativa ingênua é que o \emph{speedup} \emph{cresça} com o tamanho do
+problema, porque o custo fixo de criar \emph{threads} se dilui. Aconteceu o
+contrário: o ganho cai de 3{,}09$\times$ para 1{,}20$\times$ com o \emph{mesmo}
+número de \emph{threads} o tempo todo.
+
+\begin{porque}[o SAXPY não é limitado por CPU, é limitado por banda de memória]
+A conta faz uma multiplicação-soma para cada 12 \emph{bytes} movidos --- lê
+\texttt{x[i]}, lê \texttt{y[i]}, escreve \texttt{y[i]}. Enquanto os vetores
+cabem no cache, as \emph{threads} somam a banda dos \emph{seus} caches, e o
+ganho é real. Quando os dados passam a vir da RAM, todas disputam os
+\textbf{mesmos} canais de memória --- e acrescentar \emph{thread} não
+acrescenta banda. O limite deixou de ser quantas contas por segundo o
+processador faz e passou a ser quantos \emph{bytes} por segundo a memória
+entrega. É a mesma lição que \texttt{src/performance/} desenvolve com
+\emph{cache misses}.
+\end{porque}
+
+\begin{aviso}
+\textbf{Nota de método, e ela vale mais que o número.} A primeira versão deste
+\emph{benchmark} reportou \emph{speedup} de \textbf{0,32$\times$}: a versão
+``paralela'' saiu três vezes \emph{mais lenta}. Causa: sem aquecimento, a
+primeira região paralela paga a criação do \emph{pool} de \emph{threads}. A
+segunda versão reportou \textbf{1,03$\times$} --- dessa vez porque o
+\emph{reset} do vetor, uma cópia de 80\,MB, estava \emph{dentro} da região
+cronometrada e dominava igualmente as duas medições. Só a terceira versão, com
+preparação fora do relógio e mediana de sete execuções, produziu a tabela
+acima. Três medições, três números diferentes, o mesmo código sendo medido.
+Quem publica a primeira conclui que OpenMP piora o programa.
+\end{aviso}
+
+\paragraph{As quatro diretivas que resolvem quase tudo.}
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O repertório mínimo de OpenMP.}]
+#pragma omp parallel for                      // divide o laço entre threads
+#pragma omp parallel for reduction(+ : soma)  // cada thread soma a sua parte
+#pragma omp critical                          // seção exclusiva (cara)
+#pragma omp atomic                            // uma operação só, mais barato
+\end{lstlisting}
+
+\begin{armadilha}[a armadilha número 1: o código compila sem \texttt{-fopenmp} e roda serial]
+Sem a \emph{flag}, os \texttt{\#pragma} viram comentários e o programa continua
+compilando, ligando e produzindo o resultado certo --- só que em uma
+\emph{thread}. Um \emph{build} mal configurado não falha: fica lento, em
+silêncio, e a conclusão que se tira é ``OpenMP não ajudou neste caso''. Por
+isso o \texttt{CMakeLists.txt} imprime se achou OpenMP e o
+\texttt{omp\_saxpy.cpp} testa \texttt{\#ifdef \_OPENMP} em tempo de compilação.
+\end{armadilha}
+
+\begin{armadilha}[\texttt{reduction} não é otimização, é correção]
+Sem ele, a soma paralela é um \emph{data race} puro: todas as \emph{threads}
+escrevendo na mesma variável. Compila, roda e dá um resultado \emph{diferente a
+cada execução} --- e isso é comportamento indefinido, não ``erro de
+arredondamento''. E há um efeito legítimo que se parece com bug: a soma paralela
+agrupa os termos em outra \textbf{ordem}, e a adição de ponto flutuante
+\textbf{não é associativa}. Um resultado bit a bit idêntico ao serial é
+coincidência, não contrato: ele muda com o número de \emph{threads} e com o
+\texttt{schedule}. Testes que exigem igualdade exata falham por isso, e não por
+defeito.
+\end{armadilha}
+
+Sobre \texttt{schedule}: use \texttt{static} quando toda iteração custa o mesmo
+--- é o padrão, e é o certo no SAXPY --- e \texttt{dynamic} quando o custo é
+irregular, como no conjunto de Mandelbrot (\cref{sec:mandelbrot}), em que um
+pixel pode custar 2 iterações e o vizinho 1000. \texttt{dynamic} tem
+\emph{overhead} por fatia distribuída; usá-lo num laço uniforme costuma
+\textbf{piorar} o tempo.
+
+\paragraph{MPI, em cinco chamadas.} O modelo é oposto ao do OpenMP: em vez de
+\emph{threads} numa memória compartilhada, são \textbf{processos} com memórias
+privadas que só trocam informação por mensagem --- e por isso o mesmo programa
+escala para além de uma máquina.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O esqueleto obrigatório de todo programa MPI.}]
+MPI_Init(&argc, &argv);                  // SEMPRE primeiro
+MPI_Comm_rank(MPI_COMM_WORLD, &rank);    // quem sou eu (0..N-1)
+MPI_Comm_size(MPI_COMM_WORLD, &n);       // quantos somos
+// ... MPI_Send / MPI_Recv / MPI_Bcast / MPI_Reduce ...
+MPI_Finalize();                          // SEMPRE último
+\end{lstlisting}
+
+\begin{armadilha}[as três formas de travar um programa MPI]
+\begin{itemize}
+    \item \textbf{coletiva parcial}: \emph{todos} os processos precisam chamar
+          \texttt{MPI\_Bcast}, \texttt{MPI\_Reduce} ou \texttt{MPI\_Barrier},
+          com os mesmos argumentos de tamanho. Um \texttt{if (rank == 0)} em
+          volta de uma coletiva trava o programa inteiro.
+    \item \textbf{o \emph{deadlock} ponto a ponto}: \texttt{MPI\_Send} em todos,
+          depois \texttt{MPI\_Recv} em todos. Se a mensagem couber no
+          \emph{buffer} interno da implementação, funciona; quando ela cresce,
+          todos bloqueiam. O bug aparece \emph{só com dados grandes} --- ou
+          seja, em produção. Use \texttt{MPI\_Sendrecv}, ou o par
+          \texttt{MPI\_Isend}/\texttt{MPI\_Irecv} com \texttt{MPI\_Wait}.
+    \item \textbf{medir escalabilidade na própria máquina}: rodar
+          \texttt{-np 1} e \texttt{-np 4} no mesmo computador não mede
+          escalabilidade nenhuma --- os quatro processos disputam os mesmos
+          núcleos e a mesma banda de memória.
+\end{itemize}
+\end{armadilha}
+
+\paragraph{CUDA, e a guarda que não é opcional.}
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O \emph{kernel} de \texttt{src/cmake/cuda\_saxpy.cu} (não compilado
+             nesta máquina: não há \texttt{nvcc}).}]
+__global__ void saxpy(int n, float a, const float* x, float* y) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) y[i] = a * x[i] + y[i];    // <- a GUARDA e obrigatoria
+}
+saxpy<<<blocos, 256>>>(n, 2.5f, x_dev, y_dev);
+\end{lstlisting}
+
+\begin{armadilha}[três erros de CUDA que não dão erro]
+\begin{itemize}
+    \item \textbf{sem a guarda \texttt{if (i < n)}}: o número de \emph{threads}
+          é arredondado para cima até um múltiplo do tamanho do bloco, então as
+          últimas têm índice \emph{além} do vetor. Quem acusa é o
+          \texttt{compute-sanitizer} --- o ASan não vê memória de GPU.
+    \item \textbf{\emph{kernels} são assíncronos}: um erro dentro do
+          \emph{kernel} só se manifesta na próxima chamada sincronizante. Daí o
+          par \texttt{cudaGetLastError()} (erro de lançamento) mais
+          \texttt{cudaDeviceSynchronize()} (erro de execução). Ignorar o código
+          de retorno é o erro nº 1 em CUDA: o \emph{kernel} falha em silêncio e
+          o resultado sai zerado.
+    \item \textbf{a mentira comum do \emph{benchmark} de GPU}: reportar só o
+          tempo do \emph{kernel}. Com as cópias \emph{host}/\emph{device}
+          incluídas, o ganho encolhe ou desaparece. O SAXPY é o caso clássico em
+          que a GPU \textbf{não} compensa, porque o gargalo é o PCIe; ela
+          compensa quando os dados \emph{ficam} nela entre vários
+          \emph{kernels}, ou quando a intensidade aritmética é alta ---
+          multiplicação de matrizes, convolução, FFT.
+\end{itemize}
+\end{armadilha}
+
+\subsubsection{CTest, e a diferença entre 1 teste e 11}
+
+CTest é o executor de testes que vem com o CMake. Como o \texttt{test()} do
+Meson, ele não sabe nada sobre \emph{frameworks}: um teste é um comando que
+devolve zero em caso de sucesso.
+
+\begin{lstlisting}[style=bt, language=Meson,
+    morekeywords={include,enable_testing,add_executable,target_link_libraries,
+                  gtest_discover_tests,add_test,PRIVATE,NAME,COMMAND},
+    caption={O registro dos testes, resumo de \texttt{src/cmake/CMakeLists.txt}, seção 8.}]
+include(CTest)
+enable_testing()                    # ANTES de qualquer add_test
+
+add_executable(test_nucleo test_nucleo.cpp)
+target_link_libraries(test_nucleo PRIVATE
+    academy::nucleo GTest::gtest GTest::gtest_main)
+
+include(GoogleTest)
+gtest_discover_tests(test_nucleo)   # registra CADA CASO, um a um
+\end{lstlisting}
+
+A diferença entre as duas formas de registrar é maior do que parece
+(\cref{tab:ctest-registro}).
+
+\begin{table}[htbp]
+\centering
+\caption{Registrar o binário contra registrar os casos.}
+\label{tab:ctest-registro}
+\footnotesize
+\begin{tabular}{@{}p{0.42\textwidth}p{0.5\textwidth}@{}}
+\toprule
+\textbf{Forma} & \textbf{Resultado} \\
+\midrule
+\texttt{add\_test(NAME nucleo COMMAND test\_nucleo)} &
+\textbf{1} teste no CTest; a falha diz apenas ``nucleo falhou'' \\
+\texttt{gtest\_discover\_tests(test\_nucleo)} &
+\textbf{N} testes; a falha nomeia o caso, e \texttt{ctest -R Saxpy} filtra \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Verificado nesta máquina: os casos aparecem individualmente ---
+\texttt{Saxpy.VetorVazioNaoQuebra}, \texttt{Gerar.EhDeterministico} e os demais
+---, somando \textbf{11 de 11 passando}.
+
+\begin{armadilha}[\texttt{gtest\_discover\_tests} \emph{executa} o binário durante o \emph{build}]
+É assim que ele descobre os nomes dos casos --- e é por isso que ele quebra em
+\emph{cross-compilation}: o binário construído para a placa não roda na máquina
+que compila. Nesse cenário use \texttt{gtest\_add\_tests}, que lê o
+\textbf{código-fonte} em vez de executar, ou um \texttt{add\_test} simples.
+\end{armadilha}
+
+\begin{lstlisting}[style=bt, language=Meson,
+    morekeywords={set_tests_properties,PROPERTIES,TIMEOUT,LABELS,RUN_SERIAL},
+    caption={As três propriedades de teste que mais importam.}]
+set_tests_properties(meu_teste PROPERTIES
+    TIMEOUT     60           # o padrão é 1500 s: um teste travado prende o CI
+    LABELS      "rapido"     # habilita `ctest -L rapido`
+    RUN_SERIAL  TRUE)        # para quem disputa porta, arquivo ou GPU
+\end{lstlisting}
+
+\texttt{RUN\_SERIAL} merece atenção porque a sua ausência não se parece com a
+sua ausência: sem ele, \texttt{ctest -j8} produz falhas intermitentes que
+\emph{parecem} instabilidade do teste --- e o tempo gasto caçando o
+``\emph{flaky test}'' é gasto no lugar errado. O assunto é o mesmo de
+\texttt{src/testing/}.
+
+\begin{armadilha}[sem \texttt{-{}-output-on-failure}, o CTest esconde a saída do teste que falhou]
+Ele mostra apenas ``Failed'' e o nome. É a \emph{flag} mais importante da
+ferramenta e não é o padrão --- ao contrário do \texttt{meson test}, que imprime
+a saída da falha sem que se peça (\cref{sec:meson}). Vale decorar as cinco
+formas de invocação:
+\begin{lstlisting}[style=bt, language=bash, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+ctest --test-dir build --output-on-failure   # use SEMPRE
+ctest --test-dir build -j8                   # em paralelo
+ctest --test-dir build -R Saxpy              # filtra por nome
+ctest --test-dir build --rerun-failed        # so os que falharam
+ctest --test-dir build --repeat until-fail:100   # o cacador de flaky
+\end{lstlisting}
+\end{armadilha}
+
+\begin{armadilha}[o CMake não tem \texttt{-Db\_sanitize}]
+No Meson, ligar o \emph{AddressSanitizer} é uma opção de configuração
+(\cref{sec:sanitizers}). No CMake é manual, e por alvo:
+\begin{lstlisting}[style=bt, language=Meson, frame=none,
+                   morekeywords={target_compile_options,target_link_options,PRIVATE},
+                   xleftmargin=0pt, xrightmargin=0pt]
+target_compile_options(alvo PRIVATE -fsanitize=address,undefined)
+target_link_options(alvo    PRIVATE -fsanitize=address,undefined)
+\end{lstlisting}
+A \emph{flag} precisa estar nas \textbf{duas} linhas. Esquecer a segunda produz
+\texttt{undefined reference to \_\_asan\_*} --- uma mensagem de \emph{linker}
+que não sugere em nada a causa real.
+\end{armadilha}
+
+\subsubsection{CMake ou Meson? A comparação honesta}
+
+Este repositório tem os dois em produção, o que torna a comparação verificável
+em vez de opinativa (\cref{tab:cmake-vs-meson}).
+
+\begin{table}[htbp]
+\centering
+\caption{Fonte: \texttt{src/cmake/README.md}, seção final.}
+\label{tab:cmake-vs-meson}
+\footnotesize
+\begin{tabular}{@{}p{0.30\textwidth}p{0.32\textwidth}p{0.30\textwidth}@{}}
+\toprule
+ & \textbf{CMake} & \textbf{Meson} \\
+\midrule
+linguagem                & DSL própria, imperativa, sem tipos & DSL própria, mais restrita \\
+curva de aprendizado     & íngreme; 20 anos de camadas & suave \\
+\emph{buildtype} padrão  & \textbf{nenhum} (sem \texttt{-O}, sem \texttt{-g}) & \texttt{debug} \\
+\emph{sanitizers}        & manual, por alvo & \texttt{-Db\_sanitize=address} \\
+saída do teste que falha & exige \texttt{-{}-output-on-failure} & \textbf{padrão} \\
+resumo da configuração   & manual, com \texttt{message()} & \texttt{summary()} embutido \\
+adoção                   & \textbf{o padrão de facto} & crescente \\
+suporte de IDE           & universal & bom \\
+CUDA, \emph{cross}, \emph{toolchains} & maduro & menos maduro \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{regra}[Meson é mais agradável; CMake é o que o ecossistema fala]
+As duas metades importam. A primeira justifica a escolha deste repositório para
+o seu próprio \emph{build}: menos armadilhas por linha escrita, padrões
+sensatos, mensagens melhores. A segunda é a razão de o \projeto{cmake} existir
+mesmo assim --- se você publica uma biblioteca C++, exportar um
+\texttt{<Nome>Config.cmake} não é opcional: é o que permite que os outros a
+usem com uma linha em vez de com uma página de instruções.
+\end{regra}
+
+% =============================================================================
+\subsection{Flex e Bison: quando o fonte de entrada não é C++}
+\label{sec:parser-build}
+% =============================================================================
+
+O \projeto{parser} avalia expressões aritméticas com Flex e Bison, e a
+\cref{sec:parser} já tratou do que ele ensina sobre linguagens --- tokens,
+gramática, precedência declarada. Ele reaparece aqui por outro motivo: é o
+exemplo mais direto do repositório do padrão que a
+\cref{sec:cmake} descreveu com o Protobuf. \textbf{Dois dos três fontes do
+subprojeto não são C++}, e precisam virar C++ antes de o compilador ser
+chamado.
+
+\begin{porque}[por que isto é um problema de \emph{build}, e não de código]
+Um \emph{script} que roda \texttt{flex} e \texttt{bison} ``antes de compilar''
+funciona --- uma vez. Depois começam as perguntas que só o sistema de
+\emph{build} consegue responder: se ninguém tocou no \texttt{lexer.l}, é preciso
+rodar o \texttt{flex} de novo? Se o \texttt{parser.y} mudou, quais objetos
+precisam recompilar? Como o compilador acha o \texttt{parser.tab.h}, que não
+existe no diretório de fonte e sim no de \emph{build}? E como fazer tudo isso
+sem serializar o \emph{build} inteiro atrás do gerador? Nenhuma dessas
+perguntas é sobre \emph{parsing}.
+\end{porque}
+
+\subsubsection{Duas ferramentas, três saídas, um executável}
+
+\begin{lstlisting}[style=bt, language=Meson,
+    caption={\texttt{src/parser/meson.build}, na íntegra --- o \emph{pipeline}
+             de geração completo em vinte linhas.}]
+flex  = find_program('flex',  required: true)
+bison = find_program('bison', required: true)
+
+# Bison: gera parser.tab.c E parser.tab.h — duas saidas, um comando
+bison_out = custom_target('parser_bison',
+    input   : 'parser.y',
+    output  : ['parser.tab.c', 'parser.tab.h'],
+    command : [bison, '-d', '-o', '@OUTPUT0@', '@INPUT@'],
+)
+
+# Flex: gera lex.yy.c
+flex_out = custom_target('parser_flex',
+    input   : 'lexer.l',
+    output  : 'lex.yy.c',
+    command : [flex, '-o', '@OUTPUT@', '@INPUT@'],
+)
+
+executable('parser',
+    sources : ['main.cpp', bison_out, flex_out],
+    include_directories : include_directories('.'),
+    implicit_include_directories : true,   # parser.tab.h vive no build dir
+    install : true,
+)
+\end{lstlisting}
+
+Três detalhes desse arquivo carregam quase toda a lição:
+
+\begin{enumerate}
+    \item \textbf{\texttt{output} é uma lista.} O \texttt{bison -d} produz
+          \emph{dois} arquivos de uma vez --- o \texttt{.c} com o \emph{parser}
+          e o \texttt{.h} com os \emph{tokens} --- e é preciso declarar os dois.
+          Declarar só o \texttt{.c} produz um \emph{build} que funciona por
+          acidente: o \texttt{.h} existe no disco, mas o Ninja não sabe de onde
+          ele veio, e portanto não o regenera quando a gramática muda. O
+          \texttt{@OUTPUT0@} no comando é a forma de dizer ``a primeira saída''
+          --- o \texttt{bison} deriva o nome do cabeçalho a partir dela.
+    \item \textbf{os alvos gerados entram na lista de \texttt{sources}.} É a
+          mesma regra do \cref{sec:meson}: eles não estão ali para serem
+          compilados como fontes soltos, e sim para que o Ninja saiba que
+          precisa gerá-los \emph{antes} do \texttt{main.cpp}.
+    \item \textbf{\texttt{implicit\_include\_directories: true}} acrescenta o
+          diretório de \emph{build} correspondente ao caminho de busca de
+          cabeçalhos. Sem ele, o \texttt{\#include "parser.tab.h"} do
+          \texttt{lexer.l} não acha nada --- porque o arquivo não está, e nunca
+          estará, ao lado do fonte.
+\end{enumerate}
+
+\begin{armadilha}[o ciclo de dependência entre o \emph{lexer} e o \emph{parser}]
+O \texttt{lexer.l} inclui \texttt{parser.tab.h}, que é gerado pelo Bison; e o
+Bison, para gerar, não precisa de nada do Flex. A ordem certa é portanto
+\emph{bison, depois flex, depois o compilador} --- e ela não é óbvia lendo os
+dois arquivos, porque no fonte a dependência aparece invertida (o
+\texttt{parser.y} é quem chama \texttt{yylex()}). Declarar as saídas
+corretamente deixa o Ninja descobrir a ordem sozinho; tentar impô-la à mão é o
+caminho para o ``erro só no primeiro \emph{build}, some no segundo''.
+\end{armadilha}
+
+\begin{armadilha}[\texttt{required: true} num programa que nem todos têm]
+\texttt{find\_program('flex', required: true)} aborta a configuração inteira em
+qualquer máquina sem \texttt{flex} instalado --- exatamente o comportamento que
+o \projeto{doxygen} evita com \texttt{required: false}
+(\cref{sec:doxygen}) e que o \projeto{cmake} evita com \texttt{QUIET} mais
+\texttt{if} (\cref{sec:cmake}). Aqui a escolha é deliberada, porque o
+subprojeto \emph{não existe} sem as duas ferramentas: um alvo que não pode ser
+construído deve falhar dizendo o quê e como resolver
+(\texttt{sudo apt install flex bison}), e não ser silenciosamente omitido. A
+distinção entre as duas políticas é a pergunta: \emph{este alvo é opcional, ou o
+projeto todo depende dele?}
+\end{armadilha}
+
+\begin{regra}[o padrão vale para tudo que gera código]
+\texttt{protoc}, \texttt{moc} e \texttt{uic} do Qt, \texttt{flatc},
+\texttt{grpc\_cpp\_plugin}, o gerador em Python de \texttt{src/meson/} e o
+\texttt{bison} desta seção fazem todos a mesma coisa: \emph{destas entradas,
+por este comando, saem aquelas saídas}. A ferramenta muda, o formato de entrada
+muda, e a declaração é sempre a mesma --- \texttt{custom\_target} no Meson,
+\texttt{add\_custom\_command(OUTPUT ...)} no CMake. Quem entende uma, entende
+todas.
+\end{regra}
+
+% =============================================================================
+\subsection{Doxygen: documentação a partir do código}
+\label{sec:doxygen}
+% =============================================================================
+
+O subprojeto \projeto{doxygen} cobre as convenções de comentário que geram
+documentação navegável~\cite{doxygen}. O que ele ensina de mais durável, porém,
+não é a lista de comandos --- é \emph{o que} vale a pena documentar.
+
+\subsubsection{Os comandos que descrevem o contrato}
+
+A maioria dos comandos é descritiva e prescindível: o nome da função costuma
+dizer o que \texttt{@brief} diria. Os que \emph{não} são prescindíveis são os
+que descrevem o \textbf{contrato} --- exatamente aquele que a
+\cref{sec:solid} discutiu ao tratar de LSP:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Pré-condição, pós-condição e exceção: o que a assinatura não diz.}]
+/**
+ * @brief Normaliza o vetor.
+ * @pre   `length() > 0`
+ * @post  `length() == 1.0`
+ * @throws std::domain_error Se o vetor for nulo.
+ * @note  Use `length_sq()` para comparações — evita `sqrt`.
+ */
+Vector2D normalized() const;
+\end{lstlisting}
+
+\begin{regra}[documente o que o tipo não consegue dizer]
+\texttt{@param[in]} num parâmetro \texttt{const T\&} é redundante --- o tipo já
+disse. \texttt{@pre} não é: a linguagem não tem como exigir que
+\texttt{length() > 0} antes da chamada. A regra prática: se o compilador já
+garante, não documente; se ele não garante e o chamador precisa saber, documente
+--- e considere transformar isso num \texttt{assert} ou num tipo forte
+(\cref{sec:operators}), que é documentação executável.
+\end{regra}
+
+\subsubsection{A configuração que muda o resultado}
+
+Duas opções do \texttt{Doxyfile} decidem se a documentação é útil ou ruído:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={As duas linhas que separam documentação de listagem.}]
+EXTRACT_ALL          = NO    # documenta apenas o que tem comentário Doxygen
+WARN_IF_UNDOCUMENTED = YES
+\end{lstlisting}
+
+Com \texttt{EXTRACT\_ALL = YES}, o Doxygen lista \emph{tudo}, documentado ou não
+--- e o resultado é uma referência em que 90\% das páginas não têm uma frase
+sequer, o que treina o leitor a não consultá-la. Com \texttt{NO}, o que aparece
+foi escrito de propósito.
+
+A integração com o Meson é o \texttt{custom\_target} da \cref{sec:meson}, com
+\texttt{build\_by\_default: false} --- documentação não precisa ser regerada a
+cada compilação --- e o \texttt{find\_program(required: false)} que a torna
+opcional.
+
+% =============================================================================
+\subsection{Sandbox}
+\label{sec:sandbox}
+% =============================================================================
+
+Houve, por algum tempo, \emph{dois} lugares para código descartável: um
+\texttt{sandbox/} na raiz e o \projeto{sandbox}. O da raiz foi
+\textbf{removido} --- pela mesma razão do \texttt{tests/}: dois lugares para a
+mesma coisa significam que ninguém sabe qual usar, e o menos usado apodrece
+(\cref{sec:alvo-apodrece}). Restou um, e ele é construído com todos os outros.
+
+O \projeto{sandbox} é o único subprojeto do repositório sem um assunto fixo: é
+espaço para testar uma \emph{feature}, experimentar uma biblioteca nova,
+verificar um comportamento antes de comprometê-lo em outro lugar, ou rodar uma
+medição rápida. Atualmente ele demonstra \texttt{nlohmann/json} --- a mesma
+biblioteca do \cref{sec:http-client}, aqui sem a camada de rede em volta.
+
+\begin{porque}[por que ter um lugar oficial para código descartável]
+Sem ele, o experimento acontece dentro de outro subprojeto --- e às vezes fica
+lá. O \emph{sandbox} dá ao repositório uma resposta clara para a pergunta ``onde
+eu ponho isto enquanto não sei se vai virar alguma coisa?'', e uma regra
+implícita: o que estiver ali não tem compromisso de estabilidade nem de
+qualidade didática. Se o experimento vingar, ele vira um subprojeto próprio ---
+com \texttt{README}, entrada no \texttt{ROADMAP} e linha no \texttt{README} da
+raiz.
+\end{porque}
+
+% =============================================================================
+\subsection{Síntese: a receita completa para um subprojeto novo}
+% =============================================================================
+
+Os subprojetos deste capítulo convergem para um procedimento, e vale
+registrá-lo por extenso porque é o passo que todo mundo erra --- o terceiro:
+
+\begin{enumerate}
+    \item Crie \texttt{src/novo\_topico/} com \texttt{main.cpp} e
+          \texttt{meson.build}. O \texttt{meson.build} é um
+          \texttt{executable()} com \texttt{dependencies}, \texttt{install} e
+          \texttt{install\_dir} --- e \texttt{override\_options} se precisar de
+          C++23.
+    \item Acrescente uma linha \texttt{subdir('novo\_topico')} em
+          \texttt{src/meson.build}, em ordem alfabética. \textbf{Não} no
+          \texttt{meson.build} da raiz --- e \textbf{não} comentada
+          ``até funcionar'': se ainda não compila, ele não está pronto para
+          entrar (\cref{sec:alvo-apodrece}). A exceção é o subprojeto cujo
+          assunto \emph{é} outro sistema de \emph{build}, como
+          \projeto{cmake} e \texttt{src/modules/}, que documentam a escolha
+          nos próprios \texttt{README}.
+    \item \textbf{Reconfigure}: \texttt{source build/conanbuild.sh} seguido de
+          \texttt{meson setup -{}-reconfigure build .}. Sem este passo, o
+          \texttt{meson compile} responde \texttt{target not found}, e a causa
+          não é óbvia.
+    \item Escreva o \texttt{README.md} do subprojeto, e acrescente a linha
+          correspondente no \texttt{src/ROADMAP.md} e no \texttt{README.md} da
+          raiz.
+\end{enumerate}
+
+O quarto passo é o que mantém este relatório possível: cada capítulo aqui foi
+derivado dos \texttt{README} dos subprojetos, e um subprojeto sem
+\texttt{README} é um subprojeto que ninguém encontra --- inclusive quem o
+escreveu.

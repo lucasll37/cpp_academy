@@ -1,0 +1,1721 @@
+% =============================================================================
+%  O modelo de objeto por dentro
+%  Cobre os subprojetos layout, type_erasure e linkage.
+% =============================================================================
+
+% =============================================================================
+\section{O modelo de objeto por dentro}
+\label{sec:modelo-objeto}
+% =============================================================================
+
+Os capítulos anteriores trataram do que a linguagem \emph{diz}. Este trata do
+que ela \emph{faz} --- byte a byte, símbolo a símbolo. São três perguntas, cada
+uma com um subprojeto para respondê-la com números em vez de afirmações:
+
+\begin{enumerate}
+    \item \textbf{Como os bytes de um objeto são arrumados?} O
+          \projeto{layout} responde: alinhamento, \emph{padding}, as categorias
+          de tipo que autorizam \texttt{memcpy}, e o que \texttt{virtual}
+          acrescenta ao objeto.
+    \item \textbf{Como se guarda um objeto sem mencionar o tipo dele?} O
+          \projeto{type\_erasure} constrói a \classe{std::function} do zero,
+          mede a otimização de \emph{buffer} pequeno com um \texttt{operator
+          new} instrumentado e compara quatro formas de despacho no cronômetro.
+    \item \textbf{Como o compilador e o \emph{linker} combinam sobre nomes,
+          tamanhos e endereços?} O \projeto{linkage} --- único subprojeto do
+          repositório com \emph{várias} unidades de tradução --- mede a One
+          Definition Rule com dois \texttt{.cpp} reais e chama código C
+          compilado por um compilador C de verdade.
+\end{enumerate}
+
+A ordem não é arbitrária: o apagamento de tipo só faz sentido depois de se saber
+o que um ponteiro de \gls{vtable} custa em bytes, e a \gls{abi} da última seção
+é, em boa medida, a soma das duas primeiras --- \emph{layout} de objeto mais
+nomes de símbolo.
+
+\begin{porque}[por que o modelo de objeto é assunto de C++, e não de Java]
+O C++ é a única linguagem de uso corrente em que o programador \emph{escolhe} o
+modelo de objeto e paga por ele. Em Java ou Python todo objeto tem cabeçalho,
+toda chamada de método é virtual e todo valor mora no \emph{heap}: não há
+decisão a tomar. Em C++, um destrutor virtual que ninguém usa custa 8~bytes por
+objeto --- 76~MB num vetor de dez milhões de partículas, medidos na
+\cref{sec:layout-vptr} --- e trocar a ordem de quatro membros corta um terço do
+tamanho da \texttt{struct}. Quem não conhece o modelo não faz nenhuma dessas
+escolhas: só sofre as consequências.
+\end{porque}
+
+% =============================================================================
+\subsection{O layout de um objeto}
+\label{sec:layout}
+% =============================================================================
+
+\subsubsection{Alinhamento: a exigência do hardware}
+
+Uma definição primeiro. \textbf{Alinhamento} é a exigência de que o endereço de
+um objeto seja múltiplo de um certo número. Todo tipo \texttt{T} tem um
+\texttt{alignof(T)}, e o objeto só pode começar em endereço divisível por ele:
+um \texttt{double} com \texttt{alignof}~8 mora em $0, 8, 16, \ldots$, nunca
+em~3.
+
+A exigência não vem da linguagem, vem do processador. A memória é lida em blocos
+de tamanho fixo --- a \textbf{linha de cache}, tipicamente 64~bytes em x86-64
+--- e as instruções de carga esperam operandos que não atravessem fronteiras.
+Ler um \texttt{double} desalinhado custa duas leituras em vez de uma no x86, e
+em ARM antigo aborta o processo com \texttt{SIGBUS}.
+
+\begin{regra}[as três regras do layout]
+\textbf{(1)}~Todo tipo tem \texttt{alignof(T)}: o endereço precisa ser múltiplo
+dele. \textbf{(2)}~O alinhamento de uma \texttt{struct} é o \textbf{maior} entre
+os de seus membros. \textbf{(3)}~\texttt{sizeof} é sempre múltiplo de
+\texttt{alignof}, para que \emph{arrays} funcionem. Todo o resto --- inclusive
+por que \texttt{sizeof} quase nunca é a soma dos membros --- decorre daí.
+\end{regra}
+
+O nome do ``resto'' é \textbf{\emph{padding}}: bytes que o compilador insere
+entre os membros, e depois do último, para que cada um caia em endereço válido.
+O \emph{padding} não guarda nada, não faz parte do valor do objeto e --- como se
+verá --- pode conter qualquer coisa.
+
+\subsubsection{A ordem dos membros muda o tamanho}
+
+\begin{porque}[por que declarar em ordem decrescente de alinhamento]
+O compilador \textbf{não pode} reordenar os membros de dados: a ordem de
+declaração é garantida pelo padrão (para membros com o mesmo especificador de
+acesso), justamente para que o \emph{layout} seja previsível e interoperável com
+C. A única pessoa que pode arrumar o \emph{padding} da sua \texttt{struct} é
+você.
+\end{porque}
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Os mesmos membros, duas ordens, em
+             \texttt{src/layout/demo\_tamanho.hpp}.}]
+struct Ruim {          // 1 + 8 + 1 + 4 = 14 bytes de dado...
+    char      a;
+    double    b;
+    char      c;
+    int       d;
+};
+
+struct Bom {           // os MESMOS membros, decrescendo por alinhamento
+    double    b;
+    int       d;
+    char      a;
+    char      c;
+};
+\end{lstlisting}
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/layout/}: 14 bytes de dado útil, 8 de
+             diferença.}]
+struct Ruim { char a; double b; char c; int d; };
+  sizeof  = 24   alignof = 8
+  offsetof: a=0  b=8  c=16  d=20
+  mapa: [a][×7 pad][b b b b b b b b][c][×3 pad][d d d d]
+
+struct Bom  { double b; int d; char a; char c; };
+  sizeof  = 16   alignof = 8
+  mapa: [b b b b b b b b][d d d d][a][c][×2 pad]
+
+MESMOS dados, 8 bytes de diferença (33% menor).
+Num vetor de 1 milhão: 22.9 MB contra 15.3 MB.
+\end{lstlisting}
+
+O \texttt{char~a} de \texttt{Ruim} ocupa o \emph{offset}~0 e o \texttt{double~b}
+seguinte só pode começar no~8: sete bytes perdidos. Depois o \texttt{char~c}
+no~16 e o \texttt{int~d} no~20: mais três. Em \texttt{Bom} nada disso acontece,
+porque os membros grandes vêm primeiro e os pequenos preenchem o rabo. Trinta e
+três por cento de memória de graça --- e, o que costuma importar mais, um terço
+a menos de linhas de cache tocadas em cada passada.
+
+\subsubsection{Por que existe \emph{padding} no fim}
+
+\texttt{struct \{ int a; char b; \}} soma cinco bytes e ocupa oito. A razão é a
+regra~(3), e a razão da regra~(3) são os \emph{arrays}: em \texttt{ComRabo v[3]}
+cada elemento precisa começar em múltiplo de \texttt{alignof}. Se
+\texttt{sizeof} fosse~5, \texttt{v[1]} cairia no \emph{offset}~5 --- e o
+\texttt{int} de dentro dele, desalinhado.
+
+\subsubsection{\texttt{memcmp} e o lixo do \emph{padding}}
+
+O subprojeto constrói duas instâncias com os \textbf{mesmos valores de membro},
+uma delas com o \emph{padding} marcado com \texttt{0xAA}:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/layout/}: membros iguais, bytes diferentes.}]
+x.a == y.a && x.b == y.b     → true
+memcmp(&x, &y, sizeof)  == 0 → false
+  x: 07 00 00 00 7A AA AA AA
+  y: 07 00 00 00 7A 00 00 00
+                  ^^ ^^ ^^   ← padding
+\end{lstlisting}
+
+\begin{armadilha}[\texttt{memcmp} compara bytes; \texttt{==} compara valores]
+O conteúdo do \emph{padding} é \textbf{indeterminado}: ele não faz parte do
+valor do objeto e nada obriga o compilador a inicializá-lo. Daí três
+proibições: nunca comparar \texttt{struct}s com \texttt{memcmp} (use
+\texttt{operator==}, escrito ou \texttt{= default}); nunca transmitir nem
+persistir uma \texttt{struct} com \emph{padding} sem zerá-la antes --- o
+\emph{padding} \textbf{vaza memória do processo} para o disco ou para a rede,
+que é a família de bug do Heartbleed em outra forma; e, se precisa de bytes,
+serializar campo a campo.
+\end{armadilha}
+
+\subsubsection{\texttt{struct} vazia: por que 1 e não 0}
+
+\texttt{sizeof(struct\{\})} é \textbf{1}. Zero seria mais honesto e quebraria a
+linguagem: dois objetos distintos precisam de endereços distintos, e num
+\texttt{Vazia v[3]} os três ocupariam o mesmo lugar. Métodos não ocupam espaço:
+uma função membro é uma função comum com um \texttt{this} implícito, guardada
+uma vez no binário --- só \texttt{virtual} acrescenta algo ao objeto
+(\cref{sec:layout-vptr}). E há a exceção que salva o dia:
+\texttt{struct HerdaVazia : Vazia \{ int x; \}} tem \texttt{sizeof}
+\textbf{4}, não~8, porque a base vazia foi otimizada para zero bytes --- a EBO
+da \cref{sec:layout-ebo}.
+
+\begin{table}[htbp]
+\centering
+\caption{\texttt{sizeof} e \texttt{alignof} medidos por \texttt{src/layout/}
+         (GCC 13, x86-64 System V).}
+\label{tab:layout-std-tipos}
+\footnotesize
+\begin{tabular}{@{}lrr@{}}
+\toprule
+\textbf{Tipo} & \textbf{\texttt{sizeof}} & \textbf{\texttt{alignof}} \\
+\midrule
+\texttt{int}                 & 4  & 4  \\
+\texttt{double}              & 8  & 8  \\
+\texttt{long double}         & \textbf{16} & 16 \\
+\texttt{void*}               & 8  & 8  \\
+\classe{std::string}         & 32 & 8  \\
+\texttt{std::vector<int>}    & 24 & 8  \\
+\classe{std::max\_align\_t}  & 16 & 16 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Duas linhas merecem nota. O \texttt{long double} do x86-64 System V tem
+80~\emph{bits} de dado útil e \texttt{sizeof}~16 --- quase metade é
+\emph{padding} ---, e no MSVC ele é um \texttt{double} de 8~bytes, o que faz
+dele o tipo menos portável do C++. E \classe{std::max\_align\_t} é o alinhamento
+que \texttt{malloc} garante: 16 bytes. Pedir mais é o assunto seguinte.
+
+\subsubsection{\texttt{alignas}: mandando no alinhamento}
+
+\begin{porque}[três situações em que o alinhamento natural não basta]
+\textbf{SIMD}: uma instrução AVX carrega 32~bytes de uma vez e exige o operando
+alinhado a~32. \textbf{Cache}: dois campos escritos por \emph{threads}
+diferentes na mesma linha de cache provocam \emph{false sharing} --- cada
+escrita invalida a linha do outro núcleo, e o desempenho despenca sem que haja
+\gls{datarace} nenhum. \textbf{Hardware}: um descritor de DMA que o dispositivo
+exige em endereço específico.
+\end{porque}
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={\texttt{alignas} em tipo e em membro, em
+             \texttt{src/layout/demo\_alignas.hpp}.}]
+struct alignas(32) Vetor8f { float v[8]; };     // pronto para AVX
+
+struct Espacada {
+    alignas(64) int produtor;                   // cada um na sua linha de cache
+    alignas(64) int consumidor;
+};
+\end{lstlisting}
+
+Medido pelo subprojeto: \texttt{Compacta} (os dois \texttt{int} juntos) ocupa
+8~bytes; \texttt{Espacada} ocupa \textbf{128}, com o consumidor no
+\emph{offset}~64. Dezesseis vezes mais memória para separar dois inteiros --- se
+compensa é medição, não princípio, mas a alternativa pode custar uma ordem de
+grandeza quando duas \emph{threads} os escrevem em laço.
+
+\begin{armadilha}[\texttt{alignas} só aumenta; empacotar de verdade é fora do padrão]
+\texttt{struct alignas(1) Tentativa \{ double d; \};} não compila ---
+\texttt{alignment of 'Tentativa' is less than the minimum alignment (8) of its
+members}. A recusa é proposital: ler um \texttt{double} desalinhado é \gls{ub}.
+Para empacotar mesmo há extensões \textbf{não padronizadas}
+(\texttt{\#pragma pack}, \texttt{\_\_attribute\_\_((packed))}), e elas criam um
+perigo silencioso: um ponteiro para membro de \texttt{struct} empacotada é
+\emph{desalinhado}, e passá-lo adiante é \gls{ub} --- o GCC avisa com
+\texttt{-Waddress-of-packed-member}. Para protocolo de rede ou formato de
+arquivo, serialize campo a campo.
+\end{armadilha}
+
+\paragraph{Alocação super-alinhada.} \texttt{malloc} garante 16 bytes; um tipo
+que peça mais é \emph{over-aligned}. Antes do C++17 o \texttt{new}
+\textbf{ignorava} o \texttt{alignas(32)} e devolvia memória alinhada a~16: o
+código compilava, rodava e falhava na primeira instrução AVX. O C++17 (P0035)
+acrescentou as sobrecargas com \classe{std::align\_val\_t}, e o compilador as
+chama sozinho --- o subprojeto verifica que \textbf{8 de 8} alocações de
+\texttt{Vetor8f} vieram alinhadas a 32. À mão há três formas:
+\texttt{std::aligned\_alloc(32, n)}, \texttt{::operator new(n,
+std::align\_val\_t\{32\})} e \classe{std::align}, que ajusta um bloco existente.
+
+\begin{armadilha}[cada alocador tem o seu liberador, e \texttt{assume\_aligned} é promessa]
+Memória de \texttt{aligned\_alloc} se libera com \texttt{free}; a de
+\texttt{operator new(std::align\_val\_t)}, com o \texttt{operator delete}
+correspondente --- misturar é \gls{ub}. Já
+\texttt{std::assume\_aligned<32>(p)} (C++20) \emph{promete} ao compilador que o
+ponteiro cru está alinhado, dispensando o prólogo escalar antes do laço
+vetorizado. É promessa, não verificação: mentir funciona no x86 e falha no ARM.
+O UBSan pega com \texttt{-fsanitize=alignment} (\cref{sec:sanitizers}).
+\end{armadilha}
+
+\subsubsection{As quatro categorias de tipo}
+\label{sec:layout-categorias}
+
+Quatro palavras parecidas, quatro autorizações diferentes. Não são curiosidade
+acadêmica: cada uma \textbf{autoriza uma operação concreta}, e usar a operação
+sem a autorização é \gls{ub}.
+
+\begin{table}[htbp]
+\centering
+\caption{O que cada categoria de tipo autoriza.}
+\label{tab:categorias-autoriza}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Categoria} & \textbf{Autoriza} \\
+\midrule
+\emph{trivially copyable} & \texttt{memcpy} do objeto inteiro --- é o que deixa
+                            \texttt{vector<T>} usar \texttt{memmove} ao
+                            realocar \\
+\emph{standard-layout}    & \texttt{offsetof} legal; interoperação com C;
+                            \texttt{\&s == \&s.primeiro\_membro} \\
+\emph{agregado}           & inicialização por chaves e \emph{designated
+                            initializers} \\
+\emph{trivially destructible} & \texttt{vector<T>::clear()} só zera o tamanho,
+                            sem percorrer \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/layout/}: os \emph{traits} instanciados sobre
+             oito cobaias.}]
+| tipo         | triv.cp | triv.ctor | std.layout | agregado |
+|--------------|---------|-----------|------------|----------|
+| int          |   sim   |    sim    |    sim     |   não    |
+| Simples      |   sim   |    sim    |    sim     |   sim    |
+| ComCtor      |   sim   |    não    |    sim     |   não    |
+| ComVirtual   |   não   |    não    |    não     |   não    |
+| Privado      |   sim   |    sim    |    não     |   não    |
+| HerdaDados   |   sim   |    sim    |    não     |   sim    |
+| ComString    |   não   |    não    |    sim     |   sim    |
+| std::string  |   não   |    não    |    sim     |   não    |
+\end{lstlisting}
+
+Cada linha ensina uma regra. \texttt{ComCtor} (construtor escrito à mão) perdeu
+\emph{trivially default constructible} e continua \emph{trivially copyable} ---
+\texttt{memcpy} sobre ele é legal. \texttt{ComVirtual} perdeu tudo: o vptr é
+preenchido pelo construtor, e um \texttt{memcpy} o corromperia.
+\texttt{Privado}, com membros de dados em \texttt{public} \emph{e}
+\texttt{private}, perdeu \emph{standard-layout}, porque aí o compilador pode
+reordenar; \texttt{HerdaDados} perdeu pelo mesmo motivo, tendo dados em dois
+níveis da hierarquia. E \texttt{ComString} não é trivial em nada e
+\textbf{ainda é agregado}: \texttt{ComString\{1, "x"\}} compila.
+
+\begin{armadilha}[\texttt{memcpy} sobre o tipo errado]
+Sobre um \classe{std::string}, \texttt{memcpy} copia o \textbf{ponteiro
+interno}: os dois objetos apontam para o mesmo \emph{buffer} e os dois
+destrutores o liberam --- \emph{double free}. Com SSO e string curta pode até
+``funcionar'', e é isso que torna o bug traiçoeiro: some nos testes. Sobre um
+tipo com \texttt{virtual}, copia o \textbf{vptr}, e o destino passa a despachar
+para os métodos da classe errada. A defesa cabe em duas linhas:
+\begin{lstlisting}[style=bt, language=C++, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+template <typename T>
+void copia_bruta(T& d, const T& o) {
+    static_assert(std::is_trivially_copyable_v<T>, "memcpy exige trivial");
+    std::memcpy(&d, &o, sizeof(T));
+}
+\end{lstlisting}
+Em C++20, \classe{std::bit\_cast} faz o mesmo com verificação em compilação e
+sem \gls{ub} de \emph{aliasing} (\cref{sec:casts}).
+\end{armadilha}
+
+\paragraph{POD foi aposentado.} \texttt{std::is\_pod} está \textbf{depreciado
+desde o C++20} (P0767). ``POD'' significava trivial \emph{e}
+\emph{standard-layout}, e juntar as duas propriedades numa palavra só escondia
+qual delas o programador precisava:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/layout/}: peça a autorização exata.}]
+quero memcpy?          → is_trivially_copyable
+quero offsetof?        → is_standard_layout
+quero `T x;` de graça? → is_trivially_default_constructible
+quero chaves?          → is_aggregate
+\end{lstlisting}
+
+As quatro perguntas são independentes, e \texttt{is\_pod} respondia ``sim'' só
+quando \emph{todas} eram sim --- recusando tipos perfeitamente
+\texttt{memcpy}-áveis, como o \texttt{ComCtor} da tabela.
+
+\subsubsection{EBO e \texttt{[[no\_unique\_address]]}}
+\label{sec:layout-ebo}
+
+\begin{porque}[o problema: o 1 byte que vira 8]
+Um objeto vazio ocupa 1~byte. Como \emph{membro}, esse byte custa muito mais: se
+o membro seguinte é um \texttt{double}, ele só pode começar no \emph{offset}~8,
+e os sete bytes intermediários viram \emph{padding}. Uma política vazia ---
+comparador, alocador, \emph{deleter} --- custa oito bytes por objeto sem guardar
+coisa nenhuma.
+\end{porque}
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={As três formas, em
+             \texttt{src/layout/demo\_no\_unique\_address.hpp}.}]
+struct PorMembro {
+    Vazio  politica;      // 1 byte...
+    double dado;          // ...mas `dado` precisa de offset múltiplo de 8
+};
+
+struct PorHeranca : Vazio {
+    double dado;
+};
+
+struct ComAtributo {
+    [[no_unique_address]] Vazio politica;
+    double                      dado;
+};
+\end{lstlisting}
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/layout/}: metade da memória, num atributo.}]
+struct { Vazio p; double d; }         → sizeof 16  ← 8 a mais!
+struct : Vazio { double d; }          → sizeof  8  (EBO)
+struct { [[nua]] Vazio p; double d; } → sizeof  8  (C++20)
+
+Num std::vector de 10 milhões: 152.6 MB contra 76.3 MB
+\end{lstlisting}
+
+A saída antiga chama-se \textbf{EBO} --- \emph{Empty Base Optimization}: uma
+classe base vazia pode ocupar zero bytes no derivado, porque a linguagem não
+exige endereço próprio para subobjetos de base. É por isso que a libstdc++ faz o
+\texttt{std::vector} \textbf{herdar} do alocador:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/layout/}: a EBO na biblioteca padrão.}]
+sizeof(std::allocator<int>)         =  1 (é VAZIO)
+sizeof(std::vector<int>)            = 24 (3 ponteiros, nada mais)
+→ se o alocador fosse membro, o vector teria 32.
+
+unique_ptr<int>                     =  8 bytes
+unique_ptr<int, lambda SEM captura> =  8 bytes (EBO)
+unique_ptr<int, void(*)(int*)>      = 16 bytes (ponteiro!)
+\end{lstlisting}
+
+\begin{armadilha}[passar \texttt{\&funcao} como \emph{deleter} dobra o \texttt{unique\_ptr}]
+Um \emph{lambda} sem captura é um tipo vazio e some pela EBO; um ponteiro de
+função é um objeto de 8~bytes que precisa ser guardado. O
+\classe{std::unique\_ptr} sai de 8 para 16 bytes, deixa de caber num registrador
+e dobra o custo de guardá-lo em container (\cref{sec:smart-pointers}).
+\end{armadilha}
+
+Herdar de algo que não é interface incomoda, e era a única saída antes do C++20
+--- o \texttt{boost::compressed\_pair} existia para embrulhar essa feiura. O
+\texttt{[[no\_unique\_address]]} diz o mesmo sem herança: ``este membro pode
+compartilhar endereço com outro''.
+
+\begin{armadilha}[dois membros vazios do mesmo tipo não colapsam]
+Dois subobjetos do \textbf{mesmo tipo} não podem ter o mesmo endereço, e a regra
+vale mesmo com o atributo. Mas isso não significa que o custo apareça na
+\texttt{struct} que os contém: basta haver outro membro para absorvê-los.
+\begin{lstlisting}[style=bt, language=bash, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+struct { [[nua]] Vazio a; [[nua]] Vazio b;      } → sizeof 2
+struct { [[nua]] Vazio a; [[nua]] Comparador b; } → sizeof 1
+struct { [[nua]] Vazio a, b; int dado;          } → sizeof 4
+  offset de a = 0   offset de b = 1   offset de dado = 0
+\end{lstlisting}
+Os dois vazios têm endereços diferentes entre si, como manda a regra, e ao mesmo
+tempo moram \emph{dentro} do \texttt{int} --- que é exatamente o que o atributo
+autoriza.
+\end{armadilha}
+
+\begin{armadilha}[o atributo é autorização, não garantia]
+O compilador pode ignorá-lo, e o MSVC de fato o ignora por compatibilidade de
+\gls{abi}, oferecendo \texttt{[[msvc::no\_unique\_address]]} no lugar. Se o
+\emph{layout} importa, trave o contrato com
+\texttt{static\_assert(sizeof(T)~==~N)} em vez de confiar.
+\end{armadilha}
+
+\begin{regra}[toda política passada por \emph{template} merece o atributo]
+Comparador, alocador, \emph{deleter}, \emph{hasher}, política de \emph{mutex}:
+quase sempre vazios, e todos custam 8 bytes por objeto se forem membros comuns.
+O subprojeto mede o caso num \texttt{ConjuntoOrdenado<T, Comp>}: o
+\texttt{std::less<int>} custou \textbf{0 bytes}; um comparador com um
+\texttt{int} de estado custou~8 --- e aí é justo pagar.
+\end{regra}
+
+\subsubsection{O vptr, e o que \texttt{virtual} custa em bytes}
+\label{sec:layout-vptr}
+
+A \cref{sec:oop} tratou do \emph{comportamento} do despacho dinâmico; aqui o
+assunto é o preço em bytes e em endereços. Quando uma classe tem ao menos uma
+função \texttt{virtual}, o compilador cria para ela uma \textbf{vtable} --- um
+vetor de ponteiros de função, guardado \emph{no binário}, um por classe --- e
+acrescenta a cada \emph{objeto} um \textbf{vptr}, ponteiro para a vtable da sua
+classe real. É o vptr que permite a \texttt{forma->area()} chamar a
+implementação certa sem saber o tipo.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/layout/}: o custo de um único
+             \texttt{virtual}.}]
+struct { int a; int b; }                  → sizeof  8
+struct { int a; int b; virtual ~T(); }    → sizeof 16
+
+os 16 bytes de um ComVirtual{a=0x11111111, b=0x22222222}:
+  80 E7 47 87 CA 55 00 00 | 11 11 11 11 22 22 22 22
+  └─── vptr (8 bytes) ───   └─── a ───   └─── b ───
+offsetof(ComVirtual, a) = 8 — o vptr vem ANTES.
+\end{lstlisting}
+
+Um \emph{único} método virtual custa 8 bytes por objeto; dez métodos custam os
+\emph{mesmos} 8, porque o vptr é um só e a vtable, que cresce, fica no binário.
+A posição no início é convenção do \textbf{Itanium C++ ABI} (GCC e Clang em
+Linux e macOS), não exigência do padrão --- mas é o que permite despachar sem
+conhecer o tipo, já que o vptr está sempre no \emph{offset}~0.
+
+\begin{regra}[destrutor virtual só onde há destruição por ponteiro-para-base]
+Num \texttt{vector<Particula>} de dez milhões, um
+\texttt{virtual~\textasciitilde Particula()} que ninguém usa custa
+\textbf{76~MB}. Se a classe não é destruída através de ponteiro para a base, não
+declare o destrutor virtual: torne-o \texttt{protected} e não virtual, o que
+impede o uso errado sem cobrar o vptr.
+\end{regra}
+
+\paragraph{Herança simples, e uma surpresa.} Com herança simples o subobjeto da
+base fica no início, o derivado acrescenta depois e o \emph{upcast} é gratuito.
+Mas a medição contraria a expectativa:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/layout/}: o derivado tem um \texttt{int} a
+             mais e o mesmo \texttt{sizeof}.}]
+sizeof(Base1)  = 16   sizeof(Deriv1) = 16
+Base1:  [vptr 8][x 4][padding 4]
+Deriv1: [vptr 8][x 4][   y   4]     ← y foi para DENTRO do padding de cauda
+offsetof: x=8, y=12
+\end{lstlisting}
+
+O compilador só pode reaproveitar o \emph{padding} de cauda da base porque
+\texttt{Base1} \textbf{não é} \emph{standard-layout} (ela tem \texttt{virtual});
+se fosse, o padrão proibiria. Aqui a \cref{sec:layout-categorias} encontra a
+prática: é por isso que \texttt{memcpy} de um objeto para o
+\emph{subobjeto-base} de outro pode corromper o derivado --- os bytes de
+``\emph{padding}'' da base, no destino, são o \texttt{y} de alguém. E é esse
+mesmo \emph{layout} que torna o \gls{slicing} possível: copiar \texttt{*pb} para
+um \texttt{Base1} leva só a parte-base, e o resultado é um \texttt{Base1}
+legítimo, sem aviso nenhum.
+
+\paragraph{Herança múltipla: o \texttt{this} que se desloca.} Com duas bases
+polimórficas o objeto tem \textbf{dois} vptr --- a parte-B precisa da sua
+própria vtable, e um \texttt{B*} tem de apontar para o começo dela.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={As três classes de
+             \texttt{src/layout/demo\_polimorfico.hpp}.}]
+struct A { int a = 1; virtual ~A() = default; virtual void fa() {} };
+struct B { int b = 2; virtual ~B() = default; virtual void fb() {} };
+struct AB : A, B { int c = 3; };
+\end{lstlisting}
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/layout/}: o mesmo objeto, dois endereços.}]
+&obj       offset  0
+(A*)&obj   offset  0   ← igual ao início
+(B*)&obj   offset 16   ← DESLOCADO!
+Layout: [vptr-A][a][pad][vptr-B][b][pad][c][pad]
+
+(void*)pa == (void*)pb ? false
+pa == &obj && pb == &obj ? true
+dynamic_cast<void*>(pa) == dynamic_cast<void*>(pb) ? true
+\end{lstlisting}
+
+\begin{armadilha}[três consequências da herança múltipla]
+\textbf{(1)}~\texttt{static\_cast<B*>(\&obj)} \textbf{não é um no-op}: o
+compilador soma~16. Um \classe{reinterpret\_cast} no lugar produziria um
+ponteiro errado que compila sem aviso --- é a diferença entre os dois
+\emph{casts} da \cref{sec:casts}, tornada visível.
+\textbf{(2)}~Comparar ponteiros engana: \texttt{(void*)pa == (void*)pb} é
+\emph{false} embora os dois apontem para o mesmo objeto; para comparar
+identidade, use \texttt{dynamic\_cast<void*>}, que devolve o início do objeto
+mais derivado. \textbf{(3)}~\texttt{delete pb} precisa \emph{ajustar} o ponteiro
+antes de liberar, e quem faz isso é um \emph{thunk} na vtable de~B --- sem
+destrutor virtual em~B, seria \gls{ub}.
+\end{armadilha}
+
+\paragraph{Herança virtual: o diamante que custa mais tendo menos.} Quando duas
+classes herdam da mesma base e uma terceira herda das duas, ou a base aparece
+duas vezes, ou é compartilhada; \texttt{virtual} escolhe a segunda opção. O
+número contraria a expectativa: \texttt{sizeof(NaoDiamante)}~=~\textbf{40}, com
+a base~\texttt{V} duplicada, contra \texttt{sizeof(Diamante)}~=~\textbf{48}, com
+ela compartilhada. O virtual custou \emph{mais} bytes tendo \emph{menos} dados.
+
+O mecanismo explica o paradoxo. \texttt{E1} e \texttt{E2} não sabem, em
+compilação, \emph{onde} \texttt{V} vai estar --- quem decide é a classe mais
+derivada, que pode nem existir ainda. Cada uma ganha então um ponteiro extra, o
+\emph{virtual base offset}, consultado em tempo de execução, e o \texttt{V}
+compartilhado vai para o fim do objeto. Acessar \texttt{d.v} passa a custar uma
+indireção a mais que acessar \texttt{d.d}, e construir \texttt{V} vira
+responsabilidade da classe mais derivada, pulando os construtores de \texttt{E1}
+e \texttt{E2}.
+
+\begin{regra}[herança virtual só para interfaces sem dados]
+Com bases puramente abstratas o custo é pequeno e o diamante é inevitável. Com
+\emph{dados} na base virtual, reconsidere o desenho: composição costuma ser mais
+simples, mais rápida e mais fácil de explicar.
+\end{regra}
+
+\subsubsection{Não adivinhe: inspecione}
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={As quatro ferramentas de inspeção de \emph{layout}.}]
+clang++ -Xclang -fdump-record-layouts    # layout completo, clang
+g++     -fdump-lang-class                # gera arquivos .class
+pahole -C NomeDaStruct ./binario         # mostra os BURACOS
+static_assert(sizeof(T) == 16);          # trava o contrato
+\end{lstlisting}
+
+O \texttt{static\_assert} é o mais valioso e o único que sobrevive ao tempo:
+transforma uma suposição sobre \emph{layout} numa falha de compilação no dia em
+que alguém acrescentar um membro. O \texttt{pahole}, do pacote
+\texttt{dwarves}, lê a informação de depuração do binário e imprime literalmente
+os buracos de \emph{padding} de cada \texttt{struct}.
+
+Vale fechar dizendo quando nada disso importa: com dezenas ou centenas de
+objetos, com um objeto atrás de um ponteiro seguido uma vez por quadro, ou
+quando a clareza vale mais que 8~bytes. O \emph{layout} importa quando há
+milhões de objetos, quando os dados atravessam uma fronteira de \gls{abi} ou vão
+para disco, quando há interoperação com C ou GPU, e quando o laço quente
+percorre um \emph{array} e o gargalo é o cache.
+
+% =============================================================================
+\subsection{Apagamento de tipo}
+\label{sec:erasure}
+% =============================================================================
+
+\subsubsection{O problema, e o que a herança cobra por resolvê-lo}
+
+\begin{porque}[o buraco no sistema de tipos estático]
+Três \texttt{struct}s que não se conhecem e não herdam de nada ---
+\texttt{Circulo}, \texttt{Quadrado}, \texttt{Triangulo}, cada uma com
+\texttt{area()}. Como guardar as três num único \texttt{std::vector}? Não há
+resposta boa: \texttt{vector<Circulo>} só guarda círculos; um \emph{template} é
+resolvido em compilação e não dá heterogeneidade; e \texttt{void*} perde toda a
+informação, inclusive \emph{como destruir}.
+\end{porque}
+
+\Gls{typeerasure} --- apagamento de tipo --- é guardar um objeto de tipo
+\texttt{T} num lugar que \textbf{não menciona \texttt{T}}, preservando as
+operações que interessam. O tipo some da assinatura; o comportamento fica. Você
+já usa isso sem chamar pelo nome:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Quatro apagadores de tipo da biblioteca padrão.}]
+std::function<int(int)> f;   // aceita lambda, functor, ponteiro de função...
+std::any                a;   // aceita qualquer coisa copiável
+std::shared_ptr<void>   p;   // guarda o deleter de QUALQUER tipo
+std::unique_ptr<Base>   b;   // a herança é a forma mais antiga
+\end{lstlisting}
+
+A última linha é a que quase ninguém percebe.
+\texttt{std::unique\_ptr<Forma>} não menciona \texttt{Circulo} nem
+\texttt{Quadrado}: o tipo foi apagado, e a \gls{vtable} é o mecanismo. Herança
+polimórfica \emph{é} apagamento de tipo --- só que \textbf{intrusivo}: para
+entrar no vetor, o tipo precisa \emph{herdar}. Isso exclui \texttt{int},
+\classe{std::string} e qualquer tipo de terceiros que você não pode alterar;
+acrescenta um vptr ao seu tipo, que deixa de ser trivial e de caber num
+registrador (\cref{sec:layout-vptr}); obriga a alocar no \emph{heap} e usar
+ponteiro, sob pena de \gls{slicing}; e acopla o seu tipo a uma hierarquia que
+ele não escolheu.
+
+\begin{table}[htbp]
+\centering
+\caption{As três formas de guardar coisas heterogêneas.}
+\label{tab:formas-heterogeneas}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Forma} & \textbf{Conjunto de tipos} & \textbf{Despacho} \\
+\midrule
+herança + \texttt{virtual}             & \textbf{aberto}, intrusivo & vtable \\
+\classe{std::variant} + \texttt{visit} & \textbf{fechado}           & índice / \emph{jump table} \\
+apagamento de tipo manual              & \textbf{aberto}, não intrusivo & vtable manual \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\emph{Aberto} significa que qualquer um pode acrescentar um tipo novo depois, sem
+tocar no seu código; \emph{fechado}, que a lista está fixa na declaração. A
+terceira linha é o assunto desta seção.
+
+\subsubsection{\texttt{std::function} do zero: Conceito, Modelo, Wrapper}
+
+A receita tem sempre as mesmas três peças (\cref{fig:erasure-pecas}): um
+\textbf{Conceito}, interface abstrata que descreve as operações mas não o tipo;
+um \textbf{Modelo}, \emph{template} sobre \texttt{T}, que implementa a interface
+delegando para o \texttt{T}; e um \textbf{Wrapper} com semântica de valor, que
+guarda um ponteiro para o Conceito.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=7mm and 10mm]
+  \node[caixaforte] (w) {\textbf{Wrapper}\\\scriptsize \texttt{Funcao<R(Args...)>}\\\scriptsize valor, copiável};
+  \node[caixa, below=8mm of w] (c) {\textbf{Conceito}\\\scriptsize interface abstrata\\\scriptsize \texttt{invocar} / \texttt{clonar}};
+  \node[caixa, below left=9mm and 6mm of c]  (m1) {\textbf{Modelo}\texttt{<Triplica>}};
+  \node[caixa, below right=9mm and 6mm of c] (m2) {\textbf{Modelo}\texttt{<lambda>}};
+  \node[folha, below=7mm of m1] (t1) {\texttt{Triplica}\\\scriptsize não herda de nada};
+  \node[folha, below=7mm of m2] (t2) {\emph{lambda}\\\scriptsize não herda de nada};
+  \draw[seta] (w) -- node[rotulo,right] {\texttt{unique\_ptr}} (c);
+  \draw[aresta] (c) -- (m1); \draw[aresta] (c) -- (m2);
+  \draw[seta] (m1) -- node[rotulo,left] {guarda} (t1);
+  \draw[seta] (m2) -- node[rotulo,right] {guarda} (t2);
+\end{tikzpicture}
+\caption{As três peças do apagamento de tipo. Só o \textbf{Modelo} conhece o
+         \texttt{T}: ele herda do Conceito e some atrás do ponteiro. Quem
+         escreveu o \texttt{T} nunca ouviu falar de nenhuma das três.}
+\label{fig:erasure-pecas}
+\end{figure}
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A receita completa (resumo de
+             \texttt{src/type\_erasure/demo\_implementacao.hpp}).}]
+template <typename R, typename... Args>
+class Funcao<R(Args...)> {
+    // PEÇA 1: o Conceito -- o que sabemos fazer, sem saber com o quê
+    struct Conceito {
+        virtual ~Conceito() = default;
+        virtual R                          invocar(Args...) const = 0;
+        virtual std::unique_ptr<Conceito>  clonar()          const = 0;
+    };
+
+    // PEÇA 2: o Modelo -- conhece T, implementa o Conceito
+    template <typename T>
+    struct Modelo final : Conceito {
+        T alvo;
+        explicit Modelo(T t) : alvo{std::move(t)} {}
+
+        R invocar(Args... a) const override {
+            return const_cast<T&>(alvo)(std::forward<Args>(a)...);
+        }
+        std::unique_ptr<Conceito> clonar() const override {
+            return std::make_unique<Modelo>(alvo);   // exige T copiável
+        }
+    };
+
+    // PEÇA 3: o Wrapper -- valor semântico
+    std::unique_ptr<Conceito> pimpl_;
+
+public:
+    template <typename T>
+        requires (!std::is_same_v<std::decay_t<T>, Funcao>)
+    Funcao(T&& t)
+        : pimpl_{std::make_unique<Modelo<std::decay_t<T>>>(std::forward<T>(t))} {}
+};
+\end{lstlisting}
+
+Com isso, um \emph{functor}, um \emph{lambda} com captura e um ponteiro de
+função --- três tipos sem base comum, que não sabem que \texttt{Funcao} existe
+--- entram no mesmo objeto. O acoplamento é zero: o único contrato é ser
+invocável com \texttt{(Args...)} devolvendo algo conversível para \texttt{R}.
+
+\begin{armadilha}[sem o \texttt{requires}, o construtor \emph{template} sequestra a cópia]
+O construtor \emph{template} aceita qualquer coisa --- inclusive uma
+\texttt{Funcao}. Sem a restrição, \texttt{Funcao f2\{f1\}} escolheria o
+\emph{template} em vez do construtor de cópia e construiria uma
+\texttt{Funcao<Funcao<...>>}: um objeto que embrulha o outro em vez de copiá-lo.
+Compila, roda e faz outra coisa. Toda classe com construtor \emph{template}
+irrestrito tem esse bug latente.
+\end{armadilha}
+
+\paragraph{Por que \texttt{clonar()}.} \texttt{unique\_ptr<Conceito>} não é
+copiável --- logo, sem o \texttt{clonar()} virtual, a \texttt{Funcao} deixaria
+de ser um \emph{valor}. Há exatamente três saídas, e cada biblioteca escolheu
+uma: \texttt{clonar()} virtual dá cópia profunda (é o padrão \emph{Prototype}, e
+o que a \classe{std::function} faz); \texttt{shared\_ptr<const Conceito>} dá
+cópia rasa e barata, com o alvo compartilhado; proibir a cópia é o
+\classe{std::move\_only\_function} do C++23. A \texttt{std::function} escolheu a
+primeira e paga o preço: ela \textbf{exige} \emph{callable} copiável, e um
+\emph{lambda} que captura um \texttt{unique\_ptr} por \gls{move} não cabe nela
+--- \texttt{error: static assertion failed: std::function target must be
+copy-constructible}.
+
+\subsubsection{SBO: medido, não presumido}
+
+\begin{porque}[o problema que o \emph{buffer} pequeno resolve]
+A \texttt{Funcao} acima aloca no \emph{heap} \textbf{sempre}, mesmo para um
+\emph{lambda} sem captura --- que não guarda nada. Como o \emph{callback}
+pequeno é o caso dominante, as implementações reais reservam alguns bytes
+\emph{dentro} do próprio objeto e constroem o alvo ali quando ele cabe: é a
+\textbf{SBO}, \emph{small buffer optimization}. Cabe até quanto? O padrão não
+diz, então só resta medir.
+\end{porque}
+
+O subprojeto substitui o \texttt{operator new} global por uma versão que conta
+alocações e bytes, e constrói \emph{lambdas} com capturas de tamanho conhecido:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/type\_erasure/}: onde exatamente o
+             \texttt{new} aparece.}]
+sizeof(std::function<void()>)  = 32 bytes
+sizeof(v1::Funcao<void()>)     =  8 bytes  (só o unique_ptr)
+
+std::function, sem captura → 0 alocação(ões), INLINE no buffer
+std::function, captura 8B  → 0 alocação(ões), INLINE no buffer
+std::function, captura 16B → 0 alocação(ões), INLINE no buffer
+std::function, captura 24B → 1 alocação(ões), 24 bytes
+std::function, captura 64B → 1 alocação(ões), 64 bytes
+v1::Funcao, sem captura    → 1 alocação(ões), SEMPRE
+\end{lstlisting}
+
+O corte está entre 16 e 24 bytes, e o \texttt{sizeof} de 32 explica por quê:
+ponteiro de vtable, ponteiro de invocação e 16 bytes de \emph{buffer}. A regra é
+da \textbf{implementação}, não do padrão --- e a libstdc++ acrescenta uma
+condição própria: o \emph{callable} precisa ser
+\emph{nothrow-move-constructible} para usar o \emph{buffer}; se o \gls{move}
+puder lançar, ela aloca, porque mover a \texttt{function} teria de mover o
+\emph{buffer}. É o mesmo raciocínio que faz o \texttt{std::vector} copiar em vez
+de mover ao realocar (\cref{sec:value-semantics}).
+
+\begin{regra}[o que cabe de graça numa \texttt{std::function}]
+Um \emph{lambda} que captura \texttt{[this]}, um \texttt{int} ou dois ponteiros
+é gratuito. Um que captura três \classe{std::string} por valor aloca --- na
+construção e em cada cópia. Em código quente, prefira passar o \emph{callable}
+por \emph{template} e reserve a \texttt{std::function} para as fronteiras em que
+o tipo precisa mesmo ser apagado.
+\end{regra}
+
+\begin{armadilha}[substituir o \texttt{operator new} global tem três regras não óbvias]
+\textbf{(1)}~A substituição precisa estar no \textbf{escopo global}:
+declará-la dentro de um \emph{namespace} é erro de compilação, porque ali ela
+não seria substituição, seria outra função com o mesmo nome. \textbf{(2)}~Precisa
+ser \textbf{única no programa} --- é uma função com \emph{linkage} externa
+reservada ---, e por isso não pode ser \texttt{inline}: o cabeçalho que a contém
+só pode ser incluído por \emph{uma} unidade de tradução (\cref{sec:linkage}).
+\textbf{(3)}~Os \texttt{operator delete} pareados também precisam ser
+substituídos: misturar o \texttt{new} substituído com o \texttt{delete} padrão é
+\gls{ub}. De quebra, o GCC emite um \texttt{-Wmismatched-new-delete}
+falso-positivo ao \emph{inlinar} os corpos, suprimido no subprojeto com
+\emph{pragma} local.
+\end{armadilha}
+
+\subsubsection{Vtable manual, sem herança nenhuma}
+
+A versão acima usa \texttt{virtual}, o que é legível e caro: o objeto guardado
+ganha um vptr, e vptr no \emph{buffer} complica o \gls{move}. Dá para apagar o
+tipo \textbf{sem herança}: um \texttt{struct} de ponteiros de função,
+\texttt{static constexpr}, uma instância por tipo \texttt{T}.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A vtable escrita à mão (resumo de
+             \texttt{src/type\_erasure/demo\_implementacao.hpp}).}]
+template <typename R, typename... Args>
+class Funcao {
+    // A "vtable": um struct de ponteiros de função, UMA instância estática
+    // por tipo T. Sem `virtual`, sem vptr no objeto.
+    struct VTable {
+        R    (*invocar)(void*, Args...);
+        void (*destruir)(void*);
+        void*(*clonar)(void*);
+    };
+
+    template <typename T>
+    static const VTable* tabela_de() {
+        static constexpr VTable t{
+            +[](void* p, Args... a) -> R {
+                return (*static_cast<T*>(p))(std::forward<Args>(a)...);
+            },
+            +[](void* p) { delete static_cast<T*>(p); },
+            +[](void* p) -> void* { return new T{*static_cast<T*>(p)}; },
+        };
+        return &t;
+    }
+
+    void*         alvo_ = nullptr;
+    const VTable* vt_   = nullptr;
+};
+\end{lstlisting}
+
+É literalmente o que o compilador faz com \texttt{virtual}, escrito à mão --- e
+essa diferença aparentemente estética muda o que é possível
+(\cref{tab:vtable-manual}). Sem vptr, o objeto guardado pode ir direto para o
+\emph{buffer} interno: é por isso que a libstdc++ escolhe esta forma. O
+\texttt{virtual} da primeira versão é mais claro e serve para aprender.
+
+\begin{table}[htbp]
+\centering
+\caption{\texttt{virtual} contra vtable manual.}
+\label{tab:vtable-manual}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Aspecto} & \texttt{virtual} & \textbf{vtable manual} \\
+\midrule
+ponteiro no \textbf{objeto}   & sim (vptr) & \textbf{não} \\
+permite SBO                   & difícil    & \textbf{sim} \\
+escolher as operações         & fixo       & por chamada \\
+legibilidade                  & melhor     & pior \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{O apagamento que já vem no padrão}
+
+Cada apagador da biblioteca padrão preserva um conjunto diferente de operações,
+e é essa escolha que os distingue: \classe{std::function} preserva
+\textbf{chamar}; \classe{std::any}, destruir e copiar (nem imprimir dá);
+\texttt{std::shared\_ptr<T>}, \textbf{destruir certo};
+\classe{std::move\_only\_function}, chamar sem exigir cópia;
+\classe{std::type\_index}, identidade de tipo em execução.
+
+\texttt{std::any} exige o tipo \textbf{exato} na recuperação:
+\texttt{any\_cast<long>} sobre um \texttt{int} lança \texttt{bad\_any\_cast},
+porque a comparação é \texttt{typeid} exato e não há conversão nenhuma --- a
+forma de ponteiro devolve \texttt{nullptr} em vez de lançar. Quando usar: quase
+nunca. Antes, veja se um \texttt{variant} serve (\cref{sec:vocabulary}) ou se um
+apagamento sob medida preserva exatamente as operações necessárias. \texttt{any}
+é para guardar algo e devolvê-lo intacto \textbf{sem nunca olhar dentro}.
+
+\begin{armadilha}[o \emph{deleter} apagado do \texttt{shared\_ptr}]
+Em \texttt{std::unique\_ptr<T, D>} o \emph{deleter} está \textbf{no tipo}; em
+\texttt{std::shared\_ptr<T>}, está no \textbf{bloco de controle}, com o tipo
+apagado --- e isso tem três consequências. \textbf{(1)}~Um
+\texttt{shared\_ptr<Base>} destrói corretamente mesmo \emph{sem} destrutor
+virtual, porque o \emph{deleter} foi capturado quando o tipo ainda era o
+derivado (o subprojeto verifica que \texttt{\textasciitilde Contada} roda). Isso
+\textbf{não} é licença para omitir o destrutor virtual: só funciona se o
+\texttt{shared\_ptr} foi criado a partir do tipo derivado.
+\textbf{(2)}~Recursos de C saem de graça:
+\texttt{std::shared\_ptr<FILE> f\{fopen(...), \&fclose\}}.
+\textbf{(3)}~O \emph{aliasing constructor} guarda um ponteiro e mantém vivo
+\emph{outro} objeto. O preço é o bloco de controle --- uma alocação, evitável
+com \texttt{make\_shared} --- e uma indireção a mais na destruição.
+\end{armadilha}
+
+O \texttt{std::move\_only\_function} do C++23 aceita o \emph{lambda} que captura
+por \gls{move} e, de quebra, acertou os qualificadores da assinatura:
+\texttt{move\_only\_function<int() const>} tem \texttt{operator()} constante de
+verdade, \texttt{<int() \&\&>} só é invocável em \emph{rvalue}, e
+\texttt{<int() noexcept>} propaga o \texttt{noexcept}. A
+\texttt{std::function} faz um \classe{const\_cast} interno --- exatamente como a
+versão didática acima --- e portanto \emph{mente sobre const-correção}.
+
+Já o \texttt{std::type\_index} é o embrulho que torna \texttt{std::type\_info}
+--- não copiável e sem \texttt{operator<} --- utilizável como chave de
+\texttt{map}. Com ele se constrói o despacho dinâmico \textbf{aberto}: um
+\texttt{map<type\_index, handler>} em que qualquer módulo registra um tipo novo
+sem tocar em nada, base do \emph{plugin registry}
+(\cref{sec:plugin-registry}) e do ECS (\cref{sec:ecs}). O custo é uma busca em
+\texttt{std::map} por chamada, contra uma indireção só na vtable.
+
+\begin{armadilha}[\texttt{typeid(T).name()} é manglado e não é portável]
+O nome devolvido é o símbolo decorado pelo compilador e muda entre compiladores
+e entre versões do mesmo compilador. Para exibir, use
+\texttt{abi::\_\_cxa\_demangle} do GCC e do Clang. \textbf{Nunca serialize esse
+nome}: um arquivo gravado hoje pode não ser lido pelo binário de amanhã.
+\end{armadilha}
+
+\subsubsection{A medição que decide}
+\label{sec:erasure-medicao}
+
+Tabelas comparando \texttt{virtual}, \gls{crtp}, \texttt{variant} e apagamento
+de tipo existem em todo lugar; o que falta é o número. O subprojeto soma a área
+de 200\,000 formas, alternando círculos e quadrados para que a predição de
+desvio não favoreça ninguém, com média de 20 rodadas e \texttt{-O2}:
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/type\_erasure/}: 200\,000 elementos, 20
+             rodadas, \texttt{-O2}.}]
+virtual (unique_ptr<Base>)           0.514 ms/rodada    3.9×
+CRTP (vetores homogêneos)            0.130 ms/rodada    1.0×
+variant + visit                      0.131 ms/rodada    1.0×
+type erasure (unique_ptr interno)    0.517 ms/rodada    4.0×
+
+Memória por elemento:
+  virtual      :  8 B (ponteiro) + heap: vptr + dado
+  CRTP         :  8 B, contíguo, SEM vptr
+  variant      : 16 B, contíguo (maior alternativa + tag)
+  type erasure :  8 B (ponteiro) + heap
+\end{lstlisting}
+
+\begin{porque}[o que domina o resultado não é o despacho]
+A leitura ingênua atribuiria o 4× ao custo da chamada indireta, e os próprios
+números a desmentem: \texttt{variant + visit} \emph{também} é despacho dinâmico
+--- um salto por tabela --- e empatou com o CRTP, que não tem despacho nenhum. O
+que separa os dois grupos é a \textbf{localidade}: \texttt{variant} e CRTP
+percorrem memória contígua, enquanto \texttt{virtual} e apagamento de tipo
+percorrem um vetor de \emph{ponteiros} para objetos espalhados no \emph{heap}.
+Uma falta de cache custa cerca de 200 ciclos; uma chamada indireta bem predita,
+cerca de~2. O 4× é o cache falando, não a vtable --- e a consequência prática é
+que eliminar o \texttt{virtual} sem mudar o \emph{layout} não resolveria nada.
+\end{porque}
+
+\subsubsection{O problema da expressão}
+
+Você tem \textbf{tipos} (círculo, quadrado, \ldots) e \textbf{operações} (área,
+perímetro, desenhar, \ldots), e só dá para deixar \emph{um} dos dois eixos
+barato de estender.
+
+\begin{table}[htbp]
+\centering
+\caption{O problema da expressão: cada abordagem escolhe um eixo.}
+\label{tab:expressao}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Abordagem} & \textbf{Tipo novo} & \textbf{Operação nova} \\
+\midrule
+\texttt{virtual}         & fácil: 1 classe & \textbf{caro}: mexe na base e em
+                                             todo derivado \\
+\texttt{variant + visit} & \textbf{caro}: recompila todos os \emph{visitors}
+                                           & fácil: outro \emph{visitor} \\
+apagamento de tipo       & fácil, e sem tocar no tipo & \textbf{caro}: mexe no
+                                             \texttt{Conceito} \\
+\gls{crtp}               & fácil & fácil --- \emph{mas sem heterogeneidade em
+                                   execução} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A última linha é uma armadilha de leitura: o CRTP parece ganhar dos dois lados
+porque \textbf{não resolve o mesmo problema} --- ele não dá container
+heterogêneo. Se você precisa de um \texttt{vector<Forma>} com tipos decididos em
+execução, o CRTP não é candidato; foi por isso que a medição da
+\cref{sec:erasure-medicao} precisou dar a ele \emph{dois vetores homogêneos}.
+
+\begin{regra}[como decidir, na ordem]
+\textbf{1.}~Tipos conhecidos, lista curta e estável? $\rightarrow$
+\texttt{variant}: contíguo, sem alocação, exaustividade verificada em
+compilação. \textbf{2.}~Tipos abertos e você controla as classes? $\rightarrow$
+herança + \texttt{virtual}, o mais legível. \textbf{3.}~Tipos abertos e você
+\textbf{não} controla as classes (\texttt{int}, \texttt{std::string},
+terceiros)? $\rightarrow$ apagamento de tipo. \textbf{4.}~Sem heterogeneidade em
+execução, só reuso de código? $\rightarrow$ \emph{template}/CRTP, e nem pense em
+vtable.
+\end{regra}
+
+\subsubsection{Polimorfismo com semântica de valor}
+
+A crítica de Sean Parent (\emph{Inheritance Is The Base Class of Evil},
+GoingNative 2013) cabe em uma frase: herdar para ser polimórfico contamina o seu
+tipo com ponteiro, \emph{heap} e \emph{aliasing} --- problemas que ele não
+tinha. A alternativa é uma inversão simples de enunciar e difícil de perceber
+sozinho: \textbf{o polimorfismo mora no container, não no tipo guardado}.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O tipo-valor polimórfico (resumo de
+             \texttt{src/type\_erasure/demo\_pratica.hpp}).}]
+// O contrato, explícito. Sem ele, um tipo inadequado gera erro dentro de
+// Modelo<T> -- dez níveis de template abaixo da linha do usuário.
+template <typename T>
+concept SabeDesenhar = requires(const T& t, int nivel) {
+    { t.desenhar(nivel) } -> std::same_as<void>;
+    { t.nome() }          -> std::convertible_to<std::string>;
+};
+
+class Desenhavel {
+    struct Conceito {
+        virtual ~Conceito() = default;
+        virtual void                      desenhar(int) const = 0;
+        virtual std::unique_ptr<Conceito> clonar()      const = 0;
+    };
+    template <typename T>
+    struct Modelo final : Conceito {
+        T v;
+        explicit Modelo(T x) : v{std::move(x)} {}
+        void desenhar(int n) const override { v.desenhar(n); }
+        std::unique_ptr<Conceito> clonar() const override {
+            return std::make_unique<Modelo>(v);
+        }
+    };
+    std::unique_ptr<Conceito> p_;
+
+public:
+    template <SabeDesenhar T>
+    Desenhavel(T x) : p_{std::make_unique<Modelo<T>>(std::move(x))} {}
+
+    // Rule of 5 -- é isto que dá semântica de valor
+    Desenhavel(const Desenhavel& o) : p_{o.p_->clonar()} {}
+    Desenhavel& operator=(const Desenhavel& o) {
+        if (this != &o) p_ = o.p_->clonar();
+        return *this;
+    }
+    Desenhavel(Desenhavel&&) noexcept            = default;
+    Desenhavel& operator=(Desenhavel&&) noexcept = default;
+    ~Desenhavel()                                = default;
+
+    void desenhar(int n = 0) const { p_->desenhar(n); }
+};
+\end{lstlisting}
+
+O que isso compra é uma cena copiável:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={Uma cena por valor, com cópia profunda.}]
+std::vector<Desenhavel> cena;          // por VALOR, não unique_ptr
+cena.emplace_back(Ponto{1, 2});
+cena.emplace_back(Texto{"olá"});
+cena.emplace_back(Grupo{"sub", {Ponto{9,9}, Texto{"aninhado"}}});
+
+std::vector<Desenhavel> copia = cena;  // PROFUNDA -- nem compilaria
+                                       // com unique_ptr<Base>
+\end{lstlisting}
+
+\texttt{Ponto}, \texttt{Texto} e \texttt{Grupo} são \texttt{struct}s comuns: sem
+vptr, copiáveis, usáveis fora de qualquer cena. E o \texttt{Grupo}, que guarda
+\texttt{std::vector<Desenhavel>}, é o padrão \emph{Composite} construído sobre
+valores em vez de ponteiros (\cref{sec:patterns}).
+
+\begin{table}[htbp]
+\centering
+\caption{\texttt{unique\_ptr<Base>} contra o tipo-valor polimórfico.}
+\label{tab:valor-vs-ptr}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Aspecto} & \texttt{unique\_ptr<Base>} & \texttt{Desenhavel} \\
+\midrule
+copiável                      & \textbf{não} & sim \\
+o tipo precisa herdar         & sim & \textbf{não} \\
+funciona com \texttt{int}/\texttt{string} & não & se atender ao \gls{concept} \\
+pode ser \texttt{nullptr}     & sim & \textbf{não} \\
+\texttt{==} e \texttt{<}      & compara \textbf{ponteiro} & pode ser por valor \\
+aloca                         & sim & sim \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A linha ``pode ser \texttt{nullptr}'' merece atenção: \texttt{Desenhavel} não tem
+construtor padrão, logo não existe ``desenhável vazio'' --- o mesmo argumento de
+\texttt{optional<T>} contra \texttt{T*} da \cref{sec:vocabulary}. E a última
+linha é a honestidade necessária: os dois alocam e pagam indireção. O ganho aqui
+é de \textbf{projeto}, não de velocidade: a medição pôs os dois na mesma faixa,
+cerca de 4× o CRTP.
+
+\begin{porque}[por que o \emph{concept} não é enfeite]
+Sem o \texttt{SabeDesenhar}, um tipo inadequado produz o erro \emph{dentro} de
+\texttt{Modelo<T>}, com cinco linhas de ``\emph{required from}''. Com ele, o
+erro volta para a linha do usuário e diz qual expressão faltou: \texttt{note:
+the required expression 't.desenhar(nivel)' is invalid}. E o \emph{concept} vira
+documentação executável --- ``o que preciso implementar para caber aqui?'' passa
+a ter resposta em quatro linhas de código, e não num comentário que envelhece
+(\cref{sec:concepts}).
+\end{porque}
+
+\begin{armadilha}[quando NÃO fazer apagamento de tipo]
+\textbf{(a)}~Você controla todos os tipos e a lista é curta: \texttt{variant} é
+4× mais rápido, não aloca e verifica exaustividade --- o apagamento de tipo não
+tem exaustividade nenhuma. \textbf{(b)}~O conjunto de operações é grande ou
+instável: cada operação nova entra em \emph{três} lugares (Conceito, Modelo e
+\emph{wrapper}), e uma interface de vinte métodos vira sessenta linhas de
+repasse mecânico. \textbf{(c)}~Não há heterogeneidade em execução: um
+\emph{template} resolve em compilação e some. \textbf{(d)}~\texttt{virtual} já
+resolve e é mais legível: são cerca de 40 linhas de \emph{boilerplate} para o
+que \texttt{virtual} faz em~3.
+\end{armadilha}
+
+Existem bibliotecas que geram esse \emph{boilerplate} --- \texttt{dyno}, de
+Louis Dionne; \texttt{Boost.TypeErasure}; \texttt{folly::Poly} --- e todas custam
+macro ou muita metaprogramação, porque a linguagem ainda não tem reflexão. O
+C++26 deve mudar esse quadro.
+
+% =============================================================================
+\subsection{Da unidade de tradução ao binário}
+\label{sec:linkage}
+% =============================================================================
+
+\subsubsection{O que é uma unidade de tradução}
+
+O C++ não compila ``o projeto''. Ele compila \textbf{uma unidade de tradução por
+vez}, em total ignorância das outras. Uma \textbf{unidade de tradução} (TU, de
+\emph{translation unit}) é \emph{um \texttt{.cpp} mais tudo o que os
+\texttt{\#include} dele trouxeram, recursivamente}. Cada TU vira um
+arquivo-objeto com duas listas --- os símbolos que ela \textbf{define} e os que
+\textbf{precisa} --- e o \emph{linker} cola tudo no fim
+(\cref{fig:tu-pipeline}). Praticamente todo erro confuso de \emph{build} é
+consequência direta desse modelo.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=6mm and 9mm]
+  \node[caixa] (a) {\texttt{a.hpp}};
+  \node[caixa, below=3mm of a] (m) {\texttt{main.cpp}};
+  \node[caixa, below=3mm of m] (b) {\texttt{b.hpp}};
+  \node[caixaforte, right=10mm of m] (pp) {pré-processador\\\scriptsize \texttt{g++ -E}};
+  \node[caixa, right=9mm of pp] (tu) {uma TU\\\scriptsize um texto só};
+  \node[caixaforte, right=9mm of tu] (cc) {compilador\\\scriptsize \texttt{g++ -c}};
+  \node[caixa, below=9mm of cc] (o) {\texttt{main.o}\\\scriptsize símbolos};
+  \node[caixaforte, left=9mm of o] (ld) {\emph{linker}\\\scriptsize \texttt{ld}};
+  \node[caixaok, left=9mm of ld] (exe) {executável};
+  \node[caixafraca, below=6mm of ld] (outros) {\texttt{outra.o}, \texttt{libfmt.a}};
+  \draw[aresta] (a) -- (pp); \draw[aresta] (m) -- (pp); \draw[aresta] (b) -- (pp);
+  \draw[seta] (pp) -- (tu); \draw[seta] (tu) -- (cc); \draw[seta] (cc) -- (o);
+  \draw[seta] (o) -- (ld); \draw[seta] (ld) -- (exe); \draw[setafraca] (outros) -- (ld);
+\end{tikzpicture}
+\caption{O \emph{pipeline} de \texttt{src/linkage/}. O compilador nunca vê duas
+         TUs ao mesmo tempo; quem descobre que faltou ou sobrou uma definição é
+         o \emph{linker} --- e por isso os erros dele são de outra natureza.}
+\label{fig:tu-pipeline}
+\end{figure}
+
+Ver cada etapa é uma linha de \emph{shell}: \texttt{g++ -E} para o
+pré-processador, \texttt{g++ -c} para o objeto, \texttt{nm -C arq.o} para os
+símbolos desmanglados e \texttt{nm -C --undefined-only arq.o} para os que a TU
+\emph{precisa}.
+
+\subsubsection{Quanto custa um \texttt{\#include}}
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/linkage/}: linhas depois do pré-processador,
+             GCC 13.3 com \texttt{-std=c++20}.}]
+arquivo vazio       →        6 linhas
+<cstddef>           →      253
+<vector>            →   26.258
+<algorithm>         →   28.270
+<string>            →   31.825
+<iostream>          →   43.165
+<ranges>            →   44.309
+\end{lstlisting}
+
+Cada TU paga esse custo \textbf{inteiro}, de novo. Um projeto com cem
+\texttt{.cpp} que incluem \cabecalho{string} compila \texttt{<string>} cem
+vezes: é por isso que \emph{build} de C++ é lento.
+
+\begin{regra}[reproduza os números que você cita]
+A primeira versão desta tabela, no repositório, era \textbf{chutada}: cinco dos
+seis números estavam errados, e o \cabecalho{cstddef} errado por um fator de
+quatro. Reproduzir custou quatro linhas de \emph{shell} ---
+\texttt{echo "\#include <\$h>" > /tmp/t.cpp} seguido de
+\texttt{g++ -std=c++20 -E /tmp/t.cpp | wc -l} para cada cabeçalho. Os valores
+mudam com a versão da libstdc++, o que é mais um motivo para medir no seu
+\emph{toolchain} em vez de copiar os de alguém.
+\end{regra}
+
+As saídas, em ordem de eficácia: \textbf{módulos} (C++20 --- a interface é
+compilada uma vez e importada em forma binária); \textbf{declaração adiantada}
+(\texttt{class Widget;} em vez de \texttt{\#include}, quando só se usa ponteiro
+ou referência); e \textbf{pimpl}, assunto da \cref{sec:linkage-abi}.
+\emph{Precompiled headers} e \emph{unity builds} atacam o sintoma.
+
+\begin{table}[htbp]
+\centering
+\caption{Cada mensagem, a etapa em que nasce e a causa típica.}
+\label{tab:erros-etapa}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Mensagem} & \textbf{Etapa} & \textbf{Causa típica} \\
+\midrule
+\texttt{No such file or directory}     & pré-processador & \texttt{-I} faltando \\
+\texttt{'X' was not declared}          & compilador & \texttt{\#include} faltando \\
+\texttt{invalid use of incomplete type}& compilador & só a \emph{forward declaration} \\
+\texttt{undefined reference to 'f()'}  & \textbf{linker} & declarou, não definiu \\
+\texttt{multiple definition of 'f()'}  & \textbf{linker} & função não-\texttt{inline}
+                                                           em cabeçalho \\
+\texttt{undefined reference to vtable} & \textbf{linker} & a \emph{key function}
+                                                           não tem corpo \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{regra}[reconhecer a etapa resolve metade do problema]
+Erro do \textbf{compilador} $\rightarrow$ falta uma \textbf{declaração}. Erro do
+\textbf{linker} $\rightarrow$ falta (ou sobra) uma \textbf{definição}. Nenhuma
+quantidade de \texttt{\#include} conserta um \texttt{undefined reference}.
+\end{regra}
+
+A última linha da tabela é a que ninguém adivinha. O GCC emite a \gls{vtable} de
+uma classe na TU que define a \textbf{primeira função virtual
+não-\texttt{inline} e não-pura} --- a \emph{key function}. Se você declarou
+\texttt{virtual void f();} e nunca a definiu, a vtable não é emitida em lugar
+nenhum, e o \emph{linker} reclama de um símbolo que você nunca escreveu.
+
+\subsubsection{A ODR, medida com duas TUs reais}
+
+A \textbf{One Definition Rule} tem três partes, e só a terceira surpreende:
+\textbf{(1)}~em \emph{uma} TU, cada entidade pode ser declarada muitas vezes e
+definida no máximo uma; \textbf{(2)}~no \emph{programa}, cada função ou variável
+não-\texttt{inline} pode ser definida no máximo uma vez; \textbf{(3)}~classes,
+funções \texttt{inline} e \emph{templates} \textbf{podem} ser definidos em
+várias TUs --- mas as definições precisam ser \textbf{token a token idênticas}.
+Se não forem, é \gls{ub}, e o \emph{linker} \textbf{não é obrigado a avisar}.
+
+Este é o único subprojeto do repositório com múltiplas unidades de tradução, e
+não por capricho. \texttt{unidade\_a.cpp} e \texttt{unidade\_b.cpp} são
+idênticos a menos do nome, e cada um devolve os \emph{seus} endereços para as
+mesmas entidades de \texttt{comum.hpp}:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O palco do experimento (resumo de
+             \texttt{src/linkage/comum.hpp}).}]
+inline int funcao_inline() { return 1; }   // UMA definição no programa
+static int funcao_static() { return 2; }   // uma cópia POR TU
+namespace { int funcao_anonima() { return 3; } }   // idem, forma moderna
+
+inline int contador_inline = 0;   // C++17: UM objeto no programa
+static int contador_static = 0;   // uma cópia POR TU
+
+const int  kConstante = 42;       // const em namespace: linkage INTERNA
+constexpr  int kConstexpr = 43;   // constexpr implica const, logo interna
+inline constexpr int kConstexprInline = 44;        // externa
+
+template <typename T>
+T identidade(T v) { return v; }   // instanciado em cada TU, e fundido
+\end{lstlisting}
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/linkage/}: os endereços vêm do \emph{linker},
+             não de simulação.}]
+inline int f()         MESMO endereço        → 1 no programa inteiro
+static int f()         endereços DIFERENTES  → 1 por TU
+namespace{} int f()    endereços DIFERENTES  → 1 por TU
+inline int var         MESMO endereço        → 1 no programa inteiro
+static int var         endereços DIFERENTES  → 1 por TU
+const int k = 42       endereços DIFERENTES  → 1 por TU
+inline constexpr int   MESMO endereço        → 1 no programa inteiro
+template<T> T f(T)     MESMO endereço        → 1 no programa inteiro
+\end{lstlisting}
+
+Quatro regras saem daí de uma vez: \texttt{inline} faz o \emph{linker}
+\textbf{fundir} as cópias das TUs; \texttt{static} e o \emph{namespace} anônimo
+dão \emph{linkage} interna, e cada TU fica com a sua; \texttt{const} em escopo de
+\emph{namespace} é implicitamente \texttt{static} em C++ (em C seria externa!);
+e um \emph{template} é instanciado em cada TU, com as cópias fundidas como se
+fossem \texttt{inline}.
+
+\begin{armadilha}[o \texttt{static} em cabeçalho: N variáveis, não uma]
+As duas TUs incrementam \emph{os dois} contadores dez vezes cada:
+\begin{lstlisting}[style=bt, language=bash, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+| variável         | vista de A | vista de B |
+| contador_inline  |         20 |         20 |   ← um objeto
+| contador_static  |         10 |         10 |   ← DUAS variáveis
+\end{lstlisting}
+O bug é traiçoeiro por três motivos: linka sem erro nenhum; funciona
+perfeitamente enquanto houver \emph{uma} TU incluindo o cabeçalho; e quebra no
+dia em que alguém o inclui num segundo \texttt{.cpp} --- quando o sintoma (``o
+\emph{cache} não persiste'') não aponta para o cabeçalho. Antes do C++17 a saída
+era \texttt{extern} no cabeçalho mais uma definição num \texttt{.cpp}; desde o
+C++17, \texttt{inline} resolve no próprio cabeçalho.
+\end{armadilha}
+
+\begin{porque}[\texttt{inline} não é sobre \emph{inlining}]
+A palavra engana desde 1998. \texttt{inline} significa \emph{``esta entidade pode
+ser definida em várias TUs; o \emph{linker} deve escolher uma e descartar as
+outras''}. Ela não obriga o compilador a expandir a chamada --- essa decisão é
+do otimizador, que a toma sozinho mesmo em funções não marcadas e a ignora em
+funções marcadas que sejam grandes demais. Para \textbf{forçar} a expansão
+existe \texttt{[[gnu::always\_inline]]}; para \textbf{impedir},
+\texttt{[[gnu::noinline]]}. São implicitamente \texttt{inline}: funções
+definidas no corpo da classe, funções \texttt{constexpr} e \texttt{consteval}, e
+membros \texttt{static constexpr} (C++17).
+\end{porque}
+
+\begin{armadilha}[a violação de ODR que linka, roda e corrompe]
+\begin{lstlisting}[style=bt, language=C++, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+struct Widget {
+    int a;
+#ifndef NDEBUG
+    int contador_de_depuracao;   // só em debug
+#endif
+};
+// a.cpp SEM -DNDEBUG → sizeof(Widget) == 8
+// b.cpp COM -DNDEBUG → sizeof(Widget) == 4
+\end{lstlisting}
+As duas TUs discordam sobre o \emph{layout} da mesma classe. O \emph{linker} não
+compara definições de classe --- ele só vê nomes de símbolo. O programa linka,
+roda, e escreve fora dos limites do objeto quando cruza a fronteira. Outras
+formas da mesma armadilha: \texttt{-D} diferente entre alvos;
+\texttt{\#pragma pack} ativo numa TU e não na outra; \texttt{-std} diferente;
+linkar \emph{Debug} com \emph{Release} da mesma biblioteca
+(\texttt{\_GLIBCXX\_ASSERTIONS} muda o \emph{layout} dos containers); duas
+versões de uma dependência \emph{header-only} na mesma árvore. Defesas:
+\textbf{flags uniformes} --- é para isso que serve o \emph{build system}
+(\cref{sec:meson}) ---, \texttt{-flto} com \texttt{-Wodr},
+\texttt{--detect-odr-violations} no \texttt{gold}/\texttt{lld}, o ASan
+(\cref{sec:sanitizers}), e \textbf{nunca} \texttt{\#if} em torno de membro de
+classe pública.
+\end{armadilha}
+
+\subsubsection{Os três tipos de \emph{linkage}}
+
+\emph{Linkage} responde a uma pergunta só: \textbf{este nome pode se referir à
+mesma entidade que um nome igual em outro lugar?} \textbf{Externa}: sim,
+inclusive em outra TU. \textbf{Interna}: sim, mas só dentro desta TU.
+\textbf{Nenhuma}: não; o nome só existe onde foi declarado.
+
+\begin{regra}[não confunda \emph{linkage}, escopo e tempo de vida]
+São três eixos independentes: \emph{linkage} diz quem pode se referir ao nome,
+\textbf{escopo} diz onde o nome é visível, \textbf{tempo de vida} diz quando o
+objeto existe. Uma variável \texttt{static} dentro de uma função tem
+\emph{linkage} \textbf{nenhuma}, escopo de \textbf{bloco} e tempo de vida do
+\textbf{programa inteiro} --- três respostas diferentes, na mesma declaração.
+\end{regra}
+
+\begin{table}[htbp]
+\centering
+\caption{\emph{Linkage} por forma de declaração.}
+\label{tab:linkage-formas}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Declaração em escopo de \emph{namespace}} & \textbf{\emph{Linkage}} \\
+\midrule
+\texttt{int x;} \quad \texttt{void f()\{\}} \quad \texttt{inline void f()\{\}} & \textbf{externa} \\
+\texttt{static int x;} \quad \texttt{static void f()\{\}} & interna \\
+\texttt{const int x = 1;}            & interna \quad --- \emph{a surpresa} \\
+\texttt{constexpr int x = 1;}        & interna (implica \texttt{const}) \\
+\texttt{inline constexpr int x = 1;} & \textbf{externa} \\
+\texttt{namespace \{ int x; \}}      & interna \\
+\texttt{extern const int x = 1;}     & \textbf{externa} \\
+\texttt{typedef} / \texttt{using} / \emph{enum} sem nome & nenhuma \\
+\midrule
+\textbf{Declaração em escopo de bloco} & \\
+\midrule
+\texttt{int x;} (local comum)           & nenhuma \\
+\texttt{static int x;} (local estático) & nenhuma --- \emph{mas dura o programa todo} \\
+\texttt{extern int x;}                  & \textbf{externa} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A linha que mais surpreende é \texttt{const int x = 1;}. Em C ela teria
+\emph{linkage} externa; em C++, interna. A razão é prática: permite pôr
+constantes em cabeçalhos sem \texttt{multiple definition} --- cada TU ganha a
+sua cópia e, como são constantes iguais, ninguém percebe. O preço é o que a
+medição mostrou: endereços diferentes em cada TU. Se você precisa de \emph{um}
+objeto, escreva \texttt{inline constexpr}.
+
+\subsubsection{\texttt{static}: uma palavra, quatro significados}
+
+\begin{table}[htbp]
+\centering
+\caption{Os quatro \texttt{static}, que não têm nada em comum entre si.}
+\label{tab:quatro-static}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Onde aparece} & \textbf{O que significa} \\
+\midrule
+escopo de \emph{namespace} & \emph{linkage} \textbf{interna} \\
+membro de classe           & \textbf{um por classe}, não por objeto (fora do
+                             \texttt{sizeof}) \\
+método de classe           & \textbf{sem \texttt{this}}, chamável sem objeto \\
+local de função            & \textbf{tempo de vida do programa}, \emph{linkage}
+                             nenhuma \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Quatro conceitos ortogonais na mesma palavra --- herança do C, que o C++ não
+pôde consertar sem quebrar tudo. Para o primeiro significado, prefira o
+\textbf{\emph{namespace} anônimo}: mesmo efeito, sem ambiguidade, e funciona
+também para \textbf{tipos}, coisa que \texttt{static} não faz. O compilador dá
+ao \emph{namespace} um nome único por TU e insere um \texttt{using namespace}
+implícito; os nomes ficam inacessíveis de fora, e o otimizador ganha uma
+informação valiosa --- ninguém de fora chama, então ele pode \emph{inlinar} ou
+eliminar à vontade.
+
+\begin{armadilha}[\emph{namespace} anônimo nunca em cabeçalho]
+Cada TU que incluir ganha a sua cópia: é o mesmo bug do \texttt{static} em
+cabeçalho, agora com \textbf{tipos} --- duas classes com o mesmo nome e
+identidades diferentes, o que faz \texttt{dynamic\_cast} e \texttt{typeid}
+discordarem entre TUs.
+\end{armadilha}
+
+\begin{armadilha}[o \texttt{static} local é \emph{thread-safe}, mas não de graça]
+Desde o C++11 a \textbf{inicialização} de um \texttt{static} local é
+garantidamente \emph{thread-safe}: se duas \emph{threads} chegarem juntas, uma
+inicializa e a outra espera. O subprojeto mede --- 8 \emph{threads} chamando ao
+mesmo tempo, \textbf{1 inicialização} ---, e é isso que torna o \emph{Meyers
+singleton} correto sem \emph{mutex}. O custo é uma \emph{guard variable} e uma
+checagem atômica em \emph{cada} chamada (\texttt{\_\_cxa\_guard\_acquire});
+depois da primeira vez é uma leitura atômica relaxada, barata mas não gratuita.
+E a garantia é sobre a \emph{inicialização}, não sobre o uso: se várias
+\emph{threads} mutam o objeto depois, ainda é preciso sincronizar
+(\cref{sec:concorrencia}).
+\end{armadilha}
+
+O \texttt{static} local resolve, de quebra, o \emph{static initialization order
+fiasco}: globais de TUs diferentes têm ordem de inicialização
+\textbf{indefinida} entre si, ao passo que um \texttt{static} local é
+inicializado na primeira chamada --- quando tudo de que ele depende já existe.
+
+Quanto a \texttt{extern}, ele diz ``isto é uma \textbf{declaração}, não uma
+definição''. Era o único jeito de ter uma global compartilhada antes do C++17;
+hoje \texttt{inline int nivel\_de\_log = 3;} faz o mesmo em uma linha. Continua
+necessário em três casos: \texttt{extern const int k;} (forçar \emph{linkage}
+externa numa constante), \texttt{extern "C"} (\emph{linkage} de
+\emph{linguagem}, coisa diferente) e \texttt{extern template} (suprimir a
+instanciação numa TU para acelerar o \emph{build}).
+
+\subsubsection{\emph{Name mangling} e \texttt{extern "C"}}
+
+Em C, o símbolo de \texttt{int soma(int,int)} é \texttt{soma}. Em C++ é
+\texttt{\_Z4somaii} --- porque o C++ precisa distinguir sobrecargas,
+\emph{namespaces} e instanciações de \emph{template}, e o formato de arquivo
+objeto só tem \emph{strings} para trabalhar. Essa codificação é o \textbf{name
+mangling}.
+
+\begin{lstlisting}[style=bt, language=bash,
+    caption={Saída de \texttt{src/linkage/}: os símbolos reais do binário,
+             copiados de \texttt{nm}.}]
+int f(int)          → _ZN13demo_extern_c8exemplos1fEi
+int f(double)       → _ZN13demo_extern_c8exemplos1fEd
+int f(int, int)     → _ZN13demo_extern_c8exemplos1fEii
+extern "C" f_c(int) → f_c                              ← nome CRU
+
+_Z                prefixo de nome manglado
+N ... E           nome aninhado (namespaces)
+13demo_extern_c   comprimento + nome
+8exemplos         comprimento + nome
+1f                comprimento + nome da função
+ii                os PARÂMETROS: int, int
+\end{lstlisting}
+
+O \emph{mangling} codifica \emph{namespace}, nome e \textbf{tipos dos
+parâmetros}. Ele \textbf{não} codifica o tipo de \emph{retorno} --- e é
+exatamente por isso que sobrecarregar apenas pelo retorno é proibido na
+linguagem: os dois símbolos seriam o mesmo. Para ler à mão, \texttt{nm -C} já
+desmangla, e \texttt{echo '\_Z4somaii' | c++filt} resolve casos avulsos.
+
+\begin{armadilha}[o esquema de \emph{mangling} não é padronizado]
+GCC e Clang usam o Itanium C++ ABI; o MSVC usa outro, completamente diferente. É
+por isso que um \texttt{.lib} do MSVC não linka com o MinGW --- e é o motivo
+mais profundo de toda API binária estável do mundo ser exposta em C.
+\end{armadilha}
+
+\texttt{extern "C"} diz: ``para esta declaração, use a convenção do C''. Não muda
+a linguagem em que o código é escrito --- muda como o \textbf{símbolo} é nomeado.
+O subprojeto tem uma API em C \emph{de verdade}, compilada pelo \texttt{cc} e
+não pelo \texttt{c++} (o Meson escolhe o compilador pela extensão do arquivo), e
+o cabeçalho que os dois lados compartilham traz o idioma canônico:
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={O idioma que todo cabeçalho de biblioteca C traz no topo (resumo de
+             \texttt{src/linkage/c\_api.h}).}]
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int         soma_c(int a, int b);
+const char* nome_da_linguagem_c(void);
+
+typedef int (*transformador_t)(int);
+int aplica_c(transformador_t f, int v);
+
+#ifdef __cplusplus
+}  /* extern "C" */
+#endif
+\end{lstlisting}
+
+Sem ele, o C++ geraria uma chamada para \texttt{\_Z6soma\_cii} e o \emph{linker}
+responderia \texttt{undefined reference to 'soma\_c(int, int)'} --- enquanto
+\texttt{nm c\_api.o} mostraria, ali, um \texttt{T soma\_c}. É o erro de
+integração C/C++ mais comum que existe, e o \texttt{\_\_cplusplus} é o que
+permite ao \emph{mesmo} arquivo servir aos dois compiladores.
+
+\begin{armadilha}[o que \texttt{extern "C"} proíbe --- e o que ele não protege]
+\textbf{Não permite}: sobrecarga (há um único símbolo \texttt{soma}, não dois),
+\emph{templates} com \emph{linkage} C, funções membro não estáticas.
+\textbf{Permite}: usar C++ à vontade \emph{dentro} do corpo --- classes,
+exceções, STL. E não protege contra a pior das travessias: \textbf{exceções não
+atravessam}. Uma exceção que escapa de uma função \texttt{extern "C"} chamada a
+partir de C é \gls{ub} --- as \emph{frames} de C não têm informação de
+\emph{unwinding}, e os destrutores intermediários não rodam:
+\begin{lstlisting}[style=bt, language=C++, frame=none,
+                   xleftmargin=0pt, xrightmargin=0pt]
+extern "C" int minha_api(int x) noexcept {
+    try { return impl(x); }
+    catch (const std::exception& e) { guarda_erro(e.what()); return -1; }
+    catch (...) { return -2; }
+}
+\end{lstlisting}
+Erros viram \textbf{códigos de retorno} na fronteira --- é o motivo de toda API
+de C ser assim (\cref{sec:errors}). E a outra fronteira que vaza: um objeto
+alocado com \texttt{new} no C++ \textbf{não} pode ser liberado com
+\texttt{free} no C. Exporte sempre um \texttt{minha\_api\_free(ptr)} junto do
+que aloca.
+\end{armadilha}
+
+Sobre \emph{callbacks}: um \emph{lambda} sem captura converte para ponteiro de
+função, mas o resultado tem \emph{linkage} C++ --- e, a rigor, o tipo de um
+ponteiro para função com \emph{linkage} C é diferente do de uma função com
+\emph{linkage} C++ (GCC e Clang aceitam os dois; o padrão não garante). Um
+\emph{lambda} \textbf{com} captura não converte de jeito nenhum, porque não há
+onde guardar o estado; o idioma é o parâmetro \texttt{void* user\_data} que
+quase toda API de C oferece, com uma função \texttt{extern "C"} de trampolim.
+
+\subsubsection{ABI: o contrato binário}
+\label{sec:linkage-abi}
+
+\begin{porque}[por que a ABI é pior de quebrar do que a API]
+\textbf{API} é o contrato de \emph{código-fonte}: quais funções existem, com que
+assinatura. Quebrá-la é desagradável e \textbf{seguro} --- o compilador reclama,
+alguém conserta, recompila. \textbf{\Gls{abi}} é o contrato \emph{binário}.
+Quebrá-la sem quebrar a API é o pior dos mundos: recompila, linka, e
+\textbf{corrompe memória em tempo de execução} --- sem uma linha de aviso.
+\end{porque}
+
+Fazem parte da ABI mais coisas do que se imagina: os nomes manglados; o
+\texttt{sizeof} e o \emph{layout} de cada classe exposta; a \textbf{ordem das
+entradas na vtable}; a convenção de chamada; quem destrói cada argumento; o
+formato das exceções --- e o \emph{layout} de \textbf{todo tipo da biblioteca
+padrão que apareça na sua interface}. Esse último é o que pega: se a sua
+biblioteca expõe \texttt{void configura(const std::string\&)}, o \emph{layout} de
+\classe{std::string} faz parte da \textbf{sua} ABI. Foi exatamente isso o
+rompimento do GCC~5 (\texttt{\_GLIBCXX\_USE\_CXX11\_ABI}): \texttt{std::string}
+deixou de ser \emph{copy-on-write} e todo o ecossistema teve de recompilar --- o
+símbolo passou a carregar \texttt{\_\_cxx11} no nome justamente para que a
+incompatibilidade virasse \textbf{erro de \emph{linker}} em vez de corrupção
+silenciosa.
+
+\begin{table}[htbp]
+\centering
+\caption{Mudanças que quebram a ABI sem quebrar a API.}
+\label{tab:abi-quebras}
+\footnotesize
+\begin{tabular}{@{}lcc@{}}
+\toprule
+\textbf{Mudança} & \textbf{API} & \textbf{ABI} \\
+\midrule
+acrescentar ou reordenar membro de dado          & ok & ✗ \\
+acrescentar ou reordenar método \textbf{virtual} & ok & ✗ \\
+tornar virtual um método comum                   & ok & ✗ \\
+acrescentar parâmetro com valor padrão           & ok & ✗ \\
+mudar um \emph{enum} de \texttt{int} para \texttt{char} & ok & ✗ \\
+tornar \texttt{inline} uma função                & ok & ✗ \\
+\midrule
+acrescentar método \textbf{não} virtual          & ok & ok \\
+acrescentar sobrecarga nova                      & ok & ok \\
+acrescentar membro \texttt{static}               & ok & ok \\
+mudar o \textbf{corpo} de uma função             & ok & ok \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Duas linhas surpreendem sistematicamente. ``Acrescentar parâmetro com valor
+padrão'': o valor padrão é gravado no lado do \textbf{chamador}, de modo que um
+cliente antigo, não recompilado, continua chamando um símbolo que não existe
+mais. E ``acrescentar método virtual'': a vtable muda de tamanho e os índices
+seguintes se deslocam, então um cliente antigo chamando \texttt{->f()} pega o
+\emph{slot} errado e executa outra função, com os argumentos errados. É a
+\cref{sec:layout-vptr} cobrando a conta.
+
+\subsubsection{Pimpl: o \emph{firewall} de ABI}
+
+O idioma \emph{pointer to implementation} responde às duas pressões de uma vez:
+a classe pública tem um único membro --- um ponteiro --- e tudo o mais vive numa
+\texttt{struct} que o cabeçalho nunca vê.
+
+\begin{lstlisting}[style=bt, language=C++,
+    caption={A metade pública (resumo de
+             \texttt{src/linkage/widget.hpp}).}]
+class Widget {
+    struct Impl;                                  // só DECLARADA aqui
+    std::unique_ptr<Impl> pimpl_;
+
+public:
+    explicit Widget(std::string nome);
+
+    // Declarados aqui e definidos em widget.cpp: `unique_ptr<Impl>` precisa
+    // do tipo COMPLETO para instanciar o seu deleter.
+    ~Widget();
+    Widget(Widget&&) noexcept;
+    Widget& operator=(Widget&&) noexcept;
+
+    std::string descricao() const;
+    void        renomear(std::string novo);
+};
+\end{lstlisting}
+
+\texttt{sizeof(Widget)} é \textbf{8 bytes}, e continuará 8 para sempre,
+independentemente do que a \texttt{Impl} ganhe ou perca. Os ganhos são ABI
+estável e \emph{build} rápido --- o cabeçalho não inclui nada do que a
+implementação usa, o que ataca diretamente a medição do \texttt{\#include}. Os
+custos são uma alocação por objeto, uma indireção por acesso e a impossibilidade
+de \emph{inlinar} através da fronteira.
+
+\begin{armadilha}[o destrutor do pimpl não pode ser \texttt{= default} no cabeçalho]
+\texttt{\textasciitilde Widget()} precisa do tipo \textbf{completo} de
+\texttt{Impl} para instanciar o \emph{deleter} do \classe{std::unique\_ptr}, e no
+cabeçalho \texttt{Impl} é incompleta. O erro é críptico ---
+\texttt{static assertion failed: can't delete an incomplete type} --- e a
+solução é fixa: \textbf{declare} no \texttt{.hpp} e escreva \texttt{= default}
+no \texttt{.cpp}, depois da definição de \texttt{Impl}. O mesmo vale para o
+construtor e o operador de \gls{move}.
+\end{armadilha}
+
+\begin{armadilha}[a segunda armadilha do pimpl custou um erro de \emph{linker} real]
+Na primeira versão do subprojeto, \texttt{Widget} estava declarada em
+\texttt{demo\_abi.hpp} e \texttt{widget.cpp} incluía esse cabeçalho para
+alcançá-la. Como as funções \texttt{demo\_*()} daquele arquivo não são
+\texttt{inline}, elas passaram a ser definidas em \textbf{duas} TUs:
+\texttt{multiple definition of 'demo\_abi::demo\_o\_que\_e()'}. É o erro da
+\cref{tab:erros-etapa}, ao vivo, cometido por quem estava escrevendo sobre ele.
+A correção é a que todo projeto acaba adotando: um cabeçalho pequeno, com só o
+que precisa ser compartilhado entre TUs, e \textbf{nada definido}.
+\end{armadilha}
+
+\paragraph{\emph{Inline namespaces}.} Declarar \texttt{inline namespace v2}
+dentro de \texttt{namespace biblioteca} faz os nomes de dentro aparecerem como
+se estivessem em \texttt{biblioteca} --- o usuário escreve
+\texttt{biblioteca::versao()} sem versão nenhuma ---, mas o símbolo emitido
+carrega o \texttt{v2} no \emph{mangling}. Um binário antigo, que pedia
+\texttt{v1}, continua encontrando o símbolo de \texttt{v1} se ele ainda existir:
+duas versões incompatíveis \textbf{coexistem} no mesmo processo. É como a
+libstdc++ faz --- \texttt{std::\_\_cxx11::string} é exatamente isto --- e também
+é o mecanismo de \texttt{std::literals::chrono\_literals}.
+
+\begin{regra}[decida cedo o que é ABI no seu código]
+Todo mundo sabe que \classe{std::unordered\_map} (um nó alocado por elemento) é
+lento comparado a uma tabela de endereçamento aberto, que \classe{std::regex} é
+ordens de grandeza mais lento que RE2, e que \texttt{std::vector<bool>} é a
+especialização que todos lamentam (\cref{sec:stl}). Consertar qualquer um muda o
+\emph{layout}, quebra a ABI e derruba toda biblioteca binária do planeta que os
+exponha na interface --- por isso nenhum foi consertado. A lição para o seu
+código: se você publica uma biblioteca binária, escolha \textbf{antes} da
+primeira versão o que é ABI --- pimpl nas classes que vão crescer, tipos da
+biblioteca padrão fora das assinaturas públicas, nenhuma função virtual em
+classe que os clientes instanciam. Depois de publicado, a escolha é
+irreversível: pergunte à \texttt{std}.
+\end{regra}
+
+% =============================================================================
+\subsection{Síntese}
+% =============================================================================
+
+As três seções parecem tratar de assuntos distantes --- \emph{padding},
+\texttt{std::function}, \emph{linker} --- e são três vistas do mesmo objeto: o
+\textbf{modelo de objeto} que o compilador implementa por baixo da sintaxe. A
+prova é que cada uma explica as armadilhas das outras. O vptr da
+\cref{sec:layout} é o que torna o apagamento de tipo por herança
+\emph{intrusivo}, e é por isso que a \texttt{std::function} real usa vtable
+manual: sem vptr no objeto guardado, ele cabe no \emph{buffer}. O \emph{layout}
+de classe \emph{é} metade da \gls{abi} da \cref{sec:linkage} --- acrescentar um
+membro de dado e acrescentar um método virtual quebram o binário pela mesma
+razão. A medição da \cref{sec:erasure-medicao}, em que a localidade dominou o
+despacho por um fator de quatro, é a \cref{sec:layout} explicando por que
+reordenar membros vale mais que trocar o mecanismo de chamada. E a substituição
+do \texttt{operator new} global, ferramenta de medição do
+\projeto{type\_erasure}, só é correta por causa das regras de ODR do
+\projeto{linkage}.
+
+Há também um padrão nas medições, e ele é o argumento central deste livro:
+\textbf{três das principais surpresas do capítulo contrariaram a expectativa
+razoável}. O diamante com herança virtual ficou \emph{maior} tendo \emph{menos}
+dados. O derivado com um \texttt{int} a mais teve o \emph{mesmo} \texttt{sizeof}
+da base. E o 4× do apagamento de tipo não veio da chamada indireta, mas do cache
+--- de modo que a ``otimização'' óbvia, eliminar o \texttt{virtual}, não teria
+resolvido nada. Nos três casos, quem raciocinasse sem medir chegaria à conclusão
+errada com toda a convicção.
+
+\begin{regra}[as três ferramentas deste capítulo]
+\texttt{pahole -C Struct ./binario} mostra os buracos de \emph{padding} que o
+\texttt{sizeof} esconde. Um \texttt{operator new} global instrumentado ---
+quinze linhas --- responde ``isto aloca?'' para qualquer biblioteca, inclusive a
+padrão. E \texttt{nm -C} com \texttt{c++filt} transformam
+\texttt{undefined reference} de mistério em pergunta respondível. Nenhuma das
+três exige mudar o código de produção, e todas substituem uma discussão por um
+número.
+\end{regra}

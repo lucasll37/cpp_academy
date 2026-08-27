@@ -1,0 +1,221 @@
+% MASA Formal Report Template frontmatter, conforming to AE405 Standards
+% Created by Theo Rulko, 25/12/2021
+% Contact trulko@umich.edu with questions
+
+% ------------------------------------------
+% Import primary packages
+% O \documentclass fica em report.tex, e nao aqui: e o unico jeito de o
+% Overleaf identificar sozinho o arquivo mestre na importacao do .zip.
+% Ver tools/LEIA-ME-OVERLEAF.txt.
+\usepackage{datetime}
+\usepackage[T1]{fontenc}
+\usepackage{graphicx,algorithmic,algorithm}
+% xcolor (superconjunto de color): o tcolorbox o carrega mais adiante, e
+% carrega-lo aqui evita 'Incompatible color definition' em MASA-Blue.
+\usepackage{xcolor}
+\usepackage{listings,url}
+\usepackage{pdfpages}
+\usepackage{wallpaper}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{changepage}
+\usepackage{pdfpages}
+\usepackage{lscape}
+\usepackage{amsmath}
+\usepackage{montserrat}
+\usepackage{lipsum}
+
+% ------------------------------------------
+% ToC, AIAA-style Bibliography
+\usepackage[immediate]{silence}
+\WarningFilter{latex}{You have requested package}
+\usepackage[tocgraduated]{assets/tocstyle}
+\usetocstyle{standard}
+\RequirePackage[sort&compress,numbers]{natbib}
+\bibliographystyle{new-aiaa}
+\WarningFilter[temp]{latex}{Command}
+    \usepackage{sectsty}
+\DeactivateWarningFilters[temp]
+\usepackage[nottoc]{tocbibind}
+
+% ------------------------------------------
+% Figures & tables
+\usepackage{float}
+\usepackage[small,bf]{caption}
+\usepackage{tabularx}
+\usepackage{multirow}
+\usepackage{placeins}
+\usepackage{makecell}
+\usepackage[figuresleft]{rotating}
+
+% ------------------------------------------
+% Custom layout parameters
+\usepackage[margin=0.75in]{geometry}
+\definecolor{MASA-Blue}{RGB}{0,39,76}
+\renewcommand\thesection{\Roman{section}}
+\renewcommand{\bibsection}{\section{References}}
+\newcommand{\boldheader}[1]{\vspace{5mm}\textbf{#1}\textbf{:}\newline}
+\sectionfont{\fontsize{19}{20}\color{MASA-Blue}\fontseries{b}\fontfamily{Montserrat-TOsF}\selectfont}
+\subsectionfont{\fontsize{16}{18}\color{MASA-Blue}\fontfamily{Montserrat-TOsF}\selectfont}
+\subsubsectionfont{\fontseries{sb}\fontshape{n}\color{MASA-Blue}\fontfamily{Montserrat-TOsF}\selectfont}
+\titlespacing{\subsection}{0pt}{100mm}{0pt}
+\setlength{\parindent}{0in}
+\setlength{\parskip}{1em}
+
+% ------------------------------------------
+% Letterhead
+\newcommand\MASALetterhead[3]{
+    \hfuzz=60pt
+    \thispagestyle{empty}
+    \setlength{\parskip}{0in}
+    % (For full style of letterhead footer, use Footer1)
+    \LLCornerWallPaper{1}{assets/Footer2.pdf}
+    \begin{flushleft}
+        \includegraphics[width=4.5cm]{assets/Worm_vector.pdf}
+    \end{flushleft}
+    \begin{flushright}
+        \begin{tabularx}{0.5\textwidth}{l @{}}#1\end{tabularx}
+    \end{flushright}
+    \begin{flushleft}
+        \par #2 \\ \vspace{2mm} \mydate
+    \end{flushleft}
+    Subject: #3
+    \setlength{\parskip}{1em}
+}
+\newcommand\signature[2]{
+    \begin{minipage}{5cm}
+        \noindent\vspace{4.5mm}\par
+        \noindent\vspace{-1mm}\rule{#1cm}{0.5pt}\par
+        \noindent#2
+    \end{minipage}
+}
+
+% ------------------------------------------
+% Title Page
+\newcommand\makeTitlePage[1]{
+    \newpage
+    \ClearWallPaper
+    \thispagestyle{empty}
+    \setlength{\parskip}{0in}
+    % (For TSM logo footer, use Footer3)
+    \LLCornerWallPaper{1}{assets/Footer4.pdf}
+    \vspace*{\fill}
+    \begin{adjustwidth}{1.5cm}{1.5cm} 
+    \begin{center}
+        % \includegraphics[width=7cm]{assets/Worm_vector.pdf}\\
+        % \vspace{20mm}
+        \fontsize{28}{30}\fontseries{b}\fontshape{n}\color{MASA-Blue}\fontfamily{Montserrat-TOsF}\selectfont{\mytitle}\\
+        \vspace{15mm}
+        \fontsize{14}{16}\fontseries{sb}\fontshape{n}\color{MASA-Blue}\fontfamily{Montserrat-TOsF}\selectfont{\mydate\\\vspace{7.5mm} Prepared by:}\\
+        \fontsize{14}{16}\fontseries{m}\fontshape{n}\color{MASA-Blue}\fontfamily{Montserrat-TOsF}\selectfont{\myauthors}\\
+        \vspace{7.5mm}
+        \fontsize{14}{16}\fontseries{sb}\fontshape{n}\color{MASA-Blue}\fontfamily{Montserrat-TOsF}\selectfont{Prepared for:}\\
+        \fontsize{14}{16}\fontseries{m}\fontshape{n}\color{MASA-Blue}\fontfamily{Montserrat-TOsF}\selectfont{#1}
+        \vspace{50mm}
+    \end{center}
+    \end{adjustwidth}
+    \vspace*{\fill}
+    \setlength{\parskip}{1em}
+}
+
+% ------------------------------------------
+% Cover Page
+\newcommand\makeCoverPage{
+    \newpage
+    \ClearWallPaper
+    \thispagestyle{empty}
+    \setlength{\parskip}{0in}
+    % (For TSM logo footer, use Footer3)
+    \LLCornerWallPaper{1}{assets/Footer4.pdf}
+    \vspace*{\fill}
+    \begin{adjustwidth}{1.5cm}{1.5cm} 
+    \begin{center}
+        \includegraphics[width=9cm]{assets/Worm_vector.pdf}\\
+        \vspace{25mm}
+        \fontsize{33}{35}\fontseries{b}\fontshape{n}\color{MASA-Blue}\fontfamily{Montserrat-TOsF}\selectfont{\mytitle}
+        \vspace{45mm}
+    \end{center}
+    \end{adjustwidth}
+    \vspace*{\fill}
+    \setlength{\parskip}{1em}
+}
+
+% ------------------------------------------
+% Acknowledgements
+\newcommand\MASAacknowledgements[1]{
+    \newpage
+    \topskip0pt
+    \addcontentsline{toc}{section}{Acknowledgements}
+    \vspace*{\fill}
+    \begin{adjustwidth}{1.5cm}{1.5cm} 
+    \begin{center}
+    \textbf{\Large\color{MASA-Blue}\fontfamily{Montserrat-TOsF}\selectfont Acknowledgements}\\
+    \vspace{5mm}
+    \end{center}
+    #1
+    \end{adjustwidth}
+    \vspace*{\fill}
+}
+
+% ------------------------------------------
+% Format for matlab code listing
+\usepackage{listings}
+\definecolor{commentgreen}{RGB}{14,120,0}
+\lstset{
+    numbers=left, 
+    basicstyle=\scriptsize, 
+    commentstyle=\color{commentgreen},
+    keywordstyle=\bf\color{blue},
+    language=matlab, 
+    frame=leftline,
+    rulesepcolor=\color{black},
+    flexiblecolumns=true,
+    extendedchars=false,
+    keepspaces=true
+}
+
+% ------------------------------------------
+% Custom Math Shorthand (Credit: kfid@umich.edu)
+\newcommand{\pp}[2]{\dfrac{\partial #1}{\partial #2}}
+\newcommand{\ppt}[2]{\dfrac{\partial^2 #1}{\partial #2^2}}
+\newcommand{\DD}[2]{\dfrac{D #1}{D #2}}
+\newcommand{\dd}[2]{\dfrac{d #1}{d #2}}
+\newcommand{\mbb}[1]{\mathbb{#1}}
+\newcommand{\mbf}[1]{\mathbf{#1}}
+\newcommand{\mrm}[1]{\mathrm{#1}}
+\newcommand{\mcal}[1]{\mathcal{#1}}
+\newcommand{\BigO}{\mathcal{O}}
+\newcommand{\norm}[2]{\left\lVert{#1}\right\lVert_{#2}}
+\newcommand{\sbf}[1]{\boldsymbol{#1}}
+\def\etal{{\it et al~}}
+\newcommand{\be}{\begin{eqnarray}}
+\newcommand{\ee}{\end{eqnarray}}
+\newcommand{\ben}{\begin{eqnarray*}}
+\newcommand{\een}{\end{eqnarray*}}
+\newcommand{\dx}{d\mbf{x}}
+\newcommand{\Dt}{\Delta t}
+\newcommand{\ih}{\hat{i}}
+\newcommand{\jh}{\hat{j}}
+\newcommand{\kh}{\hat{k}}
+\newcommand{\xh}{\hat{x}}
+\newcommand{\yh}{\hat{y}}
+\newcommand{\zh}{\hat{z}}
+\newcommand{\Uinf}{U_{\infty}}
+\newcommand{\Vinf}{V_{\infty}}
+\newcommand{\Minf}{M_{\infty}}
+\newcommand{\bVinf}{\mbf{V}_{\infty}}
+\newcommand{\scriptth}{\scriptsize \textnormal{th}}
+\newcommand{\half}{\frac{1}{2}}
+\newcommand{\CFL}{{\mbox{CFL}}}
+\newcommand{\tn}[1]{\textnormal{#1}}
+\newcommand{\mbfh}[1]{\widehat{\mathbf{#1}}}
+\newcommand{\m}{\textrm{m}}
+\newcommand{\s}{\textrm{s}}
+\newcommand{\kg}{\textrm{kg}}
+\newcommand{\km}{\textrm{km}}
+\newcommand{\N}{\textrm{N}}
+\newcommand{\Pa}{\textrm{Pa}}
+\newcommand{\K}{\textrm{K}}
+\newcommand{\C}{\textrm{C}}
+\newcommand{\mbfv}[1]{\vec{\mathbf{#1}}}
+\newcommand{\comment}[1]{}
