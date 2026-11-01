@@ -1,3 +1,7 @@
+spdlog_dep = dependency('spdlog')
+jsbsim_dep = dependency('jsbsim')
+
+
 flight_inc = include_directories('.', is_system: true)
 
 flight_sources = files(

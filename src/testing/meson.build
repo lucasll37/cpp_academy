@@ -10,12 +10,11 @@
 #  ⚠ Este subprojeto NÃO reativa o `tests/` da raiz, que segue desabilitado
 #    por decisão de projeto. Tudo aqui é auto-contido.
 #
-#  `gtest_dep` vem do meson.build da raiz:
-#      gtest_dep = dependency('gtest', fallback: ['gtest', 'gtest_dep'])
-#  e traz gtest + gtest_main. Para gmock é preciso pedir separado.
+#  As dependências do GoogleTest são declaradas aqui mesmo, e não na raiz:
+#  comentar `subdir('testing')` em src/meson.build deixa de exigi-las.
 # =============================================================================
 
-# ⚠ `gtest_dep` da raiz traz APENAS `libgtest.a` — sem o `main()`. Linkar só
+# ⚠ `gtest_dep` traz APENAS `libgtest.a` — sem o `main()`. Linkar só
 #   com ele produz:
 #       undefined reference to `main'
 #   O GoogleTest empacota o `main()` padrão à parte, e o Conan expõe os quatro
@@ -28,6 +27,7 @@
 #
 #   A separação existe para quem escreve o próprio `main()` — é o caso de
 #   src/meson/test_saudacao.cpp. Aqui usamos o pronto.
+gtest_dep      = dependency('gtest', fallback: ['gtest', 'gtest_dep'])
 gtest_main_dep = dependency('gtest_main')
 gmock_dep      = dependency('gmock',      required: false)
 gmock_main_dep = dependency('gmock_main', required: false)

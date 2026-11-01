@@ -11,6 +11,8 @@
 #    Nome de alvo é nome de arquivo instalado. `main` é um nome sem dono.
 # =============================================================================
 
+bullet_dep = dependency('bullet')
+
 executable('collision',
     ['main.cpp'],
     dependencies: [fmt_dep, bullet_dep],

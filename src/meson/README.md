@@ -137,7 +137,9 @@ Três consequências práticas desse arranjo:
 1. **`project()` é a primeira linha executável.** Só existe na raiz (e em `subprojects/`).
    Nenhum `src/*/meson.build` tem um — eles são *incluídos*, não são projetos.
 2. **`subdir()` não cria escopo novo.** É inclusão textual: `fmt_dep` declarado na raiz
-   está visível em `src/syntax/meson.build` sem nenhum `import`. É por isso que a ordem
+   está visível em `src/syntax/meson.build` sem nenhum `import`. (As demais dependências
+   são declaradas no `meson.build` de cada subprojeto, para que comentar um `subdir()`
+   também deixe de exigir o que ele usa.) É por isso que a ordem
    importa — `subdir('proto')` vem antes de `subdir('src')` porque o `src/` consome o que
    o `proto/` gera.
 3. **`default_options` é padrão, não imposição.** Um alvo pode discordar com

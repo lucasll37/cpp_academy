@@ -1,3 +1,6 @@
+asio_dep = dependency('asio')
+
+
 executable('coroutines',
     ['main.cpp'],
     dependencies: [fmt_dep, asio_dep],

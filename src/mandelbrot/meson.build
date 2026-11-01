@@ -14,6 +14,9 @@
 # Não usa .ui (sem uic) — todo o layout é programático.
 # ============================================================
 
+qt6    = import('qt6')
+qt_dep = dependency('qt6', modules: ['Core', 'Gui', 'Widgets'])
+
 moc_files = qt6.compile_moc(
     headers: [
         'mainwindow.hpp',

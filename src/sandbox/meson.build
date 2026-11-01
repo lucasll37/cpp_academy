@@ -10,6 +10,8 @@
 #    Dependencia que nao se usa e tempo de build e superficie de quebra de
 #    graca. Sobrou a unica de verdade: nlohmann_json.
 # =============================================================================
+json_dep = dependency('nlohmann_json')
+
 executable('sandbox',
     files('main.cpp'),
     dependencies: [json_dep],

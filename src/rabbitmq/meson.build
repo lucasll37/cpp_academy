@@ -1,3 +1,7 @@
+boost_dep   = dependency('boost')
+amqpcpp_dep = dependency('amqpcpp')
+
+
 common_deps = [fmt_dep, boost_dep, amqpcpp_dep]
 
 executable(

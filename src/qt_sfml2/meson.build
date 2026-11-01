@@ -1,3 +1,9 @@
+qt6        = import('qt6')
+qt_dep     = dependency('qt6', modules: ['Core', 'Gui', 'Widgets'])
+sfml_dep   = dependency('sfml-all')
+bullet_dep = dependency('bullet')
+
+
 ui_files = qt6.compile_ui(
   sources: ['./mainwindow.ui'],
 )

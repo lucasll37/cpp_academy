@@ -14,43 +14,16 @@ project('academy', 'cpp', 'c',
 # ============================================
 # Dependências
 # ============================================
-gtest_dep       = dependency('gtest', fallback: ['gtest', 'gtest_dep'])
-fmt_dep         = dependency('fmt')
-omp_dep         = dependency('openmp')
-protobuf_dep    = dependency('protobuf')
-spdlog_dep      = dependency('spdlog')
-json_dep        = dependency('nlohmann_json')
-eigen_dep       = dependency('eigen3')
-pybind_dep      = dependency('pybind11')
-bullet_dep      = dependency('bullet')
-sfml_dep        = dependency('sfml-all')
-curl_dep        = dependency('libcurl')
-asio_dep        = dependency('asio')
-soci_dep        = dependency('soci-soci_core')
-soci_sqlite_dep = dependency('soci-soci_sqlite3')
-# ⚠ `soci-soci_postgresql` existe como .pc mas tem um `Requires: soci-soci_core none`
-#   malformado (o `none` é um bug do gerador do Conan) e o pkg-config o rejeita.
-#   O subprojeto `database` usa apenas o backend SQLite, que não precisa de servidor.
-soci_pg_dep     = dependency('soci-soci_postgresql', required: false)
-
-# ⚠ Os nomes corretos são `aws-sdk-cpp-*`, não `aws-cpp-sdk-*`. A troca das duas
-#   primeiras palavras é o motivo de estes alvos terem ficado desabilitados.
-aws_core_dep    = dependency('aws-sdk-cpp-core')
-aws_s3_dep      = dependency('aws-sdk-cpp-s3')
-onnx_dep        = dependency('onnxruntime')
-opencv_dep      = dependency('opencv')
-amqpcpp_dep     = dependency('amqpcpp')
-boost_dep       = dependency('boost')
-jsbsim_dep      = dependency('jsbsim')
-# jsbsim_dep      = dependency('JSBSim')
-
-qt6          = import('qt6')
-qt_dep       = dependency('qt6', modules: ['Core', 'Gui', 'Widgets'])
-
-# ============================================
-# Programas Utilitários
-# ============================================
-protoc = '@0@/bin/protoc'.format(protobuf_dep.get_variable('prefix'))
+# Só a `fmt` mora aqui: é a base de praticamente todos os subprojetos.
+#
+# Todas as demais são declaradas no meson.build do subprojeto que as usa
+# (ex.: `bullet_dep` em src/collision/, src/sfml_bullet/, ...). Assim, comentar
+# um `subdir()` em src/meson.build também deixa de exigir as dependências dele:
+# o `meson setup` só procura o que os subprojetos HABILITADOS pedem.
+#
+# Declarar a mesma dependência em vários subprojetos não custa nada: o Meson
+# guarda o resultado de `dependency()` em cache e só procura uma vez.
+fmt_dep = dependency('fmt')
 
 
 # ============================================

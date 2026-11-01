@@ -16,6 +16,10 @@
 #  Para habilitar o PostgreSQL:  sudo apt install libpq-dev  (e reconfigure)
 # =============================================================================
 
+soci_dep        = dependency('soci-soci_core')
+soci_sqlite_dep = dependency('soci-soci_sqlite3')
+soci_pg_dep     = dependency('soci-soci_postgresql', required: false)
+
 # `cc.has_header` PERGUNTA ao compilador em vez de presumir — é o mesmo idioma
 # de `check_language(CUDA)` no CMake (ver src/cmake/, seção 3).
 cc_db = meson.get_compiler('cpp')

@@ -14,10 +14,14 @@
 #    8. summary         — o quadro que o `meson setup` imprime no fim
 #
 #  ⚠ Este arquivo NÃO tem `project()`. Ele é incluído pelo `subdir('meson')` de
-#    src/meson.build e roda dentro do projeto da raiz — por isso `fmt_dep`,
-#    `gtest_dep` e as opções já existem aqui. Um `project()` só aparece na raiz
+#    src/meson.build e roda dentro do projeto da raiz — por isso `fmt_dep` e
+#    as opções já existem aqui. Um `project()` só aparece na raiz
 #    de um projeto ou dentro de `subprojects/`.
 # =============================================================================
+
+# O `gtest_dep` é declarado AQUI, e não na raiz: só quem usa a dependência a
+# pede. Comentar `subdir('meson')` em src/meson.build deixa de exigir o gtest.
+gtest_dep = dependency('gtest', fallback: ['gtest', 'gtest_dep'])
 
 
 # ─────────────────────────────────────────────────────────────────────────────

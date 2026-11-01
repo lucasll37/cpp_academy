@@ -1,3 +1,7 @@
+sfml_dep   = dependency('sfml-all')
+bullet_dep = dependency('bullet')
+
+
 sfml_bullet2_sources = files(
     'physics_world.cpp',
     'ragdoll.cpp',

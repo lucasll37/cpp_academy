@@ -1,3 +1,7 @@
+protobuf_dep = dependency('protobuf')
+protoc       = '@0@/bin/protoc'.format(protobuf_dep.get_variable('prefix'))
+
+
 common_proto_cc = custom_target(
   'common_proto_cc',
   input : ['./common.proto'],

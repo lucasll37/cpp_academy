@@ -1,3 +1,6 @@
+omp_dep    = dependency('openmp')
+pybind_dep = dependency('pybind11')
+
 py = import('python').find_installation('python3')
 
 py.extension_module('academy_cp',

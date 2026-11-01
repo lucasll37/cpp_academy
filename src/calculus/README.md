@@ -136,7 +136,7 @@ garante solução correta** — com `cond` grande, o resíduo mente.
 
 **Header-only** significa que a Eigen não tem `.so` nem `.a`: é só código em cabeçalhos. No build, isso quer dizer que
 **não existe etapa de link** para ela — basta o compilador achar os `#include`. Aqui o Conan traz `eigen/3.4.0` e o
-`meson.build` da raiz o expõe como `eigen_dep`.
+`src/calculus/meson.build` o expõe como `eigen_dep`.
 
 ```cpp
 #include <Eigen/Dense>                // matrizes densas, decomposições e solvers
