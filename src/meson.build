@@ -44,81 +44,81 @@
 
 # ── Tier 1 · Fundamentos da linguagem ────────────────────────────────────────
 subdir('syntax')            # toda a sintaxe, de ponta a ponta
-subdir('casts')             # os quatro casts e o C-style
-subdir('value_semantics')   # categorias de valor, Rule of 0/3/5, RVO, forwarding
-subdir('smart-pointers')    # unique_ptr, shared_ptr, weak_ptr, RAII, pimpl
-subdir('memory')            # new/delete por dentro, pool, arena, pmr
-subdir('oop')               # herança, vtable, slicing, RTTI
-subdir('errors')            # exceções, garantias, noexcept, error_code, expected
-subdir('stl')               # containers, iteradores, algoritmos
-subdir('ranges')            # views, pipelines, projeções
+# subdir('casts')             # os quatro casts e o C-style
+# subdir('value_semantics')   # categorias de valor, Rule of 0/3/5, RVO, forwarding
+# subdir('smart-pointers')    # unique_ptr, shared_ptr, weak_ptr, RAII, pimpl
+# subdir('memory')            # new/delete por dentro, pool, arena, pmr
+# subdir('oop')               # herança, vtable, slicing, RTTI
+# subdir('errors')            # exceções, garantias, noexcept, error_code, expected
+# subdir('stl')               # containers, iteradores, algoritmos
+# subdir('ranges')            # views, pipelines, projeções
 
 # ── Tier 2 · Programação genérica ────────────────────────────────────────────
-subdir('templates')         # function/class templates, variádicos, SFINAE, CRTP
-subdir('concepts')          # requires, constraints, subsunção
-subdir('lambdas')           # capturas, genéricas, std::function, invoke
+# subdir('templates')         # function/class templates, variádicos, SFINAE, CRTP
+# subdir('concepts')          # requires, constraints, subsunção
+# subdir('lambdas')           # capturas, genéricas, std::function, invoke
 
 # ── Tier 2 · C++ moderno ─────────────────────────────────────────────────────
-subdir('vocabulary_types')  # optional, variant, any, tuple, span
-subdir('compile_time')      # constexpr, consteval, constinit, NTTP
-subdir('operators')         # sobrecarga canônica, <=>, literais de usuário
-subdir('strings')           # SSO medido, string_view, format, charconv, regex
-subdir('chrono')            # durations, relógios, calendário, como cronometrar
-subdir('bits')              # operadores e UB, <bit>, bitset, endianness
-subdir('file_io')           # streams, sstream, filesystem
-subdir('cpp23')             # inventário medido por feature-test macros
-subdir('coroutines')        # generator, task, internals, Asio
+# subdir('vocabulary_types')  # optional, variant, any, tuple, span
+# subdir('compile_time')      # constexpr, consteval, constinit, NTTP
+# subdir('operators')         # sobrecarga canônica, <=>, literais de usuário
+# subdir('strings')           # SSO medido, string_view, format, charconv, regex
+# subdir('chrono')            # durations, relógios, calendário, como cronometrar
+# subdir('bits')              # operadores e UB, <bit>, bitset, endianness
+# subdir('file_io')           # streams, sstream, filesystem
+# subdir('cpp23')             # inventário medido por feature-test macros
+# subdir('coroutines')        # generator, task, internals, Asio
 
 # ── Tier 3 · Concorrência e paralelismo ──────────────────────────────────────
-subdir('concurrency')       # thread, mutex, condition_variable, future, pool
-subdir('concurrency2')      # jthread, latch, barrier, memory model, lock-free
-subdir('mandelbrot')        # paralelismo por tiles com std::thread
-subdir('mandelbrot_openmp') # o mesmo com #pragma omp
+# subdir('concurrency')       # thread, mutex, condition_variable, future, pool
+# subdir('concurrency2')      # jthread, latch, barrier, memory model, lock-free
+# subdir('mandelbrot')        # paralelismo por tiles com std::thread
+# subdir('mandelbrot_openmp') # o mesmo com #pragma omp
 
 # ── Tier 4 · Modelo de objeto e engenharia ───────────────────────────────────
-subdir('type_erasure')      # std::function do zero, SBO medido, virtual vs CRTP
-subdir('layout')            # alinhamento, padding, [[no_unique_address]], vptr
-subdir('linkage')           # ODR medida com 2 TUs, extern "C", ABI, pimpl
-subdir('testing')           # GoogleTest, fixtures, TEST_P, gmock, death tests
-subdir('undefined_behavior')# como o UB licencia o otimizador; sanitizers medidos
-subdir('performance')       # cache, AoS vs SoA, false sharing, como medir
+# subdir('type_erasure')      # std::function do zero, SBO medido, virtual vs CRTP
+# subdir('layout')            # alinhamento, padding, [[no_unique_address]], vptr
+# subdir('linkage')           # ODR medida com 2 TUs, extern "C", ABI, pimpl
+# subdir('testing')           # GoogleTest, fixtures, TEST_P, gmock, death tests
+# subdir('undefined_behavior')# como o UB licencia o otimizador; sanitizers medidos
+# subdir('performance')       # cache, AoS vs SoA, false sharing, como medir
 
 # ── Tier 5 · Arquitetura ─────────────────────────────────────────────────────
-subdir('solid')             # os 5 princípios, violação vs conformidade
-subdir('design-of-pattern') # os 23 GoF + null_object, com "versão moderna"
-subdir('ecs')               # Entity Component System
-subdir('plugin_registry')   # dlopen/dlsym, registry, unique_ptr com deleter
+# subdir('solid')             # os 5 princípios, violação vs conformidade
+# subdir('design-of-pattern') # os 23 GoF + null_object, com "versão moderna"
+# subdir('ecs')               # Entity Component System
+# subdir('plugin_registry')   # dlopen/dlsym, registry, unique_ptr com deleter
 
 # ── Baixo nível e hardware ───────────────────────────────────────────────────
-subdir('asm_course')        # curso de assembly x86-64, 10 módulos
-subdir('inline_asm')        # asm inline no GCC: constraints, clobbers
-subdir('outline_asm')       # arquivos .s separados, ABI System V
+# subdir('asm_course')        # curso de assembly x86-64, 10 módulos
+# subdir('inline_asm')        # asm inline no GCC: constraints, clobbers
+# subdir('outline_asm')       # arquivos .s separados, ABI System V
 
 # ── Ferramentas ──────────────────────────────────────────────────────────────
-subdir('meson')             # o build system, com o próprio meson.build de aula
-subdir('doxygen')           # documentação a partir dos comentários
-subdir('parser')            # Flex + Bison, gramática, precedência
+# subdir('meson')             # o build system, com o próprio meson.build de aula
+# subdir('doxygen')           # documentação a partir dos comentários
+# subdir('parser')            # Flex + Bison, gramática, precedência
 
 # ── Rede, dados e mensageria ─────────────────────────────────────────────────
-subdir('network')           # Asio: TCP, UDP, timer, HTTP cru
-subdir('http-client')       # libcurl + nlohmann/json
-subdir('database')          # SOCI, repository, prepared statements, transações
-subdir('rabbitmq')          # AMQP-CPP + Boost.Asio, produtor/consumidor
-subdir('aws/s3')            # AWS SDK, S3Client, o modelo Outcome<R,E>
+# subdir('network')           # Asio: TCP, UDP, timer, HTTP cru
+# subdir('http-client')       # libcurl + nlohmann/json
+# subdir('database')          # SOCI, repository, prepared statements, transações
+# subdir('rabbitmq')          # AMQP-CPP + Boost.Asio, produtor/consumidor
+# subdir('aws/s3')            # AWS SDK, S3Client, o modelo Outcome<R,E>
 
 # ── Gráficos, física e simulação ─────────────────────────────────────────────
-subdir('calculus')          # Eigen3: LU/QR/SVD, mínimos quadrados, PCA
-subdir('collision')         # Bullet3: broadphase/narrowphase
-subdir('sfml_bullet')       # SFML + Bullet3, física 2D visual
-subdir('sfml_bullet2')      # ragdoll, cordas, constraints
-subdir('qt_sfml')           # Qt com widget SFML embutido
-subdir('qt_sfml2')          # Qt + SFML + Bullet3
-subdir('flight-simulator')  # JSBSim, autopiloto PID, loop de 120 Hz
+# subdir('calculus')          # Eigen3: LU/QR/SVD, mínimos quadrados, PCA
+# subdir('collision')         # Bullet3: broadphase/narrowphase
+# subdir('sfml_bullet')       # SFML + Bullet3, física 2D visual
+# subdir('sfml_bullet2')      # ragdoll, cordas, constraints
+# subdir('qt_sfml')           # Qt com widget SFML embutido
+# subdir('qt_sfml2')          # Qt + SFML + Bullet3
+# subdir('flight-simulator')  # JSBSim, autopiloto PID, loop de 120 Hz
 
 # ── Interoperabilidade e visão ───────────────────────────────────────────────
-subdir('python')            # PyBind11 vs CPython API, GIL
-subdir('embed-python')      # o inverso: C++ hospeda o interpretador
-subdir('yolo')              # YOLOv10 + ONNX Runtime + OpenCV
+# subdir('python')            # PyBind11 vs CPython API, GIL
+# subdir('embed-python')      # o inverso: C++ hospeda o interpretador
+# subdir('yolo')              # YOLOv10 + ONNX Runtime + OpenCV
 
 # ── Experimentação ───────────────────────────────────────────────────────────
 subdir('sandbox')           # espaço livre para experimentos
