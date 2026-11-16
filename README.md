@@ -61,6 +61,7 @@ make build       # Compila todos os alvos
 make install     # Instala binários em dist/bin/
 make test        # Executa testes (Google Test)
 make clean       # Remove build/, dist/ e cache do Conan
+make open PROJ=x # Abre no navegador padrão a aula em slides de um subprojeto (padrão: syntax)
 make help        # Lista todos os comandos com descrição
 ```
 

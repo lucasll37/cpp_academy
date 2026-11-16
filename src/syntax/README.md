@@ -19,6 +19,14 @@ make build          # configura (se preciso), compila e instala em ./dist
 São 8 blocos, ~1080 linhas de saída colorida. O programa termina com
 `✓ Todos os demos de sintaxe concluídos!`.
 
+Para assistir à **aula em slides** sobre este subprojeto — HTML estático, animado e interativo,
+que abre no navegador padrão em Linux, WSL, macOS ou Windows (detalhes em
+[A aula em slides](#a-aula-em-slides)):
+
+```bash
+make open PROJ=syntax
+```
+
 Onde um tópico tem um subprojeto dedicado, a seção mostra a *sintaxe* e aponta para lá:
 
 | Aqui você vê | Para se aprofundar |
@@ -197,6 +205,7 @@ src/syntax/
 │                             conversões, os 4 casts, sizeof/alignof, new/delete
 ├── demo_generico.hpp       ← 8 · templates, CTAD, NTTP, especialização, concepts, exceções
 ├── meson.build             ← alvo `syntax`, instalado em dist/bin
+├── apresentacao/           ← a aula em slides (HTML estático): make open PROJ=syntax
 └── README.md               ← este arquivo
 ```
 
@@ -872,6 +881,48 @@ inicialização agregada parcial **é a lição** — os membros omitidos são z
 
 O subprojeto usa o **C++20 padrão da raiz**, sem `override_options`: designated initializers,
 `[[likely]]`, `__VA_OPT__`, concepts e init-statement no range-for já existem no GCC 13.3.
+
+---
+
+## A aula em slides
+
+`apresentacao/` é este README transformado em aula: os 8 demos executados, explicados e animados,
+com widgets interativos (o leitor de declarações pela regra da espiral, a pilha desempilhando no
+`throw`, o pré-processador colando texto, os bits de `-1` virando `4294967295`…), a saída real do
+programa, quizzes e notas para quem apresenta.
+
+```bash
+make open PROJ=syntax     # da raiz do repositório
+```
+
+O `make open` (via [`scripts/open.sh`](../../scripts/open.sh)) abre o **navegador padrão** em
+qualquer ambiente: no WSL, o do Windows (o caminho vira `\\wsl.localhost\…`); no Git Bash/MSYS2,
+pelo `explorer`; no macOS, pelo `open`; no Linux, por `$BROWSER` ou `xdg-open`. Para forçar um:
+`NAVEGADOR=firefox make open PROJ=syntax`.
+
+| Tecla | Faz |
+|---|---|
+| `→` `espaço` `PgDn` / `←` `PgUp` | avança / volta (passo a passo dentro do slide) |
+| `O` | sumário com busca em todo o conteúdo |
+| `P` | janela do apresentador para a 2ª tela: slide atual, prévia do próximo, notas, cronômetro |
+| `N` | notas + cronômetro na própria tela |
+| `T` · `F` · `L` · `B` | tema claro/escuro · tela cheia · ponteiro laser · tela preta |
+| número + `Enter` | vai ao slide N |
+| `Ctrl+P` | imprime / salva PDF com todos os passos visíveis |
+
+É HTML estático, sem dependências e sem rede — abre direto do disco (`file://`):
+
+```
+apresentacao/
+├── index.html              ← todos os capítulos, um <section class="slide"> por slide
+└── assets/
+    ├── deck.css, deck.js   ← o motor: palco 16:9, passos, navegação, componentes
+    ├── realce.js           ← realce de sintaxe de C++, shell e da saída do programa
+    └── widgets/<cap>.*     ← os widgets interativos de cada capítulo
+```
+
+Dentro do `index.html`, código vai em `<script type="text/x-cpp">` (sem escapar `<` e `>`), e a
+saída do programa em `<script type="text/x-saida">`, copiada de `./dist/bin/syntax`.
 
 ---
 

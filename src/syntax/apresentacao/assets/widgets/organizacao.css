@@ -1,0 +1,570 @@
+/* =============================================================================
+   widgets/organizacao.css — Capítulo 6 · Organização
+   Todo seletor começa com #cap-organizacao; @keyframes com organizacao-.
+   Código e terminais são escuros nos dois temas (--code-*); diagramas usam as
+   variáveis do tema (--superficie, --borda, --texto…).
+   ============================================================================= */
+
+/* ── comuns ───────────────────────────────────────────────────────────────── */
+#cap-organizacao .interativo { position: relative; }
+#cap-organizacao .org-setas { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; z-index: 6; }
+#cap-organizacao .org-seta-linha {
+  fill: none; stroke: var(--cor); stroke-width: 3.5; stroke-linecap: round;
+  stroke-dasharray: 1; stroke-dashoffset: 1;
+  animation: organizacao-desenha .65s var(--ease) forwards; animation-delay: var(--d, 0ms);
+  filter: drop-shadow(0 0 6px color-mix(in oklab, var(--cor) 55%, transparent));
+}
+#cap-organizacao .org-seta-ponta { fill: var(--cor); opacity: 0; animation: organizacao-aparece .2s forwards; animation-delay: calc(var(--d, 0ms) + .55s); }
+#cap-organizacao .org-seta-info .org-seta-linha { stroke: var(--info); filter: drop-shadow(0 0 6px color-mix(in oklab, var(--info) 55%, transparent)); }
+#cap-organizacao .org-seta-info .org-seta-ponta { fill: var(--info); }
+#cap-organizacao .org-seta-aviso .org-seta-linha { stroke: var(--aviso); filter: drop-shadow(0 0 6px color-mix(in oklab, var(--aviso) 55%, transparent)); }
+#cap-organizacao .org-seta-aviso .org-seta-ponta { fill: var(--aviso); }
+#cap-organizacao .org-seta-vaza .org-seta-linha { stroke: var(--dica); stroke-width: 3; filter: none; }
+#cap-organizacao .org-seta-vaza .org-seta-ponta { fill: var(--dica); }
+#cap-organizacao .org-seta-cor .org-seta-linha { stroke: var(--cor); }
+/* etiqueta sobre o meio de uma seta (ex.: "ADL") */
+#cap-organizacao .org-seta-rot { opacity: 0; animation: organizacao-aparece .3s forwards; animation-delay: calc(var(--d, 0ms) + .45s); }
+#cap-organizacao .org-seta-rot rect { fill: var(--superficie-2); stroke: var(--cor); stroke-width: 2; }
+#cap-organizacao .org-seta-rot text { font: 800 17px var(--fonte-mono); letter-spacing: .06em; fill: var(--cor-texto); text-anchor: middle; dominant-baseline: middle; }
+#cap-organizacao .org-seta-info .org-seta-rot rect { stroke: var(--info); }
+#cap-organizacao .org-seta-info .org-seta-rot text { fill: var(--info); }
+#cap-organizacao .org-seta-aviso .org-seta-rot rect { stroke: var(--aviso); }
+#cap-organizacao .org-seta-aviso .org-seta-rot text { fill: var(--aviso); }
+#cap-organizacao .org-seta-nada .org-seta-rot rect { stroke: var(--borda-forte); stroke-dasharray: 6 5; fill: var(--superficie); }
+#cap-organizacao .org-seta-nada .org-seta-rot text { fill: var(--texto-2); font-weight: 700; letter-spacing: 0; }
+
+#cap-organizacao .org-sem-anim *, #cap-organizacao .org-sem-anim { animation: none !important; }
+/* o que já estava na tela no passo anterior não se anima de novo (só o que o passo acrescenta) */
+#cap-organizacao .org-ja, #cap-organizacao .org-ja * { animation: none !important; }
+#cap-organizacao .org-adl-ja .org-esc.org-buscado,
+#cap-organizacao .org-adl-ja .org-esc.org-buscado > .org-esc-nome > .org-esc-tag,
+#cap-organizacao .org-adl-ja .org-fase:not(.org-fase-2) { animation: none !important; }
+#cap-organizacao .org-sem-anim .org-seta-linha { stroke-dashoffset: 0; }
+#cap-organizacao .org-sem-anim .org-seta-ponta, #cap-organizacao .org-sem-anim .org-seta-rot { opacity: 1; }
+
+#cap-organizacao .org-mono { font-family: var(--fonte-mono); font-variant-ligatures: none; }
+#cap-organizacao .botao.org-mono { font: 600 18px/1.15 var(--fonte-mono); padding: 9px 14px; }
+#cap-organizacao .org-rotulo-mini {
+  font: 700 16px/1.25 var(--fonte-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--texto-3);
+}
+#cap-organizacao .org-nobr { white-space: nowrap; }
+#cap-organizacao .org-dica { font-size: 22px; line-height: 1.4; color: var(--texto-3); font-style: italic; }
+#cap-organizacao .org-nota { font-size: 20px; line-height: 1.42; color: var(--texto-2); }
+#cap-organizacao .org-seg-grupo { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+#cap-organizacao code.org-pre { white-space: pre; }
+
+/* terminal próprio dos widgets: escuro, quebra linhas longas */
+#cap-organizacao .org-term {
+  min-width: 0; background: #05080f; border: 1px solid rgba(130, 150, 220, .2); border-radius: 14px; overflow: hidden;
+  box-shadow: var(--sombra-suave); font: 400 18px/1.5 var(--fonte-mono); font-variant-ligatures: none; color: #c9d4ee;
+}
+#cap-organizacao .org-term-topo {
+  display: flex; align-items: center; gap: 12px; padding: 8px 14px;
+  background: linear-gradient(#141b2e, #0e1424); border-bottom: 1px solid rgba(130, 150, 220, .14);
+  font: 500 15px/1.2 var(--fonte-mono); color: #8a98c2;
+}
+#cap-organizacao .org-term-tit { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#cap-organizacao .org-dots { display: inline-flex; gap: 6px; flex: none; }
+#cap-organizacao .org-dots i { width: 10px; height: 10px; border-radius: 50%; background: #ff5f57; display: block; }
+#cap-organizacao .org-dots i:nth-child(2) { background: #febc2e; }
+#cap-organizacao .org-dots i:nth-child(3) { background: #28c840; }
+#cap-organizacao .org-term-corpo { padding: 9px 16px 11px; }
+#cap-organizacao .org-tl { white-space: pre-wrap; overflow-wrap: break-word; animation: organizacao-sobe .35s var(--ease) both; animation-delay: var(--d, 0ms); }
+#cap-organizacao .org-tl-cmd { color: #e8edff; }
+#cap-organizacao .org-prompt { color: #4ade80; font-weight: 700; }
+#cap-organizacao .org-tl-erro { color: #fca5a5; }
+#cap-organizacao .org-tl-aviso { color: #fcd34d; }
+#cap-organizacao .org-tl-nota { color: #93a4cf; }
+#cap-organizacao .org-tl-eco { color: #5d6b96; }
+#cap-organizacao .org-tl-secao { color: #ffffff; font-weight: 700; }
+#cap-organizacao .org-term-mini { font-size: 18px; line-height: 1.45; }
+
+/* ── slide de abertura: o pipeline e as três camadas ─────────────────────── */
+#cap-organizacao .org-abertura { gap: 20px; }
+#cap-organizacao .org-pipeline { width: 1408px; height: 120px; flex: none; }
+#cap-organizacao .org-pipeline .org-no rect { fill: var(--superficie-2); stroke: var(--borda-forte); stroke-width: 2; }
+#cap-organizacao .org-pipeline .org-no text { font: 600 21px var(--fonte-mono); fill: var(--texto); text-anchor: middle; }
+#cap-organizacao .org-pipeline .org-rot { font: 700 17px var(--fonte-mono); letter-spacing: .12em; fill: var(--texto-3); text-anchor: middle; text-transform: uppercase; transition: fill .4s; }
+#cap-organizacao .org-pipeline .org-etapa .desenhar { fill: none; stroke: var(--borda-forte); stroke-width: 5; stroke-linecap: round; transition: stroke .4s; }
+#cap-organizacao .org-pipeline .org-ponta { fill: var(--borda-forte); transition: fill .4s; }
+#cap-organizacao .org-c1 { --c: var(--info); }
+#cap-organizacao .org-c2 { --c: var(--cor-texto); }
+#cap-organizacao .org-c3 { --c: var(--dica); }
+#cap-organizacao .org-camada.visivel { border-color: color-mix(in oklab, var(--c) 45%, transparent); box-shadow: 0 18px 50px -26px color-mix(in oklab, var(--c) 60%, transparent); }
+#cap-organizacao .org-abertura:has(.org-c1.visivel) .org-e1 .desenhar { stroke: var(--info); }
+#cap-organizacao .org-abertura:has(.org-c1.visivel) .org-e1 .org-ponta { fill: var(--info); }
+#cap-organizacao .org-abertura:has(.org-c1.visivel) .org-e1 .org-rot { fill: var(--info); }
+#cap-organizacao .org-abertura:has(.org-c2.visivel) .org-e2 .desenhar { stroke: var(--cor); }
+#cap-organizacao .org-abertura:has(.org-c2.visivel) .org-e2 .org-ponta { fill: var(--cor); }
+#cap-organizacao .org-abertura:has(.org-c2.visivel) .org-e2 .org-rot { fill: var(--cor-texto); }
+#cap-organizacao .org-abertura:has(.org-c3.visivel) .org-e3 .desenhar { stroke: var(--dica); }
+#cap-organizacao .org-abertura:has(.org-c3.visivel) .org-e3 .org-ponta { fill: var(--dica); }
+#cap-organizacao .org-abertura:has(.org-c3.visivel) .org-e3 .org-rot { fill: var(--dica); }
+#cap-organizacao .org-camada { display: flex; flex-direction: column; gap: 10px; }
+#cap-organizacao .org-camada h3 { margin-bottom: 0; }
+#cap-organizacao .org-onde { display: flex; gap: 8px; margin-top: 4px; }
+
+/* ── 6.1: as cinco formas ─────────────────────────────────────────────────── */
+#cap-organizacao .org-formas > li { line-height: 1.45; }
+
+/* ── widget: mapa de namespaces ───────────────────────────────────────────── */
+#cap-organizacao .org-mapa { display: grid; grid-template-columns: minmax(0, 1fr) 420px; grid-template-rows: auto 1fr; gap: 14px 24px; align-items: start; }
+#cap-organizacao .org-mapa-arvore { grid-column: 1; grid-row: 1; min-width: 0; }
+#cap-organizacao .org-mapa-painel { grid-column: 2; grid-row: 1 / span 2; display: flex; flex-direction: column; gap: 9px; min-width: 0; }
+#cap-organizacao .org-mapa-term { grid-column: 1; grid-row: 2; min-width: 0; }
+#cap-organizacao .org-ns {
+  position: relative; min-width: 0; border: 2px solid var(--borda-forte); border-radius: 14px; padding: 5px 10px 10px;
+  background: color-mix(in oklab, var(--superficie) 88%, transparent);
+  transition: border-color .3s, background-color .3s, box-shadow .3s;
+}
+#cap-organizacao .org-ns-nome { font: 600 18px/1.3 var(--fonte-mono); color: var(--texto-2); margin-bottom: 6px; white-space: nowrap; }
+#cap-organizacao .org-ns-dentro { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+#cap-organizacao .org-ns-dentro > .org-ns { align-self: stretch; }
+#cap-organizacao .org-raiz { padding: 7px 12px 12px; }
+#cap-organizacao .org-raiz > .org-ns-nome { color: var(--cor-texto); }
+#cap-organizacao .org-mapa-grade { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; width: 100%; align-items: start; }
+#cap-organizacao .org-mapa-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+#cap-organizacao .org-membro {
+  font: 600 20px/1.2 var(--fonte-mono); padding: 6px 12px; border-radius: 9px; white-space: nowrap;
+  background: var(--code-bg); border: 1px solid var(--code-borda); color: var(--code-texto);
+  transition: background-color .3s, box-shadow .3s, border-color .3s;
+}
+#cap-organizacao .org-inline { border-style: dashed; border-color: color-mix(in oklab, var(--dica) 65%, transparent); }
+#cap-organizacao .org-inline > .org-ns-nome { color: var(--dica); }
+#cap-organizacao .org-bib-filhos { display: flex; gap: 10px; width: 100%; }
+#cap-organizacao .org-bib-filhos > .org-ns { flex: 1; }
+#cap-organizacao .org-fantasma { visibility: hidden; border-style: dashed; border-color: var(--dica); color: var(--dica); background: color-mix(in oklab, var(--dica) 12%, var(--code-bg)); }
+#cap-organizacao .org-vaza .org-fantasma { visibility: visible; animation: organizacao-surge .5s var(--ease-mola) both; animation-delay: var(--d, 0ms); }
+#cap-organizacao .org-anon { border-style: dashed; }
+#cap-organizacao .org-anon > .org-ns-dentro { flex-direction: row; flex-wrap: wrap; }
+#cap-organizacao .org-muro { display: none; font: 700 18px/1.2 var(--fonte-mono); color: var(--erro); padding: 4px 2px; }
+#cap-organizacao .org-com-muro .org-muro { display: block; animation: organizacao-sobe .4s var(--ease) both; animation-delay: .5s; }
+#cap-organizacao .org-com-muro .org-anon { box-shadow: 0 0 0 3px color-mix(in oklab, var(--erro) 30%, transparent); }
+#cap-organizacao .org-alias {
+  align-self: flex-start; display: flex; gap: 10px; align-items: baseline; padding: 8px 14px; border-radius: 10px;
+  border: 2px solid var(--borda-forte); background: var(--superficie-2); font: 500 19px/1.2 var(--fonte-mono);
+  transition: border-color .3s, box-shadow .3s;
+}
+#cap-organizacao .org-alias b { color: var(--cor-texto); font-size: 22px; }
+#cap-organizacao .org-alias span { color: var(--texto-2); }
+#cap-organizacao .org-caminho { border-color: var(--cor); background: color-mix(in oklab, var(--cor) 9%, var(--superficie)); animation: organizacao-acende .6s var(--ease) both; animation-delay: var(--d, 0ms); }
+#cap-organizacao .org-alias.org-caminho { background: color-mix(in oklab, var(--cor) 16%, var(--superficie-2)); }
+#cap-organizacao .org-membro.org-alvo {
+  background: color-mix(in oklab, var(--cor) 38%, var(--code-bg)); border-color: var(--cor); color: #fff;
+  box-shadow: 0 0 0 4px var(--cor-suave), 0 0 26px -6px var(--cor);
+  animation: organizacao-alvo .55s var(--ease-mola) both; animation-delay: var(--d, 0ms);
+}
+#cap-organizacao .org-chamadas { display: flex; flex-direction: column; gap: 7px; }
+#cap-organizacao .org-chamadas .botao { justify-content: flex-start; }
+#cap-organizacao .org-mapa-res { display: flex; flex-direction: column; gap: 9px; margin-top: 4px; }
+#cap-organizacao .org-mapa-chamada {
+  align-self: flex-start; font: 600 22px/1.3 var(--fonte-mono); padding: 6px 14px; border-radius: 10px;
+  background: var(--code-bg); border: 1px solid var(--code-borda); color: var(--code-texto); white-space: nowrap;
+}
+#cap-organizacao .org-caminho-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+#cap-organizacao .org-chip { font: 600 18px/1.2 var(--fonte-mono); padding: 4px 9px; border-radius: 8px; background: var(--cor-suave); color: var(--cor-texto); border: 1px solid color-mix(in oklab, var(--cor) 35%, transparent); }
+#cap-organizacao .org-chip-alvo { background: color-mix(in oklab, var(--cor) 30%, transparent); }
+#cap-organizacao .org-sep { color: var(--texto-3); font-weight: 700; }
+#cap-organizacao .org-chip-par { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+#cap-organizacao .org-mapa-valor { font: 700 26px/1.2 var(--fonte-mono); color: var(--ok); animation: organizacao-sobe .4s var(--ease) both; animation-delay: .9s; }
+#cap-organizacao .org-mapa-valor span { color: var(--texto-3); }
+#cap-organizacao .org-mapa-res .org-nota { font-size: 20px; }
+
+/* ── widget: ADL ──────────────────────────────────────────────────────────── */
+#cap-organizacao .org-adl { display: grid; grid-template-columns: minmax(0, 1fr) 450px; gap: 24px; align-items: start; }
+#cap-organizacao .org-adl-esq { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+#cap-organizacao .org-adl-diag { min-width: 0; }
+#cap-organizacao .org-adl-res { display: flex; flex-direction: column; gap: 10px; }
+#cap-organizacao .org-adl-painel { display: flex; flex-direction: column; gap: 11px; }
+#cap-organizacao .org-esc {
+  position: relative; min-width: 0; border: 2px solid var(--borda-forte); border-radius: 16px; padding: 7px 12px 12px;
+  background: color-mix(in oklab, var(--superficie) 84%, transparent); transition: border-color .3s, background-color .3s;
+}
+#cap-organizacao .org-esc-nome { display: flex; align-items: center; gap: 10px; font: 600 18px/1.3 var(--fonte-mono); color: var(--texto-2); margin-bottom: 8px; white-space: nowrap; }
+#cap-organizacao .org-esc-tag { margin-left: auto; font: 700 15px/1 var(--fonte-mono); padding: 4px 8px; border-radius: 6px; opacity: 0; }
+#cap-organizacao .org-esc-dentro { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+/* escopos irmãos: cada um com a largura do seu conteúdo, nas pontas; a sobra no meio é o
+   corredor por onde passa a seta da ADL (vertical na grade dos exemplos de swap) */
+#cap-organizacao .org-esc-dentro.org-esc-filhos { flex-direction: row; flex-wrap: wrap; gap: 30px 40px; align-items: stretch; justify-content: space-between; }
+#cap-organizacao .org-esc-dentro.org-esc-grade { row-gap: 66px; }
+#cap-organizacao .org-esc-dentro > .org-esc { flex: 0 1 auto; }
+#cap-organizacao .org-esc-dentro > .org-esc:only-child { flex-grow: 1; }
+#cap-organizacao .org-esc-dentro > .org-esc.org-largo { flex-basis: 100%; }
+#cap-organizacao .org-esc-membro {
+  font: 500 18px/1.3 var(--fonte-mono); padding: 6px 10px; border-radius: 8px; white-space: pre;
+  background: var(--code-bg); color: var(--code-texto); border: 1px solid var(--code-borda);
+  transition: box-shadow .3s, border-color .3s;
+}
+#cap-organizacao .org-esc-bloco {
+  width: 100%; background: var(--code-bg); border: 1px solid var(--code-borda); border-radius: 10px; padding: 8px 12px;
+  font: 400 19px/1.6 var(--fonte-mono); color: var(--code-texto);
+}
+#cap-organizacao .org-esc-linha { white-space: pre; }
+#cap-organizacao .org-tipos { border-radius: 6px; padding-left: 8px; margin-left: -8px; transition: background-color .3s; }
+#cap-organizacao .org-tipos-on { background: rgba(96, 165, 250, .16); box-shadow: inset 3px 0 0 #60a5fa; animation: organizacao-aparece .4s both; animation-delay: var(--d, 0ms); }
+#cap-organizacao .org-tipos-on .tk-com { color: #93c5fd; font-style: normal; }
+#cap-organizacao .org-equivale { font-size: 18px; }
+#cap-organizacao .org-arg { position: relative; display: inline-block; border-radius: 6px; padding: 0 3px; }
+#cap-organizacao .org-arg-on { background: rgba(96, 165, 250, .26); box-shadow: 0 0 0 2px rgba(96, 165, 250, .65); animation: organizacao-pulso .6s var(--ease) both; animation-delay: var(--d, 0ms); }
+#cap-organizacao .org-esc.org-buscado { border-color: color-mix(in oklab, var(--erro) 60%, var(--borda-forte)); animation: organizacao-onda .75s var(--ease) both; animation-delay: var(--d, 0ms); }
+#cap-organizacao .org-esc.org-buscado > .org-esc-nome > .org-esc-tag { opacity: 1; background: color-mix(in oklab, var(--erro) 15%, transparent); color: var(--erro); animation: organizacao-aparece .3s both; animation-delay: calc(var(--d, 0ms) + .3s); }
+#cap-organizacao .org-esc.org-buscado.org-tag-ok { border-color: color-mix(in oklab, var(--aviso) 70%, var(--borda-forte)); }
+#cap-organizacao .org-esc.org-buscado.org-tag-ok > .org-esc-nome > .org-esc-tag { background: color-mix(in oklab, var(--aviso) 16%, transparent); color: var(--aviso); }
+#cap-organizacao .org-esc.org-associado {
+  border-color: var(--info); background: color-mix(in oklab, var(--info) 11%, var(--superficie));
+  box-shadow: 0 0 0 4px color-mix(in oklab, var(--info) 18%, transparent);
+  animation: organizacao-assoc .6s var(--ease) both; animation-delay: var(--d, 0ms);
+}
+#cap-organizacao .org-esc.org-associado > .org-esc-nome { color: var(--info); }
+#cap-organizacao .org-esc-membro.org-candidato { border-color: #fbbf24; box-shadow: 0 0 0 2px rgba(251, 191, 36, .45); animation: organizacao-pulso .6s both; animation-delay: var(--d, 0ms); }
+#cap-organizacao .org-esc-membro.org-vence { border-color: #4ade80; box-shadow: 0 0 0 3px rgba(74, 222, 128, .55), 0 0 22px -4px #4ade80; }
+#cap-organizacao .org-adl-lado { display: flex; flex-direction: column; gap: 11px; min-width: 0; }
+#cap-organizacao .org-adl-modos { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+#cap-organizacao .org-adl-modos .botao { justify-content: center; font-size: 17px; padding-left: 8px; padding-right: 8px; }
+#cap-organizacao .org-fase { padding: 11px 15px; border-radius: 14px; border: 1px solid var(--borda); background: var(--superficie); opacity: .45; display: flex; flex-direction: column; gap: 6px; }
+#cap-organizacao .org-fase-on { opacity: 1; animation: organizacao-sobe .4s var(--ease) both; animation-delay: var(--d, 0ms); }
+#cap-organizacao .org-fase-tit { display: flex; align-items: center; gap: 10px; font: 700 16px/1.2 var(--fonte-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--texto-2); }
+#cap-organizacao .org-fase-tit b { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; flex: none; background: var(--cor-suave); color: var(--cor-texto); }
+#cap-organizacao .org-fase p { font-size: 20px; line-height: 1.42; }
+#cap-organizacao .org-fase-2.org-fase-on { border-color: color-mix(in oklab, var(--info) 50%, transparent); }
+#cap-organizacao .org-fase-2.org-fase-on .org-fase-tit b { background: color-mix(in oklab, var(--info) 18%, transparent); color: var(--info); }
+#cap-organizacao .org-candidatos { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; animation: organizacao-sobe .4s var(--ease) both; animation-delay: var(--d, 0ms); }
+#cap-organizacao .org-cand { font: 600 18px/1.2 var(--fonte-mono); padding: 6px 10px; border-radius: 8px; background: var(--superficie-2); border: 1px solid var(--borda-forte); color: var(--texto-2); }
+#cap-organizacao .org-cand-vence { border-color: var(--ok); color: var(--ok); background: color-mix(in oklab, var(--ok) 10%, var(--superficie)); }
+#cap-organizacao .org-adl-saida { animation: organizacao-sobe .4s var(--ease) both; animation-delay: var(--d, 0ms); }
+
+/* ── widget: #include ─────────────────────────────────────────────────────── */
+#cap-organizacao .org-inc { display: grid; grid-template-columns: 530px minmax(0, 1fr); gap: 22px; align-items: start; }
+#cap-organizacao .org-inc-esq { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+#cap-organizacao .org-inc-modos { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+#cap-organizacao .org-inc-modos .org-rotulo-mini { width: 100%; }
+#cap-organizacao .org-inc-arqs { display: flex; flex-direction: column; gap: 9px; }
+#cap-organizacao .org-arq { border-radius: 12px; overflow: hidden; border: 1px solid var(--code-borda); background: var(--code-bg); box-shadow: var(--sombra-suave); }
+#cap-organizacao .org-arq-nome { padding: 5px 14px; background: var(--code-topo); color: #c8d3f5; font: 600 16px/1.25 var(--fonte-mono); border-bottom: 1px solid var(--code-borda); }
+#cap-organizacao .org-arq-cod { padding: 5px 0; font: 400 18px/1.5 var(--fonte-mono); color: var(--code-texto); }
+#cap-organizacao .org-arq-ln { padding: 0 14px; white-space: pre; transition: background-color .3s; }
+#cap-organizacao .org-arq-ln.org-ln-on { background: linear-gradient(90deg, rgba(251, 146, 60, .32), transparent 92%); box-shadow: inset 4px 0 0 #fb923c; }
+#cap-organizacao .org-inc-tu {
+  min-width: 0; display: flex; flex-direction: column; gap: 9px; padding: 12px 16px 14px; border-radius: 14px;
+  background: var(--code-bg); border: 1px solid var(--code-borda); box-shadow: var(--sombra);
+}
+#cap-organizacao .org-tu-tit { display: flex; justify-content: space-between; align-items: center; gap: 12px; font: 700 15px/1.25 var(--fonte-mono); letter-spacing: .1em; text-transform: uppercase; color: #8fa1c7; }
+#cap-organizacao .org-inc-tu code.org-tu-cmd { background: rgba(130, 150, 220, .12); color: #c8d3f5; border-color: transparent; text-transform: none; letter-spacing: 0; font-size: 16px; }
+#cap-organizacao .org-tu-lista { display: flex; flex-direction: column; gap: 8px; }
+#cap-organizacao .org-tu-lista .org-dica { color: #8fa1c7; }
+#cap-organizacao .org-seg {
+  --c: #8fa1c7; border-left: 4px solid var(--c); padding: 4px 12px 6px; border-radius: 0 9px 9px 0;
+  background: color-mix(in oklab, var(--c) 11%, transparent);
+  animation: organizacao-cola .5s var(--ease) both; animation-delay: var(--d, 0ms);
+}
+#cap-organizacao .org-seg-orig { font: 500 17px/1.35 var(--fonte-mono); color: #8fa1c7; }
+#cap-organizacao .org-seg-orig b { color: var(--c); }
+#cap-organizacao .org-seg-ln { font: 400 20px/1.45 var(--fonte-mono); color: var(--code-texto); white-space: pre; }
+#cap-organizacao .org-seg-nota { font: 600 18px/1.35 var(--fonte-mono); color: #fcd34d; }
+#cap-organizacao .org-seg-ponto { --c: #60a5fa; }
+#cap-organizacao .org-seg-forma { --c: #c084fc; }
+#cap-organizacao .org-seg-main { --c: #4ade80; }
+#cap-organizacao .org-seg-dup { --c: #f87171; box-shadow: 0 0 0 1px rgba(248, 113, 113, .45); }
+#cap-organizacao .org-seg-dup .org-seg-nota { color: #fca5a5; }
+#cap-organizacao .org-seg-pulado { --c: #6f7ca8; border-left-style: dashed; background: transparent; }
+#cap-organizacao .org-seg-pulado .org-seg-nota { color: #9fb3d9; }
+#cap-organizacao .org-tu-lista .org-inc-pergunta { color: #fcd34d; font-style: normal; font-weight: 600; font-size: 21px; margin-top: 4px; animation: organizacao-sobe .45s var(--ease) both; animation-delay: var(--d, 0ms); }
+#cap-organizacao .org-inc-veredito, #cap-organizacao .org-inc-ok { animation: organizacao-sobe .45s var(--ease) both; animation-delay: var(--d, 0ms); }
+#cap-organizacao .org-inc-ok { font: 600 19px/1.4 var(--fonte-texto); color: #4ade80; padding: 9px 14px; border-radius: 10px; background: rgba(74, 222, 128, .1); border: 1px solid rgba(74, 222, 128, .35); }
+#cap-organizacao .org-inc-ok code { background: rgba(130, 150, 220, .12); color: #d6deeb; border-color: transparent; }
+/* os números medidos: um cartão só, duas linhas */
+#cap-organizacao .org-inc-stats { display: flex; flex-direction: column; border-radius: 12px; background: var(--superficie); border: 1px solid var(--borda); }
+#cap-organizacao .org-stat { display: flex; flex-direction: column; gap: 2px; padding: 8px 14px; }
+#cap-organizacao .org-stat + .org-stat { border-top: 1px dashed var(--borda-forte); }
+#cap-organizacao .org-stat-num { font-size: 19px; color: var(--texto-2); }
+#cap-organizacao .org-stat-num b { color: var(--cor-texto); font: 700 26px/1 var(--fonte-numeros); }
+#cap-organizacao .org-stat-txt { font-size: 18px; line-height: 1.35; color: var(--texto-3); }
+
+/* ── widget: expansor de macros ───────────────────────────────────────────── */
+#cap-organizacao .org-exp { display: flex; flex-direction: column; gap: 14px; }
+#cap-organizacao .org-exp-escolha { display: flex; flex-wrap: wrap; gap: 7px; }
+#cap-organizacao .org-exp-escolha .botao { font-size: 17px; padding: 8px 12px; }
+#cap-organizacao .org-exp-linhas { display: flex; flex-direction: column; gap: 10px; }
+#cap-organizacao .org-x-linha { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 18px; align-items: center; animation: organizacao-sobe .45s var(--ease) both; animation-delay: var(--d, 0ms); }
+#cap-organizacao .org-x-rot { font: 700 16px/1.25 var(--fonte-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--texto-3); text-align: right; }
+#cap-organizacao .org-x-cod {
+  min-width: 0; background: var(--code-bg); border: 1px solid var(--code-borda); border-radius: 12px; padding: 10px 18px;
+  font: 400 var(--fs, 28px)/1.45 var(--fonte-mono); font-variant-ligatures: none; color: var(--code-texto); white-space: pre; overflow: hidden;
+}
+#cap-organizacao .org-x-exp .org-x-cod { border-color: color-mix(in oklab, var(--cor) 45%, transparent); box-shadow: 0 0 0 3px color-mix(in oklab, var(--cor) 12%, transparent); }
+#cap-organizacao .org-x-param, #cap-organizacao .org-x-param * { color: #fcd34d !important; }
+#cap-organizacao .org-x-param { text-decoration: underline 2px; text-underline-offset: 5px; text-decoration-color: rgba(252, 211, 77, .6); }
+#cap-organizacao .org-x-arg { display: inline-block; border-radius: 6px; padding: 0 2px; animation: organizacao-cai .5s var(--ease-mola) both; animation-delay: var(--d, 0ms); }
+#cap-organizacao .org-x-arg0 { background: rgba(96, 165, 250, .26); box-shadow: 0 0 0 2px rgba(96, 165, 250, .6); }
+#cap-organizacao .org-x-arg1 { background: rgba(192, 132, 252, .26); box-shadow: 0 0 0 2px rgba(192, 132, 252, .6); }
+#cap-organizacao .org-x-str, #cap-organizacao .org-x-str * { color: #c3e88d !important; }
+#cap-organizacao .org-x-cola { box-shadow: 0 0 0 2px rgba(251, 146, 60, .75) !important; background: rgba(251, 146, 60, .22) !important; }
+#cap-organizacao .org-x-va { outline: 2px dashed rgba(192, 132, 252, .7); outline-offset: 1px; border-radius: 4px; }
+#cap-organizacao .org-x-leitura { font-size: 26px; line-height: 1.5; padding: 4px 4px 30px; display: flex; flex-direction: column; gap: 4px; }
+#cap-organizacao .org-x-leitura code { font-size: .8em; }
+#cap-organizacao .org-g { position: relative; display: inline-block; font-family: var(--fonte-mono); padding: 0 6px; border-bottom: 3px solid var(--info); border-radius: 4px; background: color-mix(in oklab, var(--info) 10%, transparent); }
+#cap-organizacao .org-g[data-rot]::after {
+  content: attr(data-rot); position: absolute; left: 50%; top: calc(100% + 3px); transform: translateX(-50%);
+  font: 700 17px/1.2 var(--fonte-mono); color: var(--info); white-space: nowrap;
+}
+#cap-organizacao .org-g-ruim { border-bottom-color: var(--erro); background: color-mix(in oklab, var(--erro) 12%, transparent); }
+#cap-organizacao .org-g-ruim[data-rot]::after { color: var(--erro); }
+#cap-organizacao .org-x-str-txt, #cap-organizacao .org-x-leitura .org-x-str { font-family: var(--fonte-mono); color: var(--ok) !important; }
+#cap-organizacao .org-x-extra { font-size: 20px; color: var(--texto-2); margin-top: 24px; }
+#cap-organizacao .org-x-fim { display: flex; gap: 16px; align-items: center; padding-left: 238px; animation: organizacao-sobe .45s var(--ease) both; animation-delay: var(--d, 0ms); }
+#cap-organizacao .org-x-fim .org-term { flex: 1; }
+#cap-organizacao .org-veredito { font: 700 20px/1.2 var(--fonte-mono); padding: 10px 14px; border-radius: 12px; white-space: nowrap; flex: none; }
+#cap-organizacao .org-v-ok { color: var(--ok); background: color-mix(in oklab, var(--ok) 12%, transparent); border: 1px solid color-mix(in oklab, var(--ok) 40%, transparent); }
+#cap-organizacao .org-v-ruim { color: var(--erro); background: color-mix(in oklab, var(--erro) 12%, transparent); border: 1px solid color-mix(in oklab, var(--erro) 40%, transparent); }
+
+/* ── widget: do { } while (0) ─────────────────────────────────────────────── */
+#cap-organizacao .org-dw { display: flex; flex-direction: column; gap: 13px; }
+#cap-organizacao .org-dw-abas { display: flex; flex-wrap: wrap; gap: 9px; align-items: center; }
+#cap-organizacao .org-dw-palco { display: flex; flex-direction: column; gap: 13px; }
+#cap-organizacao .org-dw-topo { display: grid; grid-template-columns: 400px minmax(0, 1fr); gap: 20px; align-items: start; }
+#cap-organizacao .org-dw-uso, #cap-organizacao .org-dw-defs { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+#cap-organizacao .org-dw-bloco { background: var(--code-bg); border: 1px solid var(--code-borda); border-radius: 12px; padding: 9px 16px; box-shadow: var(--sombra-suave); }
+#cap-organizacao .org-dw-uso .org-dw-ln { color: var(--code-texto); font: 400 22px/1.5 var(--fonte-mono); white-space: pre; }
+#cap-organizacao .org-dw-def {
+  min-width: 0; background: var(--code-bg); border: 1px solid var(--code-borda); border-radius: 12px; padding: 12px 16px;
+  font: 400 18px/1.5 var(--fonte-mono); color: var(--code-texto); white-space: pre; overflow: hidden;
+}
+#cap-organizacao .org-dw-exp { display: flex; flex-direction: column; gap: 0; }
+#cap-organizacao .org-dw-exp .org-dw-ln {
+  background: var(--code-bg); color: var(--code-texto); font: 400 25px/2.5 var(--fonte-mono); padding: 0 18px; white-space: pre;
+  border-left: 1px solid var(--code-borda); border-right: 1px solid var(--code-borda);
+}
+#cap-organizacao .org-dw-exp .org-rotulo-mini { margin-bottom: 6px; }
+#cap-organizacao .org-dw-exp .org-dw-ln:nth-child(2) { border-radius: 12px 12px 0 0; border-top: 1px solid var(--code-borda); padding-top: 4px; }
+#cap-organizacao .org-dw-exp .org-dw-ln:last-child { border-radius: 0 0 12px 12px; border-bottom: 1px solid var(--code-borda); padding-bottom: 22px; }
+#cap-organizacao .org-dw-s { position: relative; display: inline-block; border-radius: 6px; line-height: 1.3; }
+#cap-organizacao .org-dw-analise .org-dw-s[data-rot]::after {
+  content: attr(data-rot); position: absolute; left: 0; top: calc(100% + 5px); white-space: nowrap;
+  font: 700 18px/1.2 var(--fonte-texto); letter-spacing: .01em;
+}
+#cap-organizacao .org-dw-analise .org-dw-s[data-rot] { animation: organizacao-marca .5s var(--ease) both; animation-delay: var(--d, 0ms); }
+#cap-organizacao .org-dw-analise .org-dw-corpo { outline: 2px dashed #60a5fa; outline-offset: 3px; background: rgba(96, 165, 250, .1); }
+#cap-organizacao .org-dw-analise .org-dw-corpo::after { color: #93c5fd; }
+#cap-organizacao .org-dw-analise .org-dw-vazio { outline: 3px solid #f87171; outline-offset: 2px; background: rgba(248, 113, 113, .3); padding: 0 3px; }
+#cap-organizacao .org-dw-analise .org-dw-vazio::after { color: #fca5a5; }
+#cap-organizacao .org-dw-analise .org-dw-orfao { text-decoration: underline wavy #f87171 2px; text-underline-offset: 6px; color: #fca5a5; }
+#cap-organizacao .org-dw-analise .org-dw-orfao::after { color: #fca5a5; }
+#cap-organizacao .org-dw-analise .org-dw-sempre { outline: 2px dashed #fbbf24; outline-offset: 3px; background: rgba(251, 191, 36, .1); }
+/* o rótulo do trecho que roda sempre se alinha à DIREITA do trecho (não encosta no rótulo vizinho) */
+#cap-organizacao .org-dw-analise .org-dw-s.org-dw-sempre[data-rot]::after { color: #fcd34d; left: auto; right: 0; }
+#cap-organizacao .org-dw-analise .org-dw-corpo.org-dw-ok { outline: 2px solid #4ade80; background: rgba(74, 222, 128, .1); }
+#cap-organizacao .org-dw-analise .org-dw-corpo.org-dw-ok::after { color: #86efac; }
+#cap-organizacao .org-dw-analise .org-dw-par { text-decoration: underline 2px #4ade80; text-underline-offset: 6px; }
+#cap-organizacao .org-dw-analise .org-dw-par::after { color: #86efac; }
+#cap-organizacao .org-dw-fim { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr); gap: 18px; align-items: start; animation: organizacao-sobe .45s var(--ease) both; animation-delay: var(--d, 0ms); }
+#cap-organizacao .org-dw-explica { font-size: 22px; line-height: 1.45; padding: 12px 16px; border-radius: 14px; background: var(--superficie); border: 1px solid var(--borda); }
+#cap-organizacao .org-dw-erro .org-dw-explica { border-color: color-mix(in oklab, var(--erro) 45%, transparent); }
+#cap-organizacao .org-dw-aviso .org-dw-explica { border-color: color-mix(in oklab, var(--aviso) 45%, transparent); }
+#cap-organizacao .org-dw-ok .org-dw-explica { border-color: color-mix(in oklab, var(--ok) 45%, transparent); }
+
+/* ── widget: compilação condicional ───────────────────────────────────────── */
+#cap-organizacao .org-cond { display: grid; grid-template-columns: 710px minmax(0, 1fr); gap: 24px; align-items: start; }
+#cap-organizacao .org-cond-esq, #cap-organizacao .org-cond-dir { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+#cap-organizacao .org-cond-cod { background: var(--code-bg); border: 1px solid var(--code-borda); border-radius: 14px; padding: 10px 0; font: 400 20px/1.5 var(--fonte-mono); color: var(--code-texto); box-shadow: var(--sombra); }
+#cap-organizacao .org-c-ln { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 0 14px; transition: opacity .35s, background-color .35s; }
+#cap-organizacao .org-c-txt { white-space: pre; }
+#cap-organizacao .org-c-av { font: 700 17px/1.2 var(--fonte-mono); padding: 3px 8px; border-radius: 6px; white-space: nowrap; animation: organizacao-aparece .3s both; animation-delay: var(--d, 0ms); }
+#cap-organizacao .org-c-sim { color: #4ade80; background: rgba(74, 222, 128, .13); }
+#cap-organizacao .org-c-nao { color: #f87171; background: rgba(248, 113, 113, .13); }
+#cap-organizacao .org-c-na { color: #8fa1c7; background: rgba(130, 150, 220, .12); }
+#cap-organizacao .org-c-vivo { background: linear-gradient(90deg, rgba(74, 222, 128, .17), transparent 88%); box-shadow: inset 4px 0 0 #4ade80; }
+#cap-organizacao .org-c-morto { opacity: .3; }
+#cap-organizacao .org-c-morto .org-c-txt { text-decoration: line-through; text-decoration-color: rgba(248, 113, 113, .8); }
+#cap-organizacao .org-cond-ctrl { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+#cap-organizacao .org-cond-ctrl .org-rotulo-mini { width: 100%; }
+#cap-organizacao .org-cond-cmd { font: 500 19px/1.3 var(--fonte-mono); padding: 9px 14px; border-radius: 10px; background: var(--code-bg); color: #e8edff; border: 1px solid var(--code-borda); }
+#cap-organizacao .org-cond-macros { display: flex; flex-direction: column; gap: 6px; }
+#cap-organizacao .org-cond-tab { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
+#cap-organizacao .org-cond-mac { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 9px; background: var(--superficie); border: 1px solid var(--borda); font: 600 18px/1.2 var(--fonte-mono); }
+#cap-organizacao .org-cond-mac b { color: var(--cor-texto); font-weight: 700; }
+#cap-organizacao .org-cond-mac code { font-size: 17px; }
+
+/* ── widget: atributos ────────────────────────────────────────────────────── */
+#cap-organizacao .org-atr { display: grid; grid-template-columns: 330px minmax(0, 1fr); gap: 24px; align-items: start; }
+#cap-organizacao .org-atr-lista { display: flex; flex-direction: column; gap: 8px; }
+#cap-organizacao .org-atr-item {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 12px; cursor: pointer;
+  border: 1px solid var(--borda); background: var(--superficie); color: var(--texto); font: 700 18px/1.2 var(--fonte-mono); text-align: left;
+  transition: border-color .25s, background-color .25s, transform .25s var(--ease), box-shadow .25s;
+}
+#cap-organizacao .org-atr-item:hover { transform: translateX(4px); border-color: var(--borda-forte); }
+#cap-organizacao .org-atr-item[aria-pressed="true"] { border-color: var(--cor); background: var(--cor-suave); box-shadow: 0 0 0 3px var(--cor-suave); }
+#cap-organizacao .org-atr-nome { color: var(--aviso); }
+#cap-organizacao .org-atr-palco { display: flex; flex-direction: column; gap: 11px; min-width: 0; }
+#cap-organizacao .org-atr-palco > * { animation: organizacao-sobe .45s var(--ease) both; animation-delay: var(--d, 0ms); }
+#cap-organizacao .org-atr-papel { font-size: 23px; line-height: 1.4; }
+#cap-organizacao .org-atr-papel b { color: var(--aviso); font-family: var(--fonte-mono); }
+#cap-organizacao .org-atr-intro { padding: 30px 34px; border-radius: 20px; border: 1px dashed var(--borda-forte); display: flex; flex-direction: column; gap: 18px; }
+#cap-organizacao .org-atr-palco .codigo { box-shadow: var(--sombra-suave); }
+
+/* ── widget: nm (linkage) ─────────────────────────────────────────────────── */
+/* coluna do código só da largura dele: o vão de 110 px é por onde as setas passam (e se cruzam) */
+#cap-organizacao .org-nm { display: grid; grid-template-columns: 600px minmax(0, 1fr); gap: 18px 110px; align-items: start; }
+#cap-organizacao .org-nm-painel { min-width: 0; background: var(--code-bg); border: 1px solid var(--code-borda); border-radius: 14px; overflow: hidden; box-shadow: var(--sombra); }
+#cap-organizacao .org-nm-tit { padding: 9px 16px; background: var(--code-topo); border-bottom: 1px solid var(--code-borda); font: 500 16px/1.25 var(--fonte-mono); color: #c8d3f5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#cap-organizacao .org-nm-tit b { color: #e8edff; }
+#cap-organizacao .org-nm-corpo { padding: 8px 0; font: 400 19px/1.6 var(--fonte-mono); color: var(--code-texto); }
+#cap-organizacao .org-nm-c, #cap-organizacao .org-nm-l { padding: 0 16px; white-space: pre; transition: background-color .3s, opacity .3s, box-shadow .3s; }
+#cap-organizacao .org-nm-l { display: flex; gap: 12px; }
+#cap-organizacao .org-nm-end { color: #4a5884; }
+#cap-organizacao .org-nm-letra { width: 1.4em; text-align: center; border-radius: 5px; font-weight: 800; flex: none; }
+#cap-organizacao .org-maius { color: #fdba74; }
+#cap-organizacao .org-minus { color: #93c5fd; }
+#cap-organizacao .org-nm-nome { color: #d6deeb; }
+#cap-organizacao .org-nm-c.org-on, #cap-organizacao .org-nm-l.org-on { background: linear-gradient(90deg, rgba(251, 146, 60, .3), transparent 94%); box-shadow: inset 4px 0 0 #fb923c; }
+#cap-organizacao .org-nm-c.org-on.org-alerta, #cap-organizacao .org-nm-l.org-on.org-alerta { background: linear-gradient(90deg, rgba(251, 191, 36, .3), transparent 94%); box-shadow: inset 4px 0 0 #fbbf24; }
+#cap-organizacao .org-nm-l.org-on .org-nm-letra { background: rgba(255, 255, 255, .1); }
+#cap-organizacao .org-nm-exp { grid-column: 1 / -1; display: flex; gap: 22px; align-items: center; min-height: 118px; padding: 14px 20px; border-radius: 16px; background: var(--superficie); border: 1px solid var(--borda); }
+#cap-organizacao .org-nm-badge {
+  width: 90px; height: 90px; flex: none; border-radius: 20px; display: grid; place-items: center;
+  font: 800 56px/1 var(--fonte-mono); background: var(--code-bg); border: 2px solid currentColor;
+  animation: organizacao-alvo .5s var(--ease-mola) both;
+}
+#cap-organizacao .org-nm-badge.org-alerta { color: #fcd34d; }
+#cap-organizacao .org-nm-txt { display: flex; flex-direction: column; gap: 4px; animation: organizacao-sobe .4s var(--ease) both; animation-delay: .1s; }
+#cap-organizacao .org-nm-txt p { font-size: 22px; line-height: 1.42; }
+#cap-organizacao .org-nm-link { font: 700 16px/1.2 var(--fonte-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--texto-3); }
+#cap-organizacao .org-nm-link b { color: var(--cor-texto); }
+#cap-organizacao .org-nm-legenda { font-size: 21px; line-height: 1.5; color: var(--texto-2); }
+
+/* ── widget: ODR ───────────────────────────────────────────────────────────── */
+#cap-organizacao .org-odr { display: flex; flex-direction: column; gap: 13px; }
+#cap-organizacao .org-odr-ctrl { display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap; }
+/* vão largo entre as TUs: a seta "usa_em_b → o dobro que ficou" precisa de espaço para se ler */
+#cap-organizacao .org-odr-tus { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 90px; }
+#cap-organizacao .org-odr-tu { min-width: 0; border-radius: 14px; overflow: hidden; border: 1px solid var(--code-borda); background: var(--code-bg); box-shadow: var(--sombra-suave); transition: box-shadow .4s; }
+#cap-organizacao .org-odr-vence { box-shadow: 0 0 0 2px rgba(74, 222, 128, .5), var(--sombra-suave); }
+#cap-organizacao .org-odr-cod { padding: 7px 0; font: 400 19px/1.5 var(--fonte-mono); color: var(--code-texto); border-bottom: 1px dashed var(--code-borda); }
+#cap-organizacao .org-odr-ln { padding: 0 14px; white-space: pre; }
+#cap-organizacao .org-odr-ruim { background: linear-gradient(90deg, rgba(248, 113, 113, .14), transparent 85%); box-shadow: inset 3px 0 0 rgba(248, 113, 113, .75); }
+#cap-organizacao .org-odr-simb { padding: 7px 14px 11px; font: 400 19px/1.55 var(--fonte-mono); color: var(--code-texto); display: flex; flex-direction: column; gap: 1px; }
+#cap-organizacao .org-odr-simb .org-rotulo-mini { color: #6f7ca8; margin-bottom: 3px; }
+#cap-organizacao .org-odr-s { display: flex; gap: 12px; align-items: center; padding: 0 6px; border-radius: 6px; }
+#cap-organizacao .org-odr-tag { margin-left: auto; font: 700 18px/1.2 var(--fonte-texto); }
+#cap-organizacao .org-mantido { background: rgba(74, 222, 128, .16); box-shadow: inset 3px 0 0 #4ade80; animation: organizacao-pulso .6s both; animation-delay: var(--d, 0ms); }
+#cap-organizacao .org-mantido .org-odr-tag { color: #4ade80; }
+#cap-organizacao .org-descartado > span:not(.org-odr-tag) { text-decoration: line-through; text-decoration-color: #f87171; opacity: .5; }
+#cap-organizacao .org-descartado .org-odr-tag { color: #f87171; }
+#cap-organizacao .org-odr-inl { margin-top: 4px; font: 600 18px/1.35 var(--fonte-texto); color: #fcd34d; }
+#cap-organizacao .org-odr-ld { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px 90px; align-items: start; }
+#cap-organizacao .org-odr-txt { font-size: 22px; line-height: 1.45; animation: organizacao-sobe .4s var(--ease) both; animation-delay: .2s; }
+#cap-organizacao .org-odr-esq { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+#cap-organizacao .org-odr-regra { font-size: 19px; line-height: 1.42; color: var(--texto-2); padding: 8px 14px; border-left: 3px solid var(--cor); border-radius: 0 10px 10px 0; background: var(--superficie); }
+#cap-organizacao .org-odr-ld .org-term { animation: organizacao-sobe .4s var(--ease) both; animation-delay: .35s; }
+#cap-organizacao .org-odr-selo { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; font-size: 20px; color: var(--texto-2); animation: organizacao-sobe .4s var(--ease) both; animation-delay: .6s; }
+#cap-organizacao .org-odr-selo b { font: 700 17px/1.2 var(--fonte-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--erro); padding: 6px 10px; border-radius: 8px; border: 1px solid color-mix(in oklab, var(--erro) 45%, transparent); background: color-mix(in oklab, var(--erro) 10%, transparent); }
+
+/* ── widget: name mangling ────────────────────────────────────────────────── */
+#cap-organizacao .org-mg { display: flex; flex-direction: column; gap: 14px; }
+#cap-organizacao .org-mg-lista { display: flex; flex-wrap: wrap; gap: 7px; }
+#cap-organizacao .org-mg-lista .botao { font-size: 17px; padding: 8px 12px; }
+#cap-organizacao .org-mg-palco { display: flex; flex-direction: column; gap: 12px; }
+#cap-organizacao .org-mg-sim {
+  display: flex; flex-wrap: nowrap; align-items: flex-end; gap: 4px; padding: 40px 22px 14px; border-radius: 16px;
+  background: var(--code-bg); border: 1px solid var(--code-borda); box-shadow: var(--sombra);
+  font: 600 var(--fs, 32px)/1.15 var(--fonte-mono); font-variant-ligatures: none; overflow: hidden;
+}
+#cap-organizacao .org-mg-seg { --c: #d6deeb; position: relative; padding: 2px 3px 6px; color: #d6deeb; border-bottom: 4px solid transparent; white-space: pre; }
+#cap-organizacao .org-mg-sim:not(.org-mg-dec) { gap: 0; }
+#cap-organizacao .org-mg-sim:not(.org-mg-dec) .org-mg-seg { padding-left: 0; padding-right: 0; }
+#cap-organizacao .org-mg-dec .org-mg-seg { color: var(--c); border-bottom-color: var(--c); animation: organizacao-sobe .4s var(--ease) both; animation-delay: var(--d, 0ms); }
+#cap-organizacao .org-mg-dec .org-mg-seg:not([data-n=""])::before {
+  content: attr(data-n); position: absolute; top: -31px; left: 50%; transform: translateX(-50%);
+  width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
+  font: 800 15px/1 var(--fonte-mono); background: var(--c); color: #0a0f1f;
+}
+#cap-organizacao .org-mg-pre { --c: #fb923c; }
+#cap-organizacao .org-mg-num { --c: #f78c6c; }
+#cap-organizacao .org-mg-nome { --c: #e8edff; }
+#cap-organizacao .org-mg-tipo { --c: #ffcb8b; }
+#cap-organizacao .org-mg-qual { --c: #c792ea; }
+#cap-organizacao .org-mg-ani { --c: #8fa1c7; }
+#cap-organizacao .org-mg-sub { --c: #82aaff; }
+#cap-organizacao .org-mg-abi { --c: #fbbf24; }
+#cap-organizacao .org-mg-dest { --c: #4ade80; }
+#cap-organizacao .org-mg-legenda { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px 18px; }
+#cap-organizacao .org-mg-item { display: flex; align-items: center; gap: 9px; min-width: 0; font-size: 19px; line-height: 1.3; color: var(--texto-2); animation: organizacao-sobe .4s var(--ease) both; animation-delay: var(--d, 0ms); }
+#cap-organizacao .org-mg-n { flex: none; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font: 800 15px/1 var(--fonte-mono); background: var(--c); color: #0a0f1f; }
+#cap-organizacao code.org-mg-cod { flex: none; background: var(--code-bg); border-color: var(--code-borda); color: var(--c); font-weight: 700; }
+#cap-organizacao .org-mg-filt, #cap-organizacao .org-mg-palco > .org-nota { animation: organizacao-sobe .4s var(--ease) both; animation-delay: var(--d, 0ms); }
+#cap-organizacao .org-mg-palco > .org-dica { font-size: 23px; }
+#cap-organizacao .org-mg-comp { display: flex; flex-direction: column; gap: 10px; }
+#cap-organizacao .org-mg-comp-l {
+  display: grid; grid-template-columns: 470px minmax(0, 1fr); align-items: center; gap: 20px; padding: 14px 22px; border-radius: 16px;
+  background: var(--code-bg); border: 1px solid var(--code-borda); animation: organizacao-sobe .4s var(--ease) both;
+}
+#cap-organizacao .org-mg-comp-rot { font: 500 18px/1.3 var(--fonte-mono); color: #8fa1c7; }
+#cap-organizacao .org-mg-comp-sim { font: 700 var(--fs, 40px)/1.15 var(--fonte-mono); }
+#cap-organizacao .org-mg-velho .org-mg-comp-sim { color: #8fa1c7; text-decoration: line-through; text-decoration-color: rgba(248, 113, 113, .7); }
+#cap-organizacao .org-mg-novo { border-color: rgba(74, 222, 128, .55); box-shadow: 0 0 0 3px rgba(74, 222, 128, .15); animation-delay: .25s; }
+#cap-organizacao .org-mg-novo .org-mg-comp-sim { color: #4ade80; }
+
+/* ── slides avulsos ───────────────────────────────────────────────────────── */
+#cap-organizacao .org-tab-subst { font-size: 20px; }
+#cap-organizacao .org-tab-subst td { padding: 7px 16px; }
+#cap-organizacao .org-tab-subst th { padding: 9px 16px; }
+#cap-organizacao .org-tab-macros td { padding: 7px 14px; }
+#cap-organizacao .org-tab-macros th { padding: 9px 14px; }
+#cap-organizacao .org-atr-real { display: grid; grid-template-columns: 905px minmax(0, 1fr); gap: 28px; align-items: start; }
+#cap-organizacao .org-atr-cards .card .pequeno { font-size: 22px; }
+/* static × inline: duas células static (uma por TU, lado a lado) e UMA célula inline
+   que atravessa as duas colunas — as "pernas" tracejadas ligam cada TU a ela */
+#cap-organizacao .org-memorias { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 18px; }
+#cap-organizacao .org-mem-rot { font: 700 16px/1 var(--fonte-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--texto-3); text-align: center; }
+#cap-organizacao .org-mem-cel {
+  position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto auto; gap: 5px 12px; align-items: center;
+  padding: 11px 16px; border-radius: 14px; border: 2px solid var(--borda-forte); background: var(--superficie-2);
+}
+#cap-organizacao .org-mem-cel b { font: 600 18px/1.2 var(--fonte-mono); color: var(--texto-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#cap-organizacao .org-mem-cel b i { font: 500 18px/1.2 var(--fonte-texto); color: var(--ok); }
+#cap-organizacao .org-mem-cel span { grid-row: 1 / span 2; grid-column: 2; font: 700 46px/1 var(--fonte-numeros); color: var(--texto); }
+#cap-organizacao .org-mem-cel small { font: 400 17px/1 var(--fonte-mono); color: var(--texto-3); }
+#cap-organizacao .org-mem-static { border-color: color-mix(in oklab, var(--aviso) 60%, transparent); background: color-mix(in oklab, var(--aviso) 7%, var(--superficie-2)); }
+#cap-organizacao .org-mem-inline { border-color: var(--ok); background: color-mix(in oklab, var(--ok) 9%, var(--superficie-2)); box-shadow: 0 0 0 4px color-mix(in oklab, var(--ok) 15%, transparent); }
+#cap-organizacao .org-mem-largo { grid-column: 1 / -1; margin-top: 16px; }
+#cap-organizacao .org-mem-largo::before, #cap-organizacao .org-mem-largo::after {
+  content: ""; position: absolute; top: -26px; height: 22px; border-left: 2px dashed var(--ok);
+}
+#cap-organizacao .org-mem-largo::before { left: calc(25% - 5px); }
+#cap-organizacao .org-mem-largo::after { left: calc(75% + 4px); }
+/* extern "C": a mensagem do compilador como um trecho de terminal, dentro do card */
+#cap-organizacao .org-erro-linha {
+  margin-top: 10px; padding: 8px 14px; border-radius: 10px; background: var(--code-bg); border: 1px solid var(--code-borda);
+  font: 500 18px/1.4 var(--fonte-mono); font-variant-ligatures: none; color: #fca5a5;
+}
+/* comentários: o verso repete o comentário julgado (ao voltar, a carta já virada ainda diz qual era) */
+#cap-organizacao .org-carta code { font-size: 21px; }
+#cap-organizacao .org-carta .verso p { margin-top: 10px; }
+#cap-organizacao .org-assercoes { display: grid; grid-template-columns: 660fr 708fr; gap: 40px; align-items: start; }
+#cap-organizacao .org-resumo { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px 30px; padding: 0; }
+#cap-organizacao .org-resumo > li { font-size: 24px; padding-top: 14px; padding-bottom: 14px; }
+#cap-organizacao .org-links { gap: 12px; margin-top: 12px; }
+
+/* ── animações ────────────────────────────────────────────────────────────── */
+@keyframes organizacao-sobe { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+@keyframes organizacao-aparece { from { opacity: 0; } to { opacity: 1; } }
+@keyframes organizacao-desenha { to { stroke-dashoffset: 0; } }
+@keyframes organizacao-surge { from { opacity: 0; transform: scale(.7); } to { opacity: 1; transform: none; } }
+@keyframes organizacao-cola { from { opacity: 0; transform: translateX(-30px); } to { opacity: 1; transform: none; } }
+@keyframes organizacao-cai { from { opacity: 0; transform: translateY(-24px) scale(.9); } to { opacity: 1; transform: none; } }
+@keyframes organizacao-acende {
+  from { border-color: var(--borda-forte); background-color: transparent; box-shadow: 0 0 0 0 transparent; }
+  50% { box-shadow: 0 0 0 7px color-mix(in oklab, var(--cor) 28%, transparent); }
+}
+@keyframes organizacao-alvo { from { transform: scale(.86); opacity: .4; } to { transform: none; opacity: 1; } }
+@keyframes organizacao-onda {
+  from { border-color: var(--borda-forte); box-shadow: 0 0 0 0 color-mix(in oklab, var(--erro) 45%, transparent); }
+  45% { box-shadow: 0 0 0 9px color-mix(in oklab, var(--erro) 20%, transparent); }
+  to { box-shadow: 0 0 0 0 transparent; }
+}
+@keyframes organizacao-assoc {
+  from { border-color: var(--borda-forte); background-color: transparent; box-shadow: 0 0 0 0 transparent; }
+  50% { box-shadow: 0 0 0 12px color-mix(in oklab, var(--info) 25%, transparent); }
+}
+@keyframes organizacao-pulso { from { transform: scale(.94); filter: brightness(1.6); } to { transform: none; filter: none; } }
+@keyframes organizacao-marca { from { outline-color: transparent; background-color: transparent; } }

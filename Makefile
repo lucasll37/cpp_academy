@@ -2,7 +2,7 @@
 SHELL = /bin/bash
 .SHELLFLAGS = -ec
 
-.PHONY: clean configure build install package all run test test-cmake smoke help
+.PHONY: clean configure build install package all run test test-cmake smoke help open
 .PHONY: run
 .PHONY: python
 
@@ -131,6 +131,26 @@ run: ## Run one installed binary:  make run BIN=concurrency2
 	  echo "não existe: $(DIST_DIR)/bin/$(BIN)"; \
 	  echo "disponíveis:"; ls "$(DIST_DIR)/bin" | column -c 100; exit 1; }
 	$(DIST_DIR)/bin/$(BIN)
+
+# `make open PROJ=nome` — abre no navegador padrão a apresentação (aula em
+# slides, HTML estático) de um subprojeto: src/<nome>/apresentacao/index.html.
+#
+# A detecção de ambiente mora em scripts/open.sh: no WSL abre o navegador do
+# WINDOWS (o caminho vira \\wsl.localhost\…), no Git Bash/MSYS2 usa o explorer,
+# no macOS o `open`, no Linux o $BROWSER/xdg-open. NAVEGADOR=firefox força um.
+PROJ ?= syntax
+
+open: ## Open a subproject's slide deck in the default browser:  make open PROJ=syntax
+	@deck="src/$(PROJ)/apresentacao/index.html"
+	if [ ! -f "$$deck" ]; then
+	  echo "sem apresentação: $$deck"
+	  echo "subprojetos com apresentação:"
+	  for d in src/*/apresentacao/index.html; do
+	    [ -f "$$d" ] && echo "  make open PROJ=$$(basename "$$(dirname "$$(dirname "$$d")")")"
+	  done
+	  exit 1
+	fi
+	bash scripts/open.sh "$$deck"
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'

@@ -1,0 +1,236 @@
+/* =============================================================================
+   widgets/encerramento.css — estilos do Encerramento
+   Todo seletor começa com #cap-encerramento; @keyframes com o prefixo encerramento-.
+   ============================================================================= */
+
+/* ── E1 · Divisor ───────────────────────────────────────────────────────── */
+#cap-encerramento .divisor .numero-cap { right: 70px; bottom: 120px; font-size: 560px; line-height: .8; }
+
+/* ── E2 · A aula em 9 frases ────────────────────────────────────────────── */
+#cap-encerramento .slide ul.en-resumo { display: flex; flex-direction: column; gap: 9px; }
+#cap-encerramento .en-resumo > li { font-size: 24px; line-height: 1.35; padding: 8px 16px 8px 56px; border-left: 3px solid var(--c); }
+#cap-encerramento .en-resumo > li::before { background: var(--c); top: 12px; left: 17px; width: 25px; height: 25px; }
+#cap-encerramento .en-rn {
+  display: inline-block; margin-right: 10px; padding: 3px 7px; border-radius: 7px; vertical-align: 2px;
+  font: 700 17px/1 var(--fonte-mono); color: color-mix(in oklab, var(--c) 85%, var(--texto));
+  background: color-mix(in oklab, var(--c) 15%, transparent); border: 1px solid color-mix(in oklab, var(--c) 40%, transparent);
+}
+:root[data-tema="claro"] #cap-encerramento .en-rn { color: color-mix(in oklab, var(--c) 55%, #000); }
+#cap-encerramento .en-links { gap: 12px; margin-top: 10px; }
+#cap-encerramento .en-links .aprofundar { font-size: 18px; padding: 6px 12px 6px 10px; }
+
+/* ── E3/E4 · Regras de ouro ─────────────────────────────────────────────── */
+/* 4 trilhas iguais: o tema com 4 regras (.en-larga) ocupa 2 e vira uma grade 2×2 —
+   as três colunas terminam juntas, sem buraco embaixo das menores */
+#cap-encerramento .en-regras { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr); gap: 22px; align-items: stretch; flex: 1; min-height: 0; }
+#cap-encerramento .en-col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+#cap-encerramento .en-col > .en-regra { flex: 1 1 0; }
+#cap-encerramento .en-col.en-larga { grid-column: span 2; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: auto; grid-auto-rows: 1fr; gap: 14px; }
+#cap-encerramento .en-col.en-larga > .en-col-t { grid-column: 1 / -1; }
+#cap-encerramento .en-col-t {
+  display: flex; align-items: baseline; gap: 12px; padding: 0 4px 10px;
+  font: 700 19px/1 var(--fonte-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--c);
+  border-bottom: 2px solid color-mix(in oklab, var(--c) 45%, transparent);
+}
+#cap-encerramento .en-col-t b { font: 700 32px/1 var(--fonte-numeros); letter-spacing: 0; }
+:root[data-tema="claro"] #cap-encerramento .en-col-t { color: color-mix(in oklab, var(--c) 62%, #000); }
+#cap-encerramento .en-regra {
+  position: relative; display: flex; flex-direction: column; padding: 16px 16px 18px 18px; border-radius: 16px; cursor: pointer; outline: none;
+  background: var(--superficie); border: 1px solid var(--borda); box-shadow: var(--sombra-suave);
+  transition: border-color .4s, box-shadow .4s, transform .4s var(--ease), background-color .4s;
+}
+#cap-encerramento .en-regra:hover, #cap-encerramento .en-regra:focus-visible { border-color: var(--borda-forte); transform: translateY(-2px); }
+#cap-encerramento .en-sit { font-size: 20px; line-height: 1.3; color: var(--texto-2); }
+#cap-encerramento .en-sit::after { content: ""; display: block; clear: both; }
+#cap-encerramento .en-sit code { font-size: .88em; }
+#cap-encerramento .en-faca {
+  margin: auto 0; padding-top: 8px; font: 650 26px/1.3 var(--fonte-display); color: var(--texto);
+  transition: filter .55s var(--ease), opacity .55s var(--ease); transition-delay: calc(var(--i, 0) * 110ms);
+}
+#cap-encerramento .en-col:not(.en-revelada) .en-regra:not(.en-vista) .en-faca { filter: blur(9px); opacity: .4; transition-delay: 0s; }
+#cap-encerramento .en-col.en-revelada .en-regra { border-left: 4px solid var(--c); }
+#cap-encerramento .en-col.en-atual .en-regra {
+  background: color-mix(in oklab, var(--c) 7%, var(--superficie));
+  box-shadow: 0 18px 50px -26px color-mix(in oklab, var(--c) 75%, transparent);
+}
+#cap-encerramento .en-regra.en-vista { border-left: 4px dashed var(--c); }
+/* revelado no clique (um cartão só): sem o atraso da cascata da coluna */
+#cap-encerramento .en-col:not(.en-revelada) .en-regra.en-vista .en-faca { transition-delay: 0s; }
+#cap-encerramento .en-onde {
+  float: right; margin: 0 0 6px 12px; white-space: nowrap;
+  font: 600 17px/1 var(--fonte-mono); padding: 5px 8px; border-radius: 8px;
+  color: color-mix(in oklab, var(--c) 82%, var(--texto));
+  background: color-mix(in oklab, var(--c) 14%, transparent);
+  border: 1px solid color-mix(in oklab, var(--c) 42%, transparent);
+}
+:root[data-tema="claro"] #cap-encerramento .en-onde { color: color-mix(in oklab, var(--c) 55%, #000); }
+
+/* ── E5 · Como validar 1 ────────────────────────────────────────────────── */
+#cap-encerramento .en-confere > li { font-size: 26px; padding-bottom: 30px; }
+/* cada item é marcado (✓) no passo em que o terminal mostra o que ele pede */
+#cap-encerramento .en-confere > li::before { transition: background-color .4s, color .4s, border-color .4s, transform .5s var(--ease-mola); }
+#cap-encerramento .en-confere > li.fragment.visivel::before {
+  content: "✓"; font: 900 22px/1 var(--fonte-texto); background: var(--ok); border-color: var(--ok); color: #052e16;
+}
+#cap-encerramento .slide.ativo .en-confere > li.fragment.visivel.atual::before { animation: encerramento-marca .6s var(--ease-mola); }
+.estatico #cap-encerramento .en-confere > li::before { animation: none !important; }
+#cap-encerramento .en-legenda { margin-top: auto; }
+#cap-encerramento .en-turq { color: var(--turquesa); font-weight: 700; }
+#cap-encerramento .en-lima { color: var(--lima); font-weight: 700; }
+:root[data-tema="claro"] #cap-encerramento .en-turq { color: color-mix(in oklab, var(--turquesa) 55%, #000); }
+:root[data-tema="claro"] #cap-encerramento .en-lima { color: color-mix(in oklab, var(--lima) 70%, #000); }
+
+/* ── E6 · Como validar 2 e 3 ────────────────────────────────────────────── */
+#cap-encerramento .en-validar { display: flex; flex-direction: column; gap: 14px; }
+#cap-encerramento .en-fmtp .codigo { box-shadow: none; }
+#cap-encerramento .en-etapa {
+  display: grid; grid-template-columns: 48px 212px minmax(0, 1fr) 270px; align-items: center; gap: 18px;
+  padding: 14px 18px; border-radius: 18px; background: var(--superficie); border: 1px solid var(--borda);
+  box-shadow: var(--sombra-suave); transition: opacity .5s var(--ease), border-color .5s, box-shadow .5s;
+}
+#cap-encerramento .en-etapa .codigo { box-shadow: none; }
+#cap-encerramento .en-num {
+  width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; cursor: pointer;
+  font: 700 21px/1 var(--fonte-mono); color: var(--cor-texto); background: var(--cor-suave); border: 2px solid var(--cor);
+  transition: background-color .4s, color .4s, border-color .4s;
+}
+#cap-encerramento .en-et-t { display: flex; flex-direction: column; gap: 6px; }
+#cap-encerramento .en-et-t b { font: 700 23px/1.15 var(--fonte-display); }
+#cap-encerramento .en-et-t span { font-size: 18px; color: var(--texto-3); }
+#cap-encerramento .en-res { display: flex; flex-direction: column; gap: 8px; }
+#cap-encerramento .en-barra { display: block; height: 8px; border-radius: 4px; background: var(--superficie-3); overflow: hidden; }
+#cap-encerramento .en-barra i { display: block; height: 100%; background: linear-gradient(90deg, var(--cor), var(--ok)); transform: scaleX(0); transform-origin: left; }
+#cap-encerramento .en-val { font: 700 27px/1.1 var(--fonte-numeros); color: var(--ok); white-space: nowrap; opacity: 0; transform: translateY(6px); transition: opacity .4s var(--ease), transform .5s var(--ease); }
+#cap-encerramento .en-val::before { content: "✓ "; }
+#cap-encerramento .en-res small { font: 500 17px/1.2 var(--fonte-mono); color: var(--texto-3); opacity: 0; transition: opacity .4s var(--ease) .1s; }
+#cap-encerramento .en-etapa.en-espera { opacity: .45; }
+#cap-encerramento .en-etapa.en-rodando .en-barra i { transform: scaleX(1); transition: transform 1.2s cubic-bezier(.5, .1, .4, 1); }
+#cap-encerramento .en-etapa.en-ok .en-barra i { transform: scaleX(1); }
+#cap-encerramento .en-etapa.en-ok .en-val, #cap-encerramento .en-etapa.en-ok .en-res small { opacity: 1; transform: none; }
+#cap-encerramento .en-etapa.en-ok { border-color: color-mix(in oklab, var(--ok) 40%, transparent); }
+#cap-encerramento .en-etapa.en-ok .en-num { background: var(--ok); border-color: var(--ok); color: #052e16; }
+#cap-encerramento .en-porque { margin-top: 4px; }
+
+/* ── E8 · Referências ───────────────────────────────────────────────────── */
+#cap-encerramento .en-ref-t { font: 700 16px/1 var(--fonte-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--texto-3); margin-bottom: 4px; }
+/* a lista do repositório ocupa a mesma altura que os cartões das fontes canônicas;
+   576 px: cada item (link + descrição) cabe numa linha */
+#cap-encerramento .en-refs { grid-template-columns: 576px minmax(0, 1fr); }
+#cap-encerramento .en-refs-repo { justify-content: space-between; padding-bottom: 2px; }
+#cap-encerramento .en-ref { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; }
+#cap-encerramento .en-ref .aprofundar { font-size: 19px; padding: 7px 13px 7px 11px; }
+#cap-encerramento .en-ref span { font-size: 19px; color: var(--texto-2); }
+#cap-encerramento .en-canon { display: flex; flex-direction: column; justify-content: space-between; gap: 14px; min-width: 0; }
+#cap-encerramento .en-fonte { padding: 16px 22px 18px; }
+#cap-encerramento .en-fonte .rotulo { color: color-mix(in oklab, var(--c) 82%, var(--texto)); }
+:root[data-tema="claro"] #cap-encerramento .en-fonte .rotulo { color: color-mix(in oklab, var(--c) 55%, #000); }
+#cap-encerramento .en-fonte p { font-size: 20px; line-height: 1.5; color: var(--texto-2); }
+#cap-encerramento .en-fonte a { color: var(--texto); font-weight: 600; }
+
+/* ── E9 · Trilha ────────────────────────────────────────────────────────── */
+#cap-encerramento .en-trilha { position: relative; display: flex; flex-direction: column; gap: 30px; padding-left: 58px; flex: 1; min-height: 0; }
+#cap-encerramento .en-metro-svg { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+#cap-encerramento .en-metro-fundo { fill: none; stroke: var(--borda-forte); stroke-width: 4; stroke-linecap: round; }
+#cap-encerramento .en-metro {
+  fill: none; stroke: var(--cor); stroke-width: 6; stroke-linecap: round; stroke-dasharray: 1; stroke-dashoffset: 1;
+  filter: drop-shadow(0 0 6px color-mix(in oklab, var(--cor) 60%, transparent));
+  transition: stroke-dashoffset 1s var(--ease);
+}
+#cap-encerramento .en-estacao { fill: var(--bg); stroke: var(--borda-forte); stroke-width: 3; transition: fill .4s, stroke .4s, r .4s var(--ease-mola); }
+#cap-encerramento .en-estacao.en-on { fill: var(--c); stroke: var(--c); }
+#cap-encerramento .en-estacao.en-atual { r: 13px; stroke: var(--texto); }
+#cap-encerramento .en-tier { display: grid; grid-template-columns: 244px minmax(0, 1fr); gap: 18px; align-items: start; opacity: .38; transition: opacity .5s var(--ease); }
+#cap-encerramento .en-tier.en-on { opacity: 1; }
+#cap-encerramento .en-tier-t { display: flex; flex-direction: column; gap: 5px; padding-top: 4px; }
+#cap-encerramento .en-tier-t b { font: 700 25px/1 var(--fonte-display); color: var(--c); }
+:root[data-tema="claro"] #cap-encerramento .en-tier-t b { color: color-mix(in oklab, var(--c) 62%, #000); }
+#cap-encerramento .en-tier-t span { font-size: 17px; color: var(--texto-2); }
+#cap-encerramento .en-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+#cap-encerramento .en-chip {
+  display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 10px; text-decoration: none;
+  font: 600 17px/1.15 var(--fonte-mono); color: var(--texto);
+  background: color-mix(in oklab, var(--c) 9%, var(--superficie)); border: 1px solid color-mix(in oklab, var(--c) 32%, var(--borda));
+  opacity: 0; transform: translateY(8px);
+  transition: opacity .4s var(--ease), transform .5s var(--ease), border-color .3s; transition-delay: calc(var(--i, 0) * 45ms);
+}
+#cap-encerramento .en-chip:hover { border-color: var(--c); }
+#cap-encerramento .en-tier.en-on .en-chip { opacity: 1; transform: none; }
+#cap-encerramento .en-chip.en-aqui { background: var(--c); color: #04201d; border-color: transparent; opacity: 1; transform: none; }
+#cap-encerramento .en-chip.en-aqui em { font: 700 13px/1 var(--fonte-mono); font-style: normal; letter-spacing: .08em; text-transform: uppercase; padding: 3px 6px; border-radius: 6px; background: rgba(4, 32, 29, .16); }
+#cap-encerramento .en-sep { width: 2px; align-self: stretch; margin: 2px 6px; border-radius: 1px; background: var(--borda-forte); opacity: 0; transition: opacity .4s var(--ease) .2s; }
+#cap-encerramento .en-tier.en-on .en-sep { opacity: 1; }
+#cap-encerramento .en-grupo {
+  display: inline-flex; flex-direction: column; gap: 4px; padding: 7px 13px; border-radius: 10px;
+  font: 600 18px/1.15 var(--fonte-texto); color: var(--texto);
+  background: var(--superficie); border: 1px dashed color-mix(in oklab, var(--c) 40%, var(--borda));
+  opacity: 0; transform: translateY(8px);
+  transition: opacity .4s var(--ease), transform .5s var(--ease); transition-delay: calc(var(--i, 0) * 60ms);
+}
+#cap-encerramento .en-grupo small { font: 500 16px/1.25 var(--fonte-mono); color: var(--texto-2); }
+#cap-encerramento .en-tier.en-on .en-grupo { opacity: 1; transform: none; }
+
+/* ── E10 · Fim ──────────────────────────────────────────────────────────── */
+#cap-encerramento .en-fim-palco { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 36px; }
+/* o confete cobre o slide inteiro (o .en-fim-palco não é posicionado) e corta o que sair dele */
+#cap-encerramento .en-confete { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
+#cap-encerramento .en-origem { position: absolute; left: 800px; top: 330px; width: 0; height: 0; }
+#cap-encerramento .en-pt {
+  position: absolute; left: 0; top: 0; width: var(--s); height: var(--s); margin: calc(var(--s) / -2) 0 0 calc(var(--s) / -2);
+  border-radius: 50%; background: var(--c); opacity: 0;
+  animation: encerramento-voa var(--d, 2s) cubic-bezier(.12, .7, .3, 1) var(--a, 0s) forwards;
+}
+#cap-encerramento .en-pt.en-pt-fita { border-radius: 2px; width: calc(var(--s) * .55); height: calc(var(--s) * 2); }
+#cap-encerramento .en-pt.en-pt-parado { animation: none; opacity: .5; transform: translate(var(--x), var(--y)); }
+#cap-encerramento .en-fim-term {
+  position: relative; z-index: 1; min-width: 980px; padding: 24px 40px 30px; border-radius: 18px;
+  background: #05080f; border: 1px solid rgba(130, 150, 220, .22);
+  box-shadow: var(--sombra), 0 0 90px -30px rgba(50, 205, 50, .55);
+  font-family: var(--fonte-mono); font-variant-ligatures: none;
+}
+#cap-encerramento .en-fim-cmd { font-size: 22px; color: #c9d4ee; }
+#cap-encerramento .en-prompt { color: #4ade80; font-weight: 700; margin-right: 6px; }
+#cap-encerramento .en-fim-pula { margin-left: 14px; font-size: 18px; font-style: italic; color: #6f86c0; }
+#cap-encerramento .en-fim-linha { position: relative; margin-top: 18px; min-height: 1.25em; font: 700 41px/1.25 var(--fonte-mono); color: var(--lima); white-space: nowrap; }
+/* o brilho de fósforo acende quando a linha termina de ser digitada (fundo radial, não
+   text-shadow: um halo largo em volta de letras verdes vira mancha escura em alguns renderizadores) */
+#cap-encerramento .en-fim-linha::before {
+  content: ""; position: absolute; inset: -18px -36px; z-index: -1; pointer-events: none;
+  background: radial-gradient(closest-side, rgba(50, 205, 50, .2), rgba(50, 205, 50, .06) 60%, transparent);
+  opacity: 0; transition: opacity .8s var(--ease);
+}
+#cap-encerramento .en-fim-palco.en-digitado .en-fim-linha::before { opacity: 1; }
+#cap-encerramento .en-cursor { display: inline-block; width: .55em; height: 1em; margin-left: 4px; vertical-align: -.14em; background: var(--lima); animation: encerramento-pisca 1s steps(1) infinite; }
+#cap-encerramento .en-fim-palco.en-pronto .en-cursor { opacity: 0; animation: none; }
+#cap-encerramento .slide:not(.ativo) .en-cursor { animation-play-state: paused; }
+#cap-encerramento .en-perguntas {
+  position: relative; z-index: 1; font: 800 132px/1 var(--fonte-display); letter-spacing: -.045em;
+  background: linear-gradient(100deg, var(--texto) 15%, var(--cor) 55%, var(--texto) 92%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  opacity: 0; transform: translateY(24px) scale(.97); transition: opacity .9s var(--ease), transform 1s var(--ease);
+}
+:root[data-tema="claro"] #cap-encerramento .en-perguntas { background-image: linear-gradient(100deg, var(--texto) 15%, var(--cor-texto) 55%, var(--texto) 92%); }
+#cap-encerramento .en-fim-rod { position: relative; z-index: 1; font: 500 19px/1 var(--fonte-mono); color: var(--texto-3); opacity: 0; transition: opacity .9s var(--ease) .3s; }
+#cap-encerramento .en-fim-palco.en-pronto .en-perguntas { opacity: 1; transform: none; }
+#cap-encerramento .en-fim-palco.en-pronto .en-fim-rod { opacity: 1; }
+
+/* ── Animações ──────────────────────────────────────────────────────────── */
+@keyframes encerramento-voa {
+  0% { opacity: 1; transform: translate(0, 0) scale(.3) rotate(0deg); }
+  75% { opacity: .95; }
+  100% { opacity: 0; transform: translate(var(--x), calc(var(--y) + 160px)) scale(1) rotate(var(--r, 0deg)); }
+}
+@keyframes encerramento-pisca { 50% { opacity: 0; } }
+@keyframes encerramento-marca { 0% { transform: scale(.6); } 60% { transform: scale(1.18); } 100% { transform: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+  #cap-encerramento .en-pt { animation: none !important; display: none; }
+  #cap-encerramento .en-confere > li::before { animation: none !important; }
+}
+
+/* No PDF (Ctrl+P), texto com background-clip ganha um contorno fino: cor sólida no lugar
+   (o "Perguntas?" e o "fecha" do divisor) */
+@media print {
+  #cap-encerramento .divisor h1 em { background: none; color: var(--cor-texto); -webkit-text-fill-color: currentColor; }
+  #cap-encerramento .en-confere > li::before { animation: none !important; }
+  #cap-encerramento .en-perguntas { background: none; color: var(--texto); -webkit-text-fill-color: currentColor; }
+}
