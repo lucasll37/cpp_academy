@@ -1,0 +1,184 @@
+/* lucaslima.ai — a serifa da casa (Source Serif 4, latin, eixos de peso e de tamanho óptico; OFL.txt). FONTE:
+   landing-page/design/house/font.css; `make design-sync` a põe no começo de public/ll/house.css de cada aplicação. */
+@font-face {
+  font-family: 'LL Serif';
+  font-style: normal;
+  font-weight: 200 900;
+  font-display: swap;
+  src: url('source-serif-4.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* lucaslima.ai — a camada da casa nas aplicações. FONTE: landing-page/design/house/house.css; nas aplicações é uma
+   cópia (public/ll/), escrita por `make design-sync` na landing. Não edite a cópia: edite a fonte e sincronize.
+
+   O que é da casa (igual em todas): a serifa da marca, o selo do autor e a cortina da passagem landing → aplicação.
+   O que é de cada uma: o resto. A gramática de cores das aplicações (o ciano do "para a frente", o magenta do "para
+   trás", Q/K/V…) ensina, e fica onde está; a casa entra pela tipografia e pela moldura, nunca pela cor dos dados.
+
+   Como ligar (no <head>, logo depois de charset e viewport, antes de qualquer CSS ou script da aplicação):
+     <script src="./ll/curtain.js" vite-ignore></script>
+     <link rel="preload" href="./ll/source-serif-4.woff2" as="font" type="font/woff2" crossorigin vite-ignore />
+     <link rel="stylesheet" href="./ll/house.css" vite-ignore />
+   e <body data-ll-name="Nome">. O vite-ignore (o Vite o remove no build) cala os avisos de "não dá para empacotar".
+
+   A serifa (@font-face 'LL Serif') mora em font.css: o sync a põe no começo da cópia (public/ll/house.css) de cada
+   aplicação. A landing importa só este arquivo: ela já tem a mesma serifa, e um segundo @font-face com o mesmo arquivo
+   faria o build juntar os dois e trocar o nome da fonte que o preload procura.
+
+   Contraste (WCAG) da tinta da casa sobre --ll-ink #0c0b0a: marfim 15,97:1 · cinza 7,16:1 · âmbar 8,88:1. */
+
+:root {
+  /* a casa: os mesmos valores de src/styles/tokens.css da landing */
+  --ll-ink: #0c0b0a;
+  --ll-ivory: #ece7de;
+  --ll-grey: #a39b8f;
+  --ll-amber: #d9a55b;
+  --ll-amber-line: rgba(217, 165, 91, 0.55);
+  --ll-serif: 'LL Serif', 'Source Serif 4 Variable', 'Source Serif 4', Georgia, 'Times New Roman', serif;
+  --ll-mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  --ll-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --ll-ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+
+  /* o selo: neutro sobre qualquer fundo escuro; uma aplicação clara redefine estes três */
+  --ll-author-ink: var(--ll-ivory);
+  --ll-author-line: rgba(236, 231, 222, 0.18);
+  --ll-author-hover: var(--ll-amber);
+  /* o anel de foco: o âmbar tem 2:1 sobre fundo claro (o mínimo é 3:1); uma aplicação clara troca este também */
+  --ll-author-focus: var(--ll-amber);
+}
+
+/* ───── a marca: o nome da aplicação e os títulos de leitura em serifa, como "Lucas Lima" na landing ───── */
+.ll-wordmark {
+  font-family: var(--ll-serif);
+  font-feature-settings: normal; /* nada das features da sans da aplicação (cv11, ss01…) */
+  font-weight: 450;
+  font-optical-sizing: auto;
+  letter-spacing: -0.01em;
+}
+
+/* ───── o selo do autor: "Feito por Lucas Lima" ─────
+   <a class="ll-author" href="https://www.lucaslima.ai/"><img class="ll-author-avatar" src="./autor.webp" width="22"
+   height="22" alt=""><span class="ll-author-name">Feito por Lucas Lima</span></a>
+   Moldura neutra (nada do acento da aplicação); o âmbar só no anel da foto e, no hover/foco, no texto e na borda.
+   Onde não cabe o texto, a aplicação esconde .ll-author-name e o selo vira só a foto (.ll-author.is-compact). */
+.ll-author {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 12px 4px 4px;
+  border: 1px solid var(--ll-author-line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ll-author-ink);
+  font-weight: 500;
+  font-size: 13px;
+  line-height: 1;
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    color 160ms var(--ll-ease),
+    border-color 160ms var(--ll-ease);
+}
+.ll-author-avatar {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  object-fit: cover;
+  box-shadow: 0 0 0 1px var(--ll-amber);
+}
+.ll-author-name b,
+.ll-author-name strong {
+  font-weight: 600;
+}
+.ll-author.is-compact {
+  padding: 4px;
+}
+.ll-author.is-compact .ll-author-name {
+  display: none;
+}
+.ll-author:hover,
+.ll-author:focus-visible {
+  color: var(--ll-author-hover);
+  border-color: var(--ll-amber-line);
+  /* mais específico que um a:hover { text-decoration: underline } da aplicação */
+  text-decoration: none;
+}
+.ll-author:focus-visible {
+  outline: 2px solid var(--ll-author-focus);
+  outline-offset: 2px;
+}
+@media (forced-colors: active) {
+  .ll-author {
+    border-color: LinkText;
+  }
+}
+
+/* ───── a cortina: a passagem landing → aplicação ─────
+   Na landing, a placa do cartão cresce até cobrir a tela: a placa com o caminho em âmbar, o nome em serifa e
+   "lucaslima.ai" no pé. A aplicação nasce com esse mesmo quadro (curtain.js marca <html data-ll-curtain> antes da
+   primeira pintura, e o <body data-ll-name="…"> dá o nome); quando a aplicação termina a carga inicial, curtain.js
+   troca para data-ll-curtain="lift" e a cortina sobe; o atributo sai no fim da subida (animationend). Sem movimento, nada. */
+html[data-ll-curtain] body::before,
+html[data-ll-curtain] body::after {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483646;
+  pointer-events: none;
+  font-feature-settings: normal;
+  will-change: transform;
+}
+/* a subida: curtain.js a dispara (data-ll-curtain="lift") quando a aplicação terminou a carga inicial. Só transform:
+   começada, roda no compositor, e não trava se a aplicação voltar a ocupar a thread principal */
+html[data-ll-curtain='lift'] body::before,
+html[data-ll-curtain='lift'] body::after {
+  animation: ll-lift 760ms var(--ll-ease-in-out) both;
+}
+html[data-ll-curtain] body::before {
+  content: 'lucaslima.ai';
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 40px;
+  background: var(--ll-ink) url('motif.svg') no-repeat center calc(50% - var(--ll-plate-shift)) / var(--ll-plate-w) auto;
+  color: var(--ll-grey);
+  font: 500 12px / 1 var(--ll-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+html[data-ll-curtain] body::after {
+  content: attr(data-ll-name);
+  z-index: 2147483647;
+  display: grid;
+  place-items: center;
+  padding-top: var(--ll-name-drop);
+  color: var(--ll-ivory);
+  font: 400 var(--ll-name-size) / 1 var(--ll-serif);
+  letter-spacing: -0.015em;
+  text-align: center;
+}
+/* a geometria da cortina (a landing usa os mesmos números): a placa 5:1 acima do nome, ambos no centro */
+html[data-ll-curtain] {
+  --ll-plate-w: min(480px, 84vw);
+  --ll-name-size: clamp(2.75rem, 1.5rem + 5.556vw, 6.5rem);
+  /* a placa fica logo acima do centro e o nome logo abaixo, com 24 px entre eles */
+  --ll-plate-shift: calc(var(--ll-plate-w) / 10 + 12px);
+  --ll-name-drop: calc(var(--ll-name-size) + 24px);
+}
+@keyframes ll-lift {
+  from {
+    transform: translateY(0);
+  }
+  /* nada além de transform (um visibility aqui tiraria a animação do compositor); no fim, ela já está fora da tela */
+  to {
+    transform: translateY(-100%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  html[data-ll-curtain] body::before,
+  html[data-ll-curtain] body::after {
+    display: none;
+  }
+}
