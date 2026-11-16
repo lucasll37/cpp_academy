@@ -124,3 +124,6 @@ grafana-data/
 flight_data.csv          # src/flight-simulator/ grava o log da missão
 resultado_yolov10.jpg    # src/yolo/ grava a imagem anotada
 test_results.json        # saída de --gtest_output
+
+# Site publicado do C++ Academy (scripts/site.sh)
+_site/

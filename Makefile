@@ -2,7 +2,7 @@
 SHELL = /bin/bash
 .SHELLFLAGS = -ec
 
-.PHONY: clean configure build install package all run test test-cmake smoke help open
+.PHONY: clean configure build install package all run test test-cmake smoke help open site
 .PHONY: run
 .PHONY: python
 
@@ -151,6 +151,10 @@ open: ## Open a subproject's slide deck in the default browser:  make open PROJ=
 	  exit 1
 	fi
 	bash scripts/open.sh "$$deck"
+
+site: ## Build the published C++ Academy site (cpp.lucaslima.ai) into _site/ and open it
+	bash scripts/site.sh
+	bash scripts/open.sh _site/index.html
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'

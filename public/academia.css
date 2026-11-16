@@ -1,0 +1,6 @@
+/* C++ Academy (cpp.lucaslima.ai): o selo "Feito por Lucas Lima" da casa sobre o deck.
+   Só no site publicado: scripts/site.sh liga este arquivo; o `make open` local fica sem ele. */
+.ll-author.academia { position: fixed; top: 14px; right: 16px; z-index: 70; transition: opacity .5s; }
+body.ocioso .ll-author.academia { opacity: 0; pointer-events: none; }
+.modo-apresentador .ll-author.academia { display: none; }
+@media print { .ll-author.academia { display: none; } }
